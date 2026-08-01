@@ -34,14 +34,23 @@
  */
 import type { ProjectedLetterStep } from "@/lib/case/timeline-projector";
 import type { DisputeLetterType } from "@/lib/billing/types";
-import { OUTCOME_LABELS } from "@/lib/disputes/outcome-taxonomy";
+import { OUTCOME_LABELS, suggestNextStep } from "@/lib/disputes/outcome-taxonomy";
+import { letterRequiresPro } from "@/lib/disputes/letter-access";
 import {
   LETTER_TYPE_LABELS,
   formatLetterDateShort,
   daysSinceLocal,
   daysUntilLocal,
 } from "@/lib/disputes/letter-type";
-import { CASE_RAIL } from "@/lib/guides/pack-registry";
+import {
+  CASE_RAIL,
+  COMPLAINT_DOORS,
+  PACK_D_STEPS,
+  PACK_D_SUGGESTED_CHIP,
+  PACK_D_TITLE,
+  isTerminalRung,
+  suggestDoors,
+} from "@/lib/guides/pack-registry";
 
 export interface RailWaitCard {
   disputeId: string;
@@ -62,6 +71,47 @@ export interface RailWaitCard {
   whn: { heading: string; rows: Array<[string, string]>; defaultOpen: boolean } | null;
 }
 
+export interface RailDoorTile {
+  id: string;
+  name: string;
+  desc: string;
+  href: string;
+  /** "suggested for this case" — the FIRST (track) door only, mock-literal. */
+  chip: string | null;
+}
+
+export interface RailNextMove {
+  disputeId: string;
+  /** Null at resolved terminal rungs (doors-only — the ladder is exhausted). */
+  letterOffer: {
+    targetLetterType: DisputeLetterType;
+    title: string;
+    sub: string | null;
+    /** letterRequiresPro — false while the S299 wall removal stands; the chip
+     *  machinery stays so re-adding PRO_LETTER_TYPES re-lights it. */
+    requiresPro: boolean;
+    proChip: string;
+    cta: string;
+  } | null;
+  regulator: {
+    title: string;
+    lead: string;
+    doors: RailDoorTile[];
+    /** The PACK_D_STEPS "packD:filed" row verbatim + the dispute's current
+     *  state — persistence is the EXISTING checklist POST (one state, shared
+     *  with the dispute-side Pack D until phase 3 retires that mount). */
+    attest: {
+      key: string;
+      title: string;
+      checkboxLabel: string;
+      notePlaceholder: string;
+      filed: boolean;
+      note: string | null;
+    };
+    foot: string;
+  };
+}
+
 export type RailStepModel =
   | {
       kind: "wait-active";
@@ -70,6 +120,14 @@ export type RailStepModel =
       title: string;
       sub: string | null;
       card: RailWaitCard;
+    }
+  | {
+      kind: "next-move";
+      key: string;
+      badge: string;
+      title: string;
+      sub: string | null;
+      move: RailNextMove;
     }
   | {
       kind: "wait-receipt";
@@ -162,6 +220,13 @@ export function railHasExtension(
   );
 }
 
+/** ONE counterparty resolution — wait titles + next-move subs share it. */
+function counterpartyFor(l: ProjectedLetterStep, input: ComposeRailInput): string {
+  if (l.recipientKind === "provider") return input.providerName ?? "the provider";
+  if (l.recipientKind === "collector") return l.counterpartyName ?? "the collector";
+  return input.insurerNameByDispute[l.disputeId] ?? "your plan";
+}
+
 function waitTitle(l: ProjectedLetterStep, input: ComposeRailInput): string {
   if (l.letterType === "insurance_appeal") {
     return CASE_RAIL.waitTitleAppeal(input.insurerNameByDispute[l.disputeId] ?? null);
@@ -169,13 +234,7 @@ function waitTitle(l: ProjectedLetterStep, input: ComposeRailInput): string {
   if (l.letterType === "debt_validation") {
     return CASE_RAIL.waitTitleCollector(l.counterpartyName);
   }
-  const counterparty =
-    l.recipientKind === "provider"
-      ? (input.providerName ?? "the provider")
-      : l.recipientKind === "collector"
-        ? (l.counterpartyName ?? "the collector")
-        : (input.insurerNameByDispute[l.disputeId] ?? "your plan");
-  return CASE_RAIL.waitTitleGeneric(counterparty, letterNoun(l.letterType));
+  return CASE_RAIL.waitTitleGeneric(counterpartyFor(l, input), letterNoun(l.letterType));
 }
 
 function waitSub(l: ProjectedLetterStep): string | null {
@@ -327,6 +386,112 @@ export function composeRailSteps(input: ComposeRailInput): RailStepModel[] {
           },
         });
       }
+    }
+    // Stage-8 "Your next move" (phase 1b) — per letter at stage `next`
+    // (letter offer + regulator card), and doors-only at resolved TERMINAL
+    // rungs (isTerminalRung: the ladder's end is where the regulator card
+    // matters most; suggestNextStep is null there, so stage alone would
+    // never surface it). Anchored at the logged outcome — it lands after
+    // the waits, chronologically honest.
+    const terminalResolved =
+      l.stage === "resolved" &&
+      l.outcome != null &&
+      isTerminalRung({ letterType: l.letterType, status: l.outcome.status });
+    if (l.stage === "next" || terminalResolved) {
+      const snsRaw =
+        l.stage === "next" && l.outcome
+          ? suggestNextStep(l.letterType as DisputeLetterType, l.outcome.detail)
+          : null;
+      // Offer suppression (Andrew, 1b E2E): once a letter of the suggested
+      // type EXISTS on the case it has its own rung/steps — a lingering
+      // start-offer would duplicate it. The step keeps the regulator card;
+      // the "two paths" sub retires with the offer (doors-only anatomy,
+      // same as the terminal rung).
+      const sns =
+        snsRaw &&
+        !letters.some(
+          (x) =>
+            x.disputeId !== l.disputeId &&
+            x.letterType === snsRaw.nextLetterType &&
+            x.stage !== "none",
+        )
+          ? snsRaw
+          : null;
+      const counterparty = counterpartyFor(l, input);
+      const subRaw =
+        l.outcome?.detail === "denied_fully"
+          ? CASE_RAIL.nextMoveSubSaidNo(counterparty)
+          : l.outcome?.detail === "denied_partial" ||
+              l.outcome?.detail === "denied_some_covered"
+            ? CASE_RAIL.nextMoveSubPaidPart(counterparty)
+            : l.outcome?.detail === "denied_counteroffer"
+              ? CASE_RAIL.nextMoveSubCounteroffer(counterparty)
+              : null;
+      const sub = sns ? subRaw : null;
+      const suggested = suggestDoors({
+        track: l.recipientKind === "insurer" ? "insurer" : "provider",
+        hasCollections: letters.some(
+          (x) => x.letterType === "debt_validation" && x.stage !== "none",
+        ),
+        grounds: l.letterType === "balance_billing" ? ["balance_billing"] : [],
+      });
+      const filedStep = PACK_D_STEPS.find((s) => s.id === "packD:filed");
+      anchored.push({
+        anchor: ts(l.outcome?.loggedAt ?? l.latestSendAt ?? l.startAt),
+        order: order++,
+        model: {
+          kind: "next-move",
+          key: `next:${l.disputeId}`,
+          badge: "",
+          title: CASE_RAIL.nextMoveTitle,
+          sub,
+          move: {
+            disputeId: l.disputeId,
+            letterOffer: sns
+              ? {
+                  targetLetterType: sns.nextLetterType,
+                  title: sns.ctaLabel,
+                  sub:
+                    sns.nextLetterType === "external_review"
+                      ? CASE_RAIL.startLetterSubExternalReview(
+                          l.outcome?.loggedAt ? fmtRailDate(l.outcome.loggedAt) : null,
+                        )
+                      : (sns.note ?? null),
+                  requiresPro: letterRequiresPro(sns.nextLetterType),
+                  proChip: CASE_RAIL.proChip,
+                  cta: CASE_RAIL.startLetterCta,
+                }
+              : null,
+            regulator: {
+              title: PACK_D_TITLE,
+              lead: CASE_RAIL.regulatorLead,
+              doors: suggested.flatMap((id, i) => {
+                const d = COMPLAINT_DOORS.find((x) => x.id === id);
+                return d
+                  ? [
+                      {
+                        id: d.id,
+                        name: d.name,
+                        desc: d.desc,
+                        href: d.href,
+                        chip: i === 0 ? PACK_D_SUGGESTED_CHIP : null,
+                      },
+                    ]
+                  : [];
+              }),
+              attest: {
+                key: "packD:filed",
+                title: filedStep?.title ?? "File it, then log the confirmation number",
+                checkboxLabel: filedStep?.checkboxLabel ?? "Complaint filed",
+                notePlaceholder: CASE_RAIL.filedNotePlaceholder,
+                filed: l.regulatorFiled,
+                note: l.regulatorFiledNote,
+              },
+              foot: CASE_RAIL.regulatorFoot,
+            },
+          },
+        },
+      });
     }
   }
 

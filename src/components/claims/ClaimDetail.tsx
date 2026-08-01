@@ -25,6 +25,8 @@ import { GuidedPhoneSteps, ShowFullStepButton, derivePhonePackState, type GuideS
 import { CaseRail, RailStep } from "@/components/claims/CaseRail";
 import { OutcomeReportingModal } from "@/components/disputes/OutcomeReportingModal";
 import { CollectorModal, type CollectorSubmit } from "@/components/disputes/CollectorModal";
+import { ExhaustionAttestModal } from "@/components/disputes/ExhaustionAttestModal";
+import { toLocalDateOnly } from "@/lib/disputes/letter-type";
 import { railHasExtension, fmtRailDate } from "@/lib/case/rail-steps";
 import type { ProjectedLetterStep } from "@/lib/case/timeline-projector";
 import { letterRecipientKind } from "@/lib/disputes";
@@ -542,6 +544,7 @@ export function ClaimDetail({
   // CaseRail mount + the modal mounts below).
   const [railOutcomeDisputeId, setRailOutcomeDisputeId] = useState<string | null>(null);
   const [railCollectorFromDisputeId, setRailCollectorFromDisputeId] = useState<string | null>(null);
+  const [railExhaustionFromDisputeId, setRailExhaustionFromDisputeId] = useState<string | null>(null);
   const [railEscalating, setRailEscalating] = useState(false);
   const [railActionError, setRailActionError] = useState<string | null>(null);
   // "Show full step" client state for the done-collapsed rail steps 1-2
@@ -803,22 +806,30 @@ export function ClaimDetail({
     [getAuthToken, refetchClaim, onClaimUpdated],
   );
 
-  const handleRailCollectorSubmit = useCallback(
-    async (input: CollectorSubmit) => {
-      if (!railCollectorFromDisputeId || railEscalating) return;
+  // ONE escalate path for every rail offer (phase 1b generalizes 1a's
+  // collector flow): POST the EXISTING /escalate route, then navigate to the
+  // new letter for review (dispute-side parity).
+  const railEscalate = useCallback(
+    async (
+      fromDisputeId: string,
+      targetLetterType: "debt_validation" | "external_review" | "final_notice",
+      extra: Record<string, unknown> = {},
+    ) => {
+      if (railEscalating) return;
       setRailEscalating(true);
       setRailActionError(null);
       try {
         const token = await getAuthToken();
         if (!token) throw new Error("not signed in");
-        const res = await fetch(`/api/disputes/${railCollectorFromDisputeId}/escalate`, {
+        const res = await fetch(`/api/disputes/${fromDisputeId}/escalate`, {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ targetLetterType: "debt_validation", ...input }),
+          body: JSON.stringify({ targetLetterType, ...extra }),
         });
         if (!res.ok) throw new Error("escalate failed");
         const result = await res.json();
         setRailCollectorFromDisputeId(null);
+        setRailExhaustionFromDisputeId(null);
         if (result?.disputeId) {
           // Dispute-side parity: the new letter needs review before send.
           router.push(`/disputes?dispute=${result.disputeId}`);
@@ -831,7 +842,18 @@ export function ClaimDetail({
         setRailEscalating(false);
       }
     },
-    [railCollectorFromDisputeId, railEscalating, getAuthToken, router, refetchClaim],
+    [railEscalating, getAuthToken, router, refetchClaim],
+  );
+
+  const handleRailCollectorSubmit = useCallback(
+    async (input: CollectorSubmit) => {
+      if (!railCollectorFromDisputeId) return;
+      await railEscalate(railCollectorFromDisputeId, "debt_validation", {
+        collector: input.collector,
+        collectorFirstContactDate: input.collectorFirstContactDate,
+      });
+    },
+    [railCollectorFromDisputeId, railEscalate],
   );
 
   // Cost-Share v2 (W3) — post ONE assumption correction, then refetch so the
@@ -1360,6 +1382,32 @@ export function ClaimDetail({
   const railExtends =
     railTimeline != null && railHasExtension(railTimeline.letters, railPrimaryDisputeId);
   const railPrimarySent = railExtends && railPrimaryLetter?.latestSendAt != null;
+  // Stage-8 offer router (phase 1b): external_review needs the exhaustion
+  // attestation (same modal + fail-closed gate as the dispute page);
+  // final_notice goes direct with the prior letter's LOCAL send date
+  // (sent_at preferred — the dispute page's filed_date proxy predates the
+  // date rule); debt_validation reuses the collector capture. Declared after
+  // railTimeline (it reads the letters).
+  const handleRailStartNextLetter = (disputeId: string, targetLetterType: string) => {
+    setRailActionError(null);
+    if (targetLetterType === "external_review") {
+      setRailExhaustionFromDisputeId(disputeId);
+      return;
+    }
+    if (targetLetterType === "debt_validation") {
+      setRailCollectorFromDisputeId(disputeId);
+      return;
+    }
+    if (targetLetterType === "final_notice") {
+      const letter = railTimeline?.letters.find((l) => l.disputeId === disputeId);
+      void railEscalate(disputeId, "final_notice", {
+        priorContactDates: letter?.latestSendAt
+          ? [toLocalDateOnly(letter.latestSendAt)]
+          : undefined,
+        certifiedMail: true,
+      });
+    }
+  };
 
   // ── Guided Steps v1 (S297) ─────────────────────────────────────────────────
   const guidedOn = guidedStepsFlag.enabled;
@@ -3381,6 +3429,8 @@ export function ClaimDetail({
               setRailCollectorFromDisputeId(id);
             }}
             onUndoResult={handleRailUndoResult}
+            onStartNextLetter={handleRailStartNextLetter}
+            escalating={railEscalating}
           />
         </>
       )}
@@ -3407,6 +3457,18 @@ export function ClaimDetail({
         submitting={railEscalating}
         onCancel={() => setRailCollectorFromDisputeId(null)}
         onSubmit={handleRailCollectorSubmit}
+      />
+      <ExhaustionAttestModal
+        open={railExhaustionFromDisputeId != null}
+        submitting={railEscalating}
+        onCancel={() => setRailExhaustionFromDisputeId(null)}
+        onSubmit={(input) => {
+          if (railExhaustionFromDisputeId) {
+            void railEscalate(railExhaustionFromDisputeId, "external_review", {
+              appealExhausted: input.appealExhausted,
+            });
+          }
+        }}
       />
 
       {billState === "needs_review" && !data.costShareBill && (() => {

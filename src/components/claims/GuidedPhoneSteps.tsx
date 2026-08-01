@@ -385,7 +385,18 @@ export function GuidedPhoneSteps({
                           un-attests); advances the blue marker. */}
                       <button
                         type="button"
-                        onClick={() => void persist(step.id, { checked: !checked })}
+                        // S299 — carry the current note in the SAME request:
+                        // clicking the button blurs the input, and two
+                        // concurrent read-modify-write POSTs lose one field
+                        // to the other (the rail's "complaint number
+                        // disappeared" race, same class). The union write
+                        // converges in either processing order.
+                        onClick={() =>
+                          void persist(step.id, {
+                            checked: !checked,
+                            ...(step.note ? { note: noteValue } : {}),
+                          })
+                        }
                         className={
                           checked
                             ? "inline-flex items-center gap-1.5 rounded-xl border border-emerald-300 bg-emerald-50 px-3.5 py-[7px] text-[12.5px] font-semibold text-emerald-700"

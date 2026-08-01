@@ -15,11 +15,20 @@
  */
 import type { DisputeLetterType } from "@/lib/billing/types";
 
-/** Letter types that require Candid Pro. Escalation (ladder-advance) letters only. */
-export const PRO_LETTER_TYPES: readonly DisputeLetterType[] = [
-  "final_notice", // provider R.. → R3
-  "external_review", // insurer I1 → I2
-];
+/**
+ * Letter types that require Candid Pro.
+ *
+ * EMPTY since S299 (Andrew): the escalation-letter Pro wall is REMOVED for now
+ * — every ladder rung (final_notice, external_review) is free like the
+ * first-contact letters. Rationale: unblocks end-to-end testing of the case
+ * rail's "Start the next letter" path, and "no one will be upset that it ends
+ * up being free." The MACHINERY stays intact — evaluateLetterAccess,
+ * letterRequiresPro, the escalate-gate tier check, Pro chips, and the 403
+ * paths all still consult this ONE list — so restoring the wall is exactly
+ * re-adding the type(s) here (previously: "final_notice", "external_review").
+ * The Case File download tier gate is a separate check and is unaffected.
+ */
+export const PRO_LETTER_TYPES: readonly DisputeLetterType[] = [];
 
 /** True when a letter type requires Pro. Cheap; use to decide whether to load
  *  the subscription before the full evaluateLetterAccess call. */

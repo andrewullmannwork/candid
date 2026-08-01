@@ -230,6 +230,8 @@ export function CaseRail({
   onLogResponse,
   onSomethingElse,
   onUndoResult,
+  onStartNextLetter,
+  escalating,
 }: Omit<ComposeRailInput, "insurerNameByDispute" | "providerName" | "now"> & {
   insurerNameByDispute: Record<string, string>;
   providerName: string | null;
@@ -241,6 +243,12 @@ export function CaseRail({
   onSomethingElse: (disputeId: string) => void;
   /** The existing outcome-undo request + claim refetch; resolves false on failure. */
   onUndoResult: (disputeId: string) => Promise<boolean>;
+  /** Stage-8 offers (phase 1b): routes to the existing escalate flow —
+   *  external_review via the shared ExhaustionAttestModal, final_notice
+   *  direct, debt_validation via the shared CollectorModal. */
+  onStartNextLetter: (disputeId: string, targetLetterType: string) => void;
+  /** Escalate in flight (ClaimDetail state) — disables the offer buttons. */
+  escalating: boolean;
 }) {
   const router = useRouter();
   const [openSteps, setOpenSteps] = useState<Record<string, boolean>>({});
@@ -249,6 +257,14 @@ export function CaseRail({
   const [doorBusy, setDoorBusy] = useState<Record<string, boolean>>({});
   const [undoBusy, setUndoBusy] = useState<Record<string, boolean>>({});
   const [undoError, setUndoError] = useState<Record<string, boolean>>({});
+  // Pack-D filed attest (phase 1b) — optimistic with snap-back (S295 idiom);
+  // server truth arrives with the next projection refetch. Note drafts are
+  // controlled (GuidedPhoneSteps idiom) so the attest click can carry the
+  // UNION {done, note} in ONE request — clicking the button blurs the input,
+  // and two concurrent read-modify-write POSTs lose one field to the other
+  // (the S299 "complaint number disappeared" race, Andrew).
+  const [filedOverride, setFiledOverride] = useState<Record<string, boolean>>({});
+  const [attestNoteDrafts, setAttestNoteDrafts] = useState<Record<string, string>>({});
 
   const steps: RailStepModel[] = composeRailSteps({
     letters,
@@ -283,6 +299,34 @@ export function CaseRail({
     } finally {
       setDoorBusy((m) => ({ ...m, [disputeId]: false }));
     }
+  };
+
+  // Pack-D filed attest — the EXISTING dispute checklist POST (one state,
+  // shared with the dispute-side Pack D until phase 3 retires that mount;
+  // writes also emit guide_step_attested ledger events via Phase 0).
+  const persistAttest = async (
+    disputeId: string,
+    body: { done?: boolean; note?: string },
+  ): Promise<boolean> => {
+    try {
+      const token = await getAuthToken();
+      if (!token) return false;
+      const res = await fetch(`/api/disputes/${disputeId}/checklist`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ key: "packD:filed", ...body }),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  };
+  const toggleFiled = async (disputeId: string, next: boolean, note: string) => {
+    setFiledOverride((m) => ({ ...m, [disputeId]: next }));
+    // The union write: done + the current note together, so blur-vs-click
+    // request ordering converges on both fields either way.
+    const ok = await persistAttest(disputeId, { done: next, note });
+    if (!ok) setFiledOverride((m) => ({ ...m, [disputeId]: !next }));
   };
 
   return (
@@ -345,6 +389,128 @@ export function CaseRail({
                 last={last}
               />
             );
+          case "next-move": {
+            const filedNow = filedOverride[s.move.disputeId] ?? s.move.regulator.attest.filed;
+            const attestNoteValue =
+              attestNoteDrafts[s.move.disputeId] ?? s.move.regulator.attest.note ?? "";
+            return (
+              <RailStep key={s.key} n={s.badge} title={s.title} sub={s.sub ?? undefined} last={last}>
+                <div className="space-y-2.5">
+                  {s.move.letterOffer && (
+                    <div className="rounded-xl border border-gray-200 bg-white px-4 py-3.5">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="min-w-[14rem] flex-1">
+                          <div className="text-[14px] font-bold text-gray-900">
+                            {s.move.letterOffer.title}
+                          </div>
+                          {s.move.letterOffer.sub && (
+                            <div className="mt-0.5 text-[12.5px] text-gray-500">
+                              {s.move.letterOffer.sub}
+                            </div>
+                          )}
+                        </div>
+                        <div className="flex flex-shrink-0 items-center gap-2">
+                          {s.move.letterOffer.requiresPro && (
+                            <span className="inline-flex items-center rounded-full bg-purple-50 px-2.5 py-[3px] text-[12px] font-semibold text-purple-700 ring-1 ring-inset ring-purple-200">
+                              {s.move.letterOffer.proChip}
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onStartNextLetter(s.move.disputeId, s.move.letterOffer!.targetLetterType)
+                            }
+                            disabled={escalating}
+                            className="inline-flex items-center rounded-lg bg-blue-600 px-4 py-2 text-[13.5px] font-semibold text-white shadow-sm transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {s.move.letterOffer.cta}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  <div className="rounded-xl border border-gray-200 bg-white px-4 py-3.5">
+                    <div className="text-[14px] font-bold text-gray-900">{s.move.regulator.title}</div>
+                    <div className="mb-2.5 mt-0.5 text-[12.5px] text-gray-500">
+                      {s.move.regulator.lead}
+                    </div>
+                    <div className="flex flex-wrap gap-2.5">
+                      {s.move.regulator.doors.map((d) => (
+                        <a
+                          key={d.id}
+                          href={d.href}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className={
+                            "min-w-[190px] flex-1 rounded-[10px] border px-3 py-2.5 text-[13px] transition-colors hover:bg-gray-50 " +
+                            (d.chip ? "border-blue-200 bg-blue-50/40" : "border-gray-200 bg-white")
+                          }
+                        >
+                          <span className="flex flex-wrap items-center gap-1.5 font-bold text-gray-900">
+                            {d.name}
+                            {d.chip && (
+                              <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-[2px] text-[10.5px] font-semibold text-slate-600 ring-1 ring-inset ring-slate-200">
+                                {d.chip}
+                              </span>
+                            )}
+                          </span>
+                          <span className="mt-0.5 block text-[12px] text-gray-500">{d.desc}</span>
+                        </a>
+                      ))}
+                    </div>
+                    <div className="mt-3 border-t border-gray-100 pt-2.5">
+                      <div className="text-[13px] font-semibold text-gray-900">
+                        {s.move.regulator.attest.title}
+                      </div>
+                      {/* Log input + attest button — the Pack A′ row anatomy
+                          (Andrew, 1b E2E: match "work it by phone" + the
+                          "I made the call" button). */}
+                      <div className="mt-2 flex flex-wrap items-start gap-x-3 gap-y-2">
+                        <input
+                          type="text"
+                          value={attestNoteValue}
+                          placeholder={s.move.regulator.attest.notePlaceholder}
+                          maxLength={500}
+                          onChange={(e) =>
+                            setAttestNoteDrafts((m) => ({
+                              ...m,
+                              [s.move.disputeId]: e.target.value,
+                            }))
+                          }
+                          onBlur={(e) => {
+                            const v = e.target.value.trim();
+                            if (v !== (s.move.regulator.attest.note ?? "")) {
+                              void persistAttest(s.move.disputeId, { note: v });
+                            }
+                          }}
+                          className="min-w-[220px] flex-1 rounded-lg border border-gray-200 px-3 py-[7px] text-[12.5px] text-gray-800 placeholder:text-gray-400 focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-100"
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void toggleFiled(s.move.disputeId, !filedNow, attestNoteValue.trim())
+                          }
+                          className={
+                            filedNow
+                              ? "inline-flex items-center gap-1.5 rounded-xl border border-emerald-300 bg-emerald-50 px-3.5 py-[7px] text-[12.5px] font-semibold text-emerald-700"
+                              : "inline-flex items-center gap-1.5 rounded-xl border-[1.5px] border-blue-400 bg-white px-3.5 py-[6.5px] text-[12.5px] font-semibold text-blue-700 transition-colors hover:bg-blue-50"
+                          }
+                        >
+                          {s.move.regulator.attest.checkboxLabel}
+                          {filedNow && (
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                              <path d="M5 13l4 4L19 7" />
+                            </svg>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                    <div className="mt-2.5 text-[11.5px] text-gray-400">{s.move.regulator.foot}</div>
+                  </div>
+                </div>
+              </RailStep>
+            );
+          }
           case "send-receipt":
             return (
               <RailStep

@@ -123,8 +123,11 @@ const compose = (
     [appeal.id]: "Providence Health Plan",
   });
 
-  check("ballard · 3 steps (wait + send + wait)", steps.length === 3, steps.length);
-  check("ballard · badges 5/6/7 chronological", steps.map((s) => s.badge).join(",") === "5,6,7", steps.map((s) => s.badge));
+  // 1b: the denied appeal (stage `next`) also contributes a "Your next move"
+  // step, anchored at the logged outcome — 4 steps total.
+  check("ballard · 4 steps (wait + send + wait + next-move)", steps.length === 4, steps.length);
+  check("ballard · badges 5/6/7/8 chronological", steps.map((s) => s.badge).join(",") === "5,6,7,8", steps.map((s) => s.badge));
+  check("ballard · step 8 is the next-move", steps[3].kind === "next-move", steps[3].kind);
   const [s5, s6, s7] = steps;
   check("ballard · appeal wait is a receipt (stage next)", s5.kind === "wait-receipt");
   check(
@@ -348,6 +351,229 @@ const compose = (
   const sentPrimary = mkDispute({ status: "filed", sent_at: iso(-3) });
   const { t: t3 } = compose([sentPrimary], sentPrimary.id);
   check("predicate · sent primary → extension (its wait)", railHasExtension(t3.letters, sentPrimary.id) === true);
+}
+
+// ── 7 · Stage-8 "Your next move" (phase 1b: offers + doors + terminal rule) ─
+{
+  // (a) Denied insurer appeal + live collections → letter offer (external
+  // review, wall-removed so requiresPro FALSE) + doors [DOI chipped, CFPB].
+  const appeal = mkDispute({
+    status: "lost",
+    sent_at: iso(-6),
+    governing_deadline_date: dateOnly(54),
+    deadline_type: "plan_response",
+    metadata: {
+      letterType: "insurance_appeal",
+      outcomeDetail: "denied_fully",
+      outcomeReportedAt: iso(-1),
+    },
+  });
+  const validation = mkDispute({
+    status: "filed",
+    created_at: iso(-5),
+    sent_at: iso(-4),
+    metadata: {
+      letterType: "debt_validation",
+      collector: { name: "Cascade Recovery", address: null, originalCreditor: null },
+    },
+  });
+  const { steps } = compose([appeal, validation], appeal.id, {
+    [appeal.id]: "Providence Health Plan",
+  });
+  const nm = steps.find((s) => s.kind === "next-move");
+  check("next-move · renders for stage next", nm != null);
+  if (nm && nm.kind === "next-move") {
+    check("next-move · title", nm.title === "Your next move");
+    check(
+      "next-move · denied sub (ruling 4)",
+      nm.sub === "Providence Health Plan said no. Two paths are open — you can take both.",
+      nm.sub,
+    );
+    check(
+      "next-move · letter offer = suggestNextStep CTA",
+      nm.move.letterOffer?.title === "Start the next letter — external review",
+      nm.move.letterOffer?.title,
+    );
+    check("next-move · target external_review", nm.move.letterOffer?.targetLetterType === "external_review");
+    check(
+      "next-move · Pro wall removed → requiresPro false",
+      nm.move.letterOffer?.requiresPro === false,
+    );
+    check(
+      "next-move · external-review sub carries the logged date",
+      nm.move.letterOffer?.sub === `An independent reviewer, not your insurer, decides. Unlocked by the denial you logged ${fmtRailDate(iso(-1))}.`,
+      nm.move.letterOffer?.sub,
+    );
+    check("next-move · start CTA", nm.move.letterOffer?.cta === "Start the letter");
+    check(
+      "next-move · doors DOI+CFPB (collections active)",
+      nm.move.regulator.doors.map((d) => d.id).join(",") === "doi,cfpb",
+      nm.move.regulator.doors.map((d) => d.id),
+    );
+    check(
+      "next-move · chip on the track door only (mock-literal)",
+      nm.move.regulator.doors[0].chip === "suggested for this case" &&
+        nm.move.regulator.doors[1].chip === null,
+    );
+    check(
+      "next-move · regulator lead (ruling 3 FINAL)",
+      nm.move.regulator.lead === "Choose the regulator(s) based on which party wronged you.",
+    );
+    check(
+      "next-move · filed attest row (registry label + Andrew's rail placeholder)",
+      nm.move.regulator.attest.key === "packD:filed" &&
+        nm.move.regulator.attest.checkboxLabel === "Complaint filed" &&
+        nm.move.regulator.attest.notePlaceholder === "Enter your confirmation number" &&
+        nm.move.regulator.attest.filed === false &&
+        nm.move.regulator.attest.note === null,
+    );
+    check(
+      "next-move · foot",
+      nm.move.regulator.foot ===
+        "Gather your paper trail → file it → log the confirmation number. Your letters make the case.",
+    );
+  }
+
+  // (b) Denied provider letter, no collections → final-notice offer + AG only.
+  const provider = mkDispute({
+    status: "lost",
+    sent_at: iso(-8),
+    metadata: {
+      letterType: "overcharge",
+      outcomeDetail: "denied_fully",
+      outcomeReportedAt: iso(-2),
+    },
+  });
+  const { steps: pSteps } = compose([provider], provider.id, {});
+  const pNm = pSteps.find((s) => s.kind === "next-move");
+  check(
+    "next-move · provider track → final notice offer",
+    pNm?.kind === "next-move" && pNm.move.letterOffer?.targetLetterType === "final_notice",
+  );
+  check(
+    "next-move · provider doors AG only",
+    pNm?.kind === "next-move" && pNm.move.regulator.doors.map((d) => d.id).join(",") === "ag",
+    pNm?.kind === "next-move" ? pNm.move.regulator.doors.map((d) => d.id) : pNm?.kind,
+  );
+
+  // (c) TERMINAL rung: a lost external review (suggestNextStep null → stage
+  // resolved) still gets the regulator card — doors-only next-move.
+  const terminal = mkDispute({
+    status: "lost",
+    sent_at: iso(-9),
+    metadata: {
+      letterType: "external_review",
+      outcomeDetail: "denied_fully",
+      outcomeReportedAt: iso(-3),
+    },
+  });
+  const { steps: tSteps } = compose([terminal], terminal.id, {});
+  const tNm = tSteps.find((s) => s.kind === "next-move");
+  check("terminal · doors-only next-move renders", tNm?.kind === "next-move");
+  check(
+    "terminal · no letter offer (ladder exhausted)",
+    tNm?.kind === "next-move" && tNm.move.letterOffer === null,
+  );
+  check(
+    "terminal · doors-only drops the two-paths sub",
+    tNm?.kind === "next-move" && tNm.sub === null,
+    tNm?.kind === "next-move" ? tNm.sub : tNm?.kind,
+  );
+  const tReceipt = tSteps.find((s) => s.kind === "wait-receipt");
+  check(
+    "terminal · receipt has no undo at stage resolved",
+    tReceipt?.kind === "wait-receipt" && tReceipt.undo === false,
+  );
+
+  // (d) balance_billing ground → CMS door second (determinism).
+  const bb = mkDispute({
+    status: "lost",
+    sent_at: iso(-7),
+    metadata: {
+      letterType: "balance_billing",
+      outcomeDetail: "denied_fully",
+      outcomeReportedAt: iso(-2),
+    },
+  });
+  const { steps: bbSteps } = compose([bb], bb.id, {});
+  const bbNm = bbSteps.find((s) => s.kind === "next-move");
+  check(
+    "next-move · balance_billing → AG + CMS doors",
+    bbNm?.kind === "next-move" && bbNm.move.regulator.doors.map((d) => d.id).join(",") === "ag,cms",
+    bbNm?.kind === "next-move" ? bbNm.move.regulator.doors.map((d) => d.id) : bbNm?.kind,
+  );
+
+  // (e) Filed attest passthrough (projector → model).
+  const filed = mkDispute({
+    status: "lost",
+    sent_at: iso(-6),
+    metadata: {
+      letterType: "insurance_appeal",
+      outcomeDetail: "denied_fully",
+      outcomeReportedAt: iso(-1),
+      checklist: { "packD:filed": true },
+      checklistNotes: { "packD:filed": "DOI #4417" },
+    },
+  });
+  const { steps: fSteps } = compose([filed], filed.id, {});
+  const fNm = fSteps.find((s) => s.kind === "next-move");
+  check(
+    "next-move · filed attest passthrough",
+    fNm?.kind === "next-move" &&
+      fNm.move.regulator.attest.filed === true &&
+      fNm.move.regulator.attest.note === "DOI #4417",
+  );
+
+  // (g) Offer suppression (Andrew, 1b E2E): once the suggested letter EXISTS
+  // it has its own rung — the step keeps the doors only, sub retires, and the
+  // new letter contributes its own draft send-step.
+  const deniedAppeal = mkDispute({
+    status: "lost",
+    sent_at: iso(-6),
+    metadata: {
+      letterType: "insurance_appeal",
+      outcomeDetail: "denied_fully",
+      outcomeReportedAt: iso(-1),
+    },
+  });
+  const startedReview = mkDispute({
+    created_at: iso(0, -1000),
+    metadata: { letterType: "external_review" },
+  });
+  const { steps: gSteps } = compose([deniedAppeal, startedReview], deniedAppeal.id, {});
+  const gNm = gSteps.find((s) => s.kind === "next-move");
+  check(
+    "suppression · offer gone once the letter exists",
+    gNm?.kind === "next-move" && gNm.move.letterOffer === null,
+  );
+  check(
+    "suppression · two-paths sub retires with the offer",
+    gNm?.kind === "next-move" && gNm.sub === null,
+  );
+  check("suppression · doors remain", gNm?.kind === "next-move" && gNm.move.regulator.doors.length > 0);
+  check(
+    "suppression · the started letter gets its own draft step",
+    gSteps.some((s) => s.kind === "send-draft"),
+    gSteps.map((s) => s.kind),
+  );
+
+  // (f) A non-terminal open outcome (needs_info → stage awaiting) gets NO
+  // next-move — the waiting card owns it.
+  const open = mkDispute({
+    status: "filed",
+    sent_at: iso(-6),
+    metadata: {
+      letterType: "insurance_appeal",
+      outcomeDetail: "needs_info",
+      outcomeReportedAt: iso(-1),
+    },
+  });
+  const { steps: oSteps } = compose([open], open.id, {});
+  check(
+    "next-move · absent for open non-terminal outcomes",
+    oSteps.every((s) => s.kind !== "next-move"),
+    oSteps.map((s) => s.kind),
+  );
 }
 
 console.log(`\ncase-timeline rail-steps fixture: ${pass} passed, ${fails.length} failed`);
