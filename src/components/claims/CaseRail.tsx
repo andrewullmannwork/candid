@@ -258,8 +258,13 @@ export function CaseRail({
   const [undoBusy, setUndoBusy] = useState<Record<string, boolean>>({});
   const [undoError, setUndoError] = useState<Record<string, boolean>>({});
   // Pack-D filed attest (phase 1b) — optimistic with snap-back (S295 idiom);
-  // server truth arrives with the next projection refetch.
+  // server truth arrives with the next projection refetch. Note drafts are
+  // controlled (GuidedPhoneSteps idiom) so the attest click can carry the
+  // UNION {done, note} in ONE request — clicking the button blurs the input,
+  // and two concurrent read-modify-write POSTs lose one field to the other
+  // (the S299 "complaint number disappeared" race, Andrew).
   const [filedOverride, setFiledOverride] = useState<Record<string, boolean>>({});
+  const [attestNoteDrafts, setAttestNoteDrafts] = useState<Record<string, string>>({});
 
   const steps: RailStepModel[] = composeRailSteps({
     letters,
@@ -316,9 +321,11 @@ export function CaseRail({
       return false;
     }
   };
-  const toggleFiled = async (disputeId: string, next: boolean) => {
+  const toggleFiled = async (disputeId: string, next: boolean, note: string) => {
     setFiledOverride((m) => ({ ...m, [disputeId]: next }));
-    const ok = await persistAttest(disputeId, { done: next });
+    // The union write: done + the current note together, so blur-vs-click
+    // request ordering converges on both fields either way.
+    const ok = await persistAttest(disputeId, { done: next, note });
     if (!ok) setFiledOverride((m) => ({ ...m, [disputeId]: !next }));
   };
 
@@ -384,6 +391,8 @@ export function CaseRail({
             );
           case "next-move": {
             const filedNow = filedOverride[s.move.disputeId] ?? s.move.regulator.attest.filed;
+            const attestNoteValue =
+              attestNoteDrafts[s.move.disputeId] ?? s.move.regulator.attest.note ?? "";
             return (
               <RailStep key={s.key} n={s.badge} title={s.title} sub={s.sub ?? undefined} last={last}>
                 <div className="space-y-2.5">
@@ -459,9 +468,15 @@ export function CaseRail({
                       <div className="mt-2 flex flex-wrap items-start gap-x-3 gap-y-2">
                         <input
                           type="text"
-                          defaultValue={s.move.regulator.attest.note ?? ""}
+                          value={attestNoteValue}
                           placeholder={s.move.regulator.attest.notePlaceholder}
                           maxLength={500}
+                          onChange={(e) =>
+                            setAttestNoteDrafts((m) => ({
+                              ...m,
+                              [s.move.disputeId]: e.target.value,
+                            }))
+                          }
                           onBlur={(e) => {
                             const v = e.target.value.trim();
                             if (v !== (s.move.regulator.attest.note ?? "")) {
@@ -472,7 +487,9 @@ export function CaseRail({
                         />
                         <button
                           type="button"
-                          onClick={() => void toggleFiled(s.move.disputeId, !filedNow)}
+                          onClick={() =>
+                            void toggleFiled(s.move.disputeId, !filedNow, attestNoteValue.trim())
+                          }
                           className={
                             filedNow
                               ? "inline-flex items-center gap-1.5 rounded-xl border border-emerald-300 bg-emerald-50 px-3.5 py-[7px] text-[12.5px] font-semibold text-emerald-700"
