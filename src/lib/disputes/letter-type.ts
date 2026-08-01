@@ -105,3 +105,11 @@ export function daysUntilLocal(iso: string, now: Date): number | null {
   if (!d) return null;
   return Math.round((startOfLocalDay(d) - startOfLocalDay(now)) / 86_400_000);
 }
+
+/** "2026-07-30" — the LOCAL calendar date of a timestamp (payload-safe form). */
+export function toLocalDateOnly(iso: string): string {
+  const d = parseLetterDate(iso);
+  if (!d) return iso.slice(0, 10);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}

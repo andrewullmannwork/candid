@@ -723,4 +723,26 @@ export const CASE_RAIL = {
     `Appeal sent${insurer ? ` to ${insurer}` : ""} · ${dateLabel}${certified ? " · certified mail" : ""}`,
   receipt4bProvider: (provider: string | null, dateLabel: string, certified: boolean): string =>
     `Dispute letter sent${provider ? ` to ${provider}` : ""} · ${dateLabel}${certified ? " · certified mail" : ""}`,
+
+  // ── Stage-8 "Your next move" (S299 phase 1b; mock Panel C, rulings 3/4/5) ──
+  // Renders per letter at stage `next` (letter offer + regulator card) and at
+  // resolved TERMINAL rungs (doors only — isTerminalRung). Card title reuses
+  // PACK_D_TITLE; suggested chip reuses PACK_D_SUGGESTED_CHIP; the filed
+  // attest reuses PACK_D_STEPS "packD:filed" verbatim. "Done here? Close the
+  // case" is DEFERRED (Andrew, S299) — no closed-case state exists yet; it
+  // lands with the Panel-D resolved fold.
+  nextMoveTitle: "Your next move",
+  nextMoveSubSaidNo: (counterparty: string): string =>
+    `${counterparty} said no. Two paths are open — you can take both.`,
+  nextMoveSubPaidPart: (counterparty: string): string =>
+    `${counterparty} paid only part. Two paths are open — you can take both.`,
+  nextMoveSubCounteroffer: (counterparty: string): string =>
+    `${counterparty} made a counteroffer. Two paths are open — you can take both.`,
+  startLetterCta: "Start the letter",
+  startLetterSubExternalReview: (loggedLabel: string | null): string =>
+    `An independent reviewer, not your insurer, decides.${loggedLabel ? ` Unlocked by the denial you logged ${loggedLabel}.` : ""}`,
+  regulatorLead: "Choose the regulator(s) based on which party wronged you.",
+  regulatorFoot:
+    "Gather your paper trail → file it → log the confirmation number. Your letters make the case.",
+  proChip: "Pro",
 } as const;

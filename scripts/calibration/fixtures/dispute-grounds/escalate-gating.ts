@@ -40,13 +40,17 @@ check("allowlist · rejects null", !isEscalationLetterType(null));
 }
 
 // ── tier gate: final_notice / external_review require Pro ─────────────────────
+// S299 (Andrew): the escalation Pro wall is REMOVED — PRO_LETTER_TYPES is
+// empty, so free users pass the tier gate on every rung. The gate MACHINERY
+// stays (these checks prove the flow-through); restoring the wall = re-adding
+// the types in letter-access.ts, at which point these expectations flip back.
 {
   const r = checkEscalateGate({ targetLetterType: "final_notice", isPro: false });
-  check("tier · final_notice free-user → 403", !r.ok && r.status === 403 && r.error === "subscription_required");
+  check("tier · final_notice free-user → ok (wall removed S299)", r.ok === true);
 }
 {
   const r = checkEscalateGate({ targetLetterType: "external_review", isPro: false, appealExhausted: { attested: true } });
-  check("tier · external_review free-user → 403 (before exhaustion)", !r.ok && r.status === 403 && r.error === "subscription_required");
+  check("tier · external_review free-user + exhaustion → ok (wall removed S299)", r.ok === true);
 }
 {
   const r = checkEscalateGate({ targetLetterType: "final_notice", isPro: true });
@@ -76,21 +80,26 @@ check("allowlist · rejects null", !isEscalationLetterType(null));
 // ── ordering: Pro checked before exhaustion (a free user never leaks the gate) ─
 {
   const r = checkEscalateGate({ targetLetterType: "external_review", isPro: false, appealExhausted: null });
-  check("ordering · free + unattested → 403 (tier first)", !r.ok && r.status === 403);
+  // S299: with the tier wall removed, a free unattested external_review now
+  // fails on EXHAUSTION (400) — proving the exhaustion gate survives the
+  // wall's removal (it must: ACA §2719 is law, not monetization).
+  check("ordering · free + unattested → 400 (exhaustion holds, wall removed)", !r.ok && r.status === 400 && r.error === "external_review_requires_exhaustion");
 }
 
 // ── letter-access module (single source of truth shared with generate) ───────
+// S299 (Andrew): PRO_LETTER_TYPES emptied — every rung is free; requiresPro
+// false across the board. Machinery proven intact by the Pro→allowed check.
 {
   const a = evaluateLetterAccess({ letterType: "final_notice", isPro: false });
   check(
-    "access · final_notice free → blocked + requiresPro + reason",
-    !a.allowed && a.requiresPro && a.reason === "subscription_required",
+    "access · final_notice free → allowed (wall removed S299)",
+    a.allowed && a.requiresPro === false,
   );
 }
-check("access · external_review free → blocked", !evaluateLetterAccess({ letterType: "external_review", isPro: false }).allowed);
+check("access · external_review free → allowed (wall removed S299)", evaluateLetterAccess({ letterType: "external_review", isPro: false }).allowed);
 check("access · final_notice Pro → allowed", evaluateLetterAccess({ letterType: "final_notice", isPro: true }).allowed);
 check("access · debt_validation free → allowed", evaluateLetterAccess({ letterType: "debt_validation", isPro: false }).allowed);
-check("access · letterRequiresPro(final_notice) === true", letterRequiresPro("final_notice"));
+check("access · letterRequiresPro(final_notice) === false (wall removed S299)", !letterRequiresPro("final_notice"));
 check("access · letterRequiresPro(debt_validation) === false", !letterRequiresPro("debt_validation"));
 check("access · letterRequiresPro(undefined) === false", !letterRequiresPro(undefined));
 

@@ -121,6 +121,10 @@ export interface ProjectedLetterStep {
   counterpartyName: string | null;
   /** Dispute-side "Mail it certified" attest (metadata.checklist.mailcert === true). */
   mailedCertified: boolean;
+  /** Pack-D filed attest (metadata.checklist["packD:filed"]) — S299 phase 1b. */
+  regulatorFiled: boolean;
+  /** Its confirmation note (metadata.checklistNotes["packD:filed"]); null when empty. */
+  regulatorFiledNote: string | null;
   outcome: { detail: OutcomeDetail; status: string; loggedAt: string | null } | null;
 }
 
@@ -352,6 +356,12 @@ function projectLetterStep(d: ProjectorDisputeRow): ProjectedLetterStep {
         ? collector.name
         : null,
     mailedCertified: checklist != null && checklist.mailcert === true,
+    regulatorFiled: checklist != null && checklist["packD:filed"] === true,
+    regulatorFiledNote: (() => {
+      const notes = meta.checklistNotes as Record<string, unknown> | null | undefined;
+      const n = notes?.["packD:filed"];
+      return typeof n === "string" && n.length > 0 ? n : null;
+    })(),
     outcome: outcomeDetail
       ? {
           detail: outcomeDetail,

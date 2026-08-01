@@ -326,7 +326,8 @@ const project = (
       metadata: {
         letterType: "debt_validation",
         collector: { name: "Cascade Recovery", address: null, originalCreditor: null },
-        checklist: { mailcert: true },
+        checklist: { mailcert: true, "packD:filed": true },
+        checklistNotes: { "packD:filed": "DOI #4417" },
       },
     }),
   ]);
@@ -335,6 +336,11 @@ const project = (
     collector.letters[0].counterpartyName === "Cascade Recovery",
   );
   check("s299 · mailedCertified from checklist attest", collector.letters[0].mailedCertified === true);
+  check("s299 · regulatorFiled from packD:filed attest", collector.letters[0].regulatorFiled === true);
+  check(
+    "s299 · regulatorFiledNote passthrough",
+    collector.letters[0].regulatorFiledNote === "DOI #4417",
+  );
 
   const insurerLetter = project(mkClaim(), [
     mkDispute({
@@ -348,6 +354,11 @@ const project = (
     insurerLetter.letters[0].counterpartyName === null,
   );
   check("s299 · mailedCertified defaults false", insurerLetter.letters[0].mailedCertified === false);
+  check(
+    "s299 · regulatorFiled defaults false/null",
+    insurerLetter.letters[0].regulatorFiled === false &&
+      insurerLetter.letters[0].regulatorFiledNote === null,
+  );
 }
 
 console.log(`\ncase-timeline projector fixture: ${pass} passed, ${fails.length} failed`);

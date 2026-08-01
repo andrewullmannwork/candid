@@ -230,6 +230,8 @@ export function CaseRail({
   onLogResponse,
   onSomethingElse,
   onUndoResult,
+  onStartNextLetter,
+  escalating,
 }: Omit<ComposeRailInput, "insurerNameByDispute" | "providerName" | "now"> & {
   insurerNameByDispute: Record<string, string>;
   providerName: string | null;
@@ -241,6 +243,12 @@ export function CaseRail({
   onSomethingElse: (disputeId: string) => void;
   /** The existing outcome-undo request + claim refetch; resolves false on failure. */
   onUndoResult: (disputeId: string) => Promise<boolean>;
+  /** Stage-8 offers (phase 1b): routes to the existing escalate flow —
+   *  external_review via the shared ExhaustionAttestModal, final_notice
+   *  direct, debt_validation via the shared CollectorModal. */
+  onStartNextLetter: (disputeId: string, targetLetterType: string) => void;
+  /** Escalate in flight (ClaimDetail state) — disables the offer buttons. */
+  escalating: boolean;
 }) {
   const router = useRouter();
   const [openSteps, setOpenSteps] = useState<Record<string, boolean>>({});
@@ -249,6 +257,9 @@ export function CaseRail({
   const [doorBusy, setDoorBusy] = useState<Record<string, boolean>>({});
   const [undoBusy, setUndoBusy] = useState<Record<string, boolean>>({});
   const [undoError, setUndoError] = useState<Record<string, boolean>>({});
+  // Pack-D filed attest (phase 1b) — optimistic with snap-back (S295 idiom);
+  // server truth arrives with the next projection refetch.
+  const [filedOverride, setFiledOverride] = useState<Record<string, boolean>>({});
 
   const steps: RailStepModel[] = composeRailSteps({
     letters,
@@ -283,6 +294,32 @@ export function CaseRail({
     } finally {
       setDoorBusy((m) => ({ ...m, [disputeId]: false }));
     }
+  };
+
+  // Pack-D filed attest — the EXISTING dispute checklist POST (one state,
+  // shared with the dispute-side Pack D until phase 3 retires that mount;
+  // writes also emit guide_step_attested ledger events via Phase 0).
+  const persistAttest = async (
+    disputeId: string,
+    body: { done?: boolean; note?: string },
+  ): Promise<boolean> => {
+    try {
+      const token = await getAuthToken();
+      if (!token) return false;
+      const res = await fetch(`/api/disputes/${disputeId}/checklist`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ key: "packD:filed", ...body }),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  };
+  const toggleFiled = async (disputeId: string, next: boolean) => {
+    setFiledOverride((m) => ({ ...m, [disputeId]: next }));
+    const ok = await persistAttest(disputeId, { done: next });
+    if (!ok) setFiledOverride((m) => ({ ...m, [disputeId]: !next }));
   };
 
   return (
@@ -344,6 +381,104 @@ export function CaseRail({
                 }
                 last={last}
               />
+            );
+          case "next-move":
+            return (
+              <RailStep key={s.key} n={s.badge} title={s.title} sub={s.sub ?? undefined} last={last}>
+                <div className="space-y-2.5">
+                  {s.move.letterOffer && (
+                    <div className="rounded-xl border border-gray-200 bg-white px-4 py-3.5">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="min-w-[14rem] flex-1">
+                          <div className="text-[14px] font-bold text-gray-900">
+                            {s.move.letterOffer.title}
+                          </div>
+                          {s.move.letterOffer.sub && (
+                            <div className="mt-0.5 text-[12.5px] text-gray-500">
+                              {s.move.letterOffer.sub}
+                            </div>
+                          )}
+                        </div>
+                        <div className="flex flex-shrink-0 items-center gap-2">
+                          {s.move.letterOffer.requiresPro && (
+                            <span className="inline-flex items-center rounded-full bg-purple-50 px-2.5 py-[3px] text-[12px] font-semibold text-purple-700 ring-1 ring-inset ring-purple-200">
+                              {s.move.letterOffer.proChip}
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onStartNextLetter(s.move.disputeId, s.move.letterOffer!.targetLetterType)
+                            }
+                            disabled={escalating}
+                            className="inline-flex items-center rounded-lg bg-blue-600 px-4 py-2 text-[13.5px] font-semibold text-white shadow-sm transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {s.move.letterOffer.cta}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  <div className="rounded-xl border border-gray-200 bg-white px-4 py-3.5">
+                    <div className="text-[14px] font-bold text-gray-900">{s.move.regulator.title}</div>
+                    <div className="mb-2.5 mt-0.5 text-[12.5px] text-gray-500">
+                      {s.move.regulator.lead}
+                    </div>
+                    <div className="flex flex-wrap gap-2.5">
+                      {s.move.regulator.doors.map((d) => (
+                        <a
+                          key={d.id}
+                          href={d.href}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className={
+                            "min-w-[190px] flex-1 rounded-[10px] border px-3 py-2.5 text-[13px] transition-colors hover:bg-gray-50 " +
+                            (d.chip ? "border-blue-200 bg-blue-50/40" : "border-gray-200 bg-white")
+                          }
+                        >
+                          <span className="flex flex-wrap items-center gap-1.5 font-bold text-gray-900">
+                            {d.name}
+                            {d.chip && (
+                              <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-[2px] text-[10.5px] font-semibold text-slate-600 ring-1 ring-inset ring-slate-200">
+                                {d.chip}
+                              </span>
+                            )}
+                          </span>
+                          <span className="mt-0.5 block text-[12px] text-gray-500">{d.desc}</span>
+                        </a>
+                      ))}
+                    </div>
+                    <div className="mt-3 border-t border-gray-100 pt-2.5">
+                      <label className="flex cursor-pointer items-start gap-2.5">
+                        <input
+                          type="checkbox"
+                          checked={filedOverride[s.move.disputeId] ?? s.move.regulator.attest.filed}
+                          onChange={(e) => void toggleFiled(s.move.disputeId, e.target.checked)}
+                          aria-label={s.move.regulator.attest.checkboxLabel}
+                          className="mt-0.5 h-[17px] w-[17px] rounded accent-emerald-600"
+                        />
+                        <span className="text-[13px] font-semibold text-gray-900">
+                          {s.move.regulator.attest.title}
+                        </span>
+                      </label>
+                      <input
+                        type="text"
+                        defaultValue={s.move.regulator.attest.note ?? ""}
+                        placeholder={s.move.regulator.attest.notePlaceholder}
+                        maxLength={500}
+                        onBlur={(e) => {
+                          const v = e.target.value.trim();
+                          if (v !== (s.move.regulator.attest.note ?? "")) {
+                            void persistAttest(s.move.disputeId, { note: v });
+                          }
+                        }}
+                        className="mt-2 w-full max-w-[320px] rounded-lg border border-gray-200 px-3 py-1.5 text-[12.5px] placeholder:text-gray-400"
+                      />
+                    </div>
+                    <div className="mt-2.5 text-[11.5px] text-gray-400">{s.move.regulator.foot}</div>
+                  </div>
+                </div>
+              </RailStep>
             );
           case "send-receipt":
             return (
