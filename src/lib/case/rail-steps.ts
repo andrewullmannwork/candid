@@ -33,7 +33,14 @@
  * Exercised by scripts/calibration/fixtures/case-timeline/rail-steps.ts.
  */
 import type { ProjectedLetterStep } from "@/lib/case/timeline-projector";
+import type { DisputeLetterType } from "@/lib/billing/types";
 import { OUTCOME_LABELS } from "@/lib/disputes/outcome-taxonomy";
+import {
+  LETTER_TYPE_LABELS,
+  formatLetterDateShort,
+  daysSinceLocal,
+  daysUntilLocal,
+} from "@/lib/disputes/letter-type";
 import { CASE_RAIL } from "@/lib/guides/pack-registry";
 
 export interface RailWaitCard {
@@ -102,25 +109,33 @@ export interface ComposeRailInput {
   /** Per-letter insurer display names (pinned plan), route-supplied. */
   insurerNameByDispute: Record<string, string>;
   providerName: string | null;
+  /**
+   * The CLIENT clock — calendars are the user's timezone (letter-type.ts
+   * rule). Injected so the fixture is deterministic; the projector's
+   * server-side output deliberately carries no day-counts (S299 lesson).
+   */
+  now: Date;
 }
 
-/** "Sep 29" — date-only strings parse as LOCAL midnight (projector semantics). */
-export function fmtRailDate(dateOrIso: string): string {
-  const day = dateOrIso.slice(0, 10);
-  const t = Date.parse(/^\d{4}-\d{2}-\d{2}$/.test(day) ? `${day}T00:00:00` : dateOrIso);
-  if (Number.isNaN(t)) return dateOrIso;
-  return new Date(t).toLocaleDateString("en-US", { month: "short", day: "numeric" });
-}
+/**
+ * "Sep 29" — the shared letter-date rule (letter-type.ts, S299): timestamps
+ * land on the user's LOCAL calendar; date-only strings pin to local midnight.
+ * Re-exported under the rail's name so consumers keep one import site.
+ */
+export const fmtRailDate = formatLetterDateShort;
 
-/** "external review" → the letter noun used by generic titles ("your external review letter"). */
+/** "billing dispute letter" — generic-title noun from the ONE label source. */
 function letterNoun(letterType: string): string {
-  return `${letterType.replace(/_/g, " ")} letter`;
+  const label =
+    LETTER_TYPE_LABELS[letterType as DisputeLetterType] ?? letterType.replace(/_/g, " ");
+  return `${label.toLowerCase()} letter`;
 }
 
-/** "External review letter" — generic receipt label. */
+/** "Billing Dispute letter" — generic receipt label from the same source. */
 function letterLabel(letterType: string): string {
-  const noun = letterNoun(letterType);
-  return noun.charAt(0).toUpperCase() + noun.slice(1);
+  const label =
+    LETTER_TYPE_LABELS[letterType as DisputeLetterType] ?? letterType.replace(/_/g, " ");
+  return `${label} letter`;
 }
 
 /** A non-primary letter renders its own send step (the primary's send is 4b). */
@@ -179,16 +194,22 @@ function sendTitle(l: ProjectedLetterStep): string {
 function buildWaitCard(
   l: ProjectedLetterStep,
   activeWaitCount: number,
+  now: Date,
 ): RailWaitCard {
-  const dated = l.deadlineType != null && l.responseDueDate != null && l.daysRemaining != null;
+  const daysSinceSent = l.latestSendAt != null ? daysSinceLocal(l.latestSendAt, now) : null;
+  const daysRemaining =
+    l.deadlineType != null && l.responseDueDate != null
+      ? daysUntilLocal(l.responseDueDate, now)
+      : null;
+  const dated = daysRemaining != null;
   const dateLabel = dated ? fmtRailDate(l.responseDueDate!) : null;
-  const overdue = dated && l.daysRemaining! < 0;
+  const overdue = dated && daysRemaining < 0;
   let countdownPct: number | null = null;
-  if (dated && l.daysSinceSent != null) {
+  if (dated && daysSinceSent != null) {
     if (overdue) countdownPct = 100;
     else {
-      const span = l.daysSinceSent + l.daysRemaining!;
-      const pct = span <= 0 ? 100 : Math.round((l.daysSinceSent / span) * 100);
+      const span = daysSinceSent + daysRemaining;
+      const pct = span <= 0 ? 100 : Math.round((daysSinceSent / span) * 100);
       countdownPct = Math.min(100, Math.max(2, pct));
     }
   }
@@ -200,8 +221,8 @@ function buildWaitCard(
         : null;
   return {
     disputeId: l.disputeId,
-    chipSentAgo: l.daysSinceSent != null ? CASE_RAIL.chipSentAgo(l.daysSinceSent) : null,
-    chipDeadline: dated ? CASE_RAIL.chipDeadline(dateLabel!, l.daysRemaining!) : null,
+    chipSentAgo: daysSinceSent != null ? CASE_RAIL.chipSentAgo(daysSinceSent) : null,
+    chipDeadline: dated ? CASE_RAIL.chipDeadline(dateLabel!, daysRemaining) : null,
     chipPause:
       !dated && l.letterType === "debt_validation" ? CASE_RAIL.chipCollectionPause : null,
     countdownPct,
@@ -226,7 +247,7 @@ function buildWaitCard(
 }
 
 export function composeRailSteps(input: ComposeRailInput): RailStepModel[] {
-  const { letters, primaryDisputeId, firstNumber } = input;
+  const { letters, primaryDisputeId, firstNumber, now } = input;
   const activeWaitCount = letters.filter((l) => l.stage === "awaiting").length;
 
   const anchored: Array<{ anchor: number; order: number; model: RailStepModel }> = [];
@@ -283,7 +304,7 @@ export function composeRailSteps(input: ComposeRailInput): RailStepModel[] {
             badge: "",
             title: waitTitle(l, input),
             sub: waitSub(l),
-            card: buildWaitCard(l, activeWaitCount),
+            card: buildWaitCard(l, activeWaitCount, now),
           },
         });
       } else {

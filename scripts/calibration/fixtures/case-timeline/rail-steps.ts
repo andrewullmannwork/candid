@@ -43,7 +43,14 @@ function check(name: string, cond: boolean, got?: unknown) {
 const NOW = new Date();
 const iso = (offsetDays: number, ms = 0) =>
   new Date(NOW.getTime() + offsetDays * 86_400_000 + ms).toISOString();
-const dateOnly = (offsetDays: number) => iso(offsetDays).slice(0, 10);
+// LOCAL-calendar date string (the letter-type.ts rule) — a UTC slice would
+// make the expected day-counts flake by ±1 depending on the run hour + tz.
+const dateOnly = (offsetDays: number) => {
+  const d = new Date(NOW.getTime() + offsetDays * 86_400_000);
+  d.setHours(0, 0, 0, 0);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+};
 
 const CLAIM = "11111111-1111-1111-1111-111111111111";
 const claimRow: ProjectorClaimRow = { id: CLAIM, created_at: iso(-30), metadata: null };
@@ -81,6 +88,7 @@ const compose = (
       firstNumber: 5,
       insurerNameByDispute,
       providerName: "Swedish Primary Care Ballard",
+      now: NOW,
     }),
   };
 };
@@ -285,6 +293,29 @@ const compose = (
   check("grammar · 1 day left", CASE_RAIL.chipDeadline("Sep 29", 1) === "Their deadline: Sep 29 · 1 day left");
   check("grammar · fmtRailDate", fmtRailDate("2026-09-29") === "Sep 29", fmtRailDate("2026-09-29"));
 
+  // TZ regression (the S299 "sent Jul 31 vs Jul 30" catch): calendars are the
+  // USER's — a send 1h before local midnight is "1 day ago" the next local
+  // morning regardless of its UTC date; a send just after local midnight is
+  // "today". A UTC-sliced derivation fails one of these in any non-UTC tz.
+  const localMidnight = new Date(NOW.getTime());
+  localMidnight.setHours(0, 0, 0, 0);
+  const lateLastNight = new Date(localMidnight.getTime() - 3_600_000).toISOString();
+  const earlyToday = new Date(localMidnight.getTime() + 60_000).toISOString();
+  const { steps: tzA } = compose([mkDispute({ status: "filed", sent_at: lateLastNight })], null);
+  const tzWa = tzA.find((s) => s.kind === "wait-active");
+  check(
+    "tz · pre-local-midnight send → Sent 1 day ago",
+    tzWa?.kind === "wait-active" && tzWa.card.chipSentAgo === "Sent 1 day ago",
+    tzWa?.kind === "wait-active" ? tzWa.card.chipSentAgo : tzWa?.kind,
+  );
+  const { steps: tzB } = compose([mkDispute({ status: "filed", sent_at: earlyToday })], null);
+  const tzWb = tzB.find((s) => s.kind === "wait-active");
+  check(
+    "tz · post-local-midnight send → Sent today",
+    tzWb?.kind === "wait-active" && tzWb.card.chipSentAgo === "Sent today",
+    tzWb?.kind === "wait-active" ? tzWb.card.chipSentAgo : tzWb?.kind,
+  );
+
   // Non-approved wait types omit what-happens-next (no invented promises).
   const provider = mkDispute({
     status: "filed",
@@ -295,8 +326,10 @@ const compose = (
   const pw = pSteps[0];
   check("omission · provider wait has no whn set", pw.kind === "wait-active" && pw.card.whn === null, pw.kind);
   check(
-    "omission · provider wait generic title",
-    pw.title === "Waiting on Swedish Primary Care Ballard — your overcharge letter",
+    // Noun comes from LETTER_TYPE_LABELS (one source, S299): overcharge's
+    // label is "Billing Dispute" → "your billing dispute letter".
+    "omission · provider wait generic title (label-sourced noun)",
+    pw.title === "Waiting on Swedish Primary Care Ballard — your billing dispute letter",
     pw.title,
   );
 }

@@ -11,12 +11,14 @@
  * next"), concurrent waits in chronological order, collapsed receipts for
  * sent/answered steps.
  *
- * Phase-1a action contract (Andrew-approved): the rail RENDERS + NAVIGATES —
- * "Log their response", "Something else happened", "Undo this result", and
- * "Open this letter" all route to the letter's dispute page, where those
- * actions live today (BillCard precedent; on-rail unification is phase 2,
- * ruling 7). The ONE write is the "Collection resumed anyway" door →
- * POST /api/claims/[claimId]/case-events (capture-only case event, ruling 6).
+ * Phase-1a action contract (Andrew, S299 E2E round): the wait-card options
+ * act INLINE on the claim page via the EXISTING machinery — "Log their
+ * response" opens the same OutcomeReportingModal the dispute page mounts,
+ * "Something else happened" opens the same CollectorModal → escalate route,
+ * "Undo this result" calls the same outcome-undo request, and the
+ * "Collection resumed anyway" door posts a capture-only case event (ruling
+ * 6). All four reuse dispute-side components/endpoints verbatim — zero new
+ * server machinery. "Open this letter" remains the one navigation.
  *
  * RailStep lives HERE (moved verbatim from ClaimDetail at S299) so the rail
  * chrome is importable without a module cycle — ClaimDetail imports CaseRail
@@ -225,17 +227,28 @@ export function CaseRail({
   firstNumber,
   claimId,
   getAuthToken,
-}: Omit<ComposeRailInput, "insurerNameByDispute" | "providerName"> & {
+  onLogResponse,
+  onSomethingElse,
+  onUndoResult,
+}: Omit<ComposeRailInput, "insurerNameByDispute" | "providerName" | "now"> & {
   insurerNameByDispute: Record<string, string>;
   providerName: string | null;
   claimId: string;
   getAuthToken: () => Promise<string | null>;
+  /** Opens the shared OutcomeReportingModal (ClaimDetail mounts it). */
+  onLogResponse: (disputeId: string) => void;
+  /** Opens the shared CollectorModal → escalate flow (ClaimDetail mounts it). */
+  onSomethingElse: (disputeId: string) => void;
+  /** The existing outcome-undo request + claim refetch; resolves false on failure. */
+  onUndoResult: (disputeId: string) => Promise<boolean>;
 }) {
   const router = useRouter();
   const [openSteps, setOpenSteps] = useState<Record<string, boolean>>({});
   const [whnOpen, setWhnOpen] = useState<Record<string, boolean>>({});
   const [doorLogged, setDoorLogged] = useState<Record<string, boolean>>({});
   const [doorBusy, setDoorBusy] = useState<Record<string, boolean>>({});
+  const [undoBusy, setUndoBusy] = useState<Record<string, boolean>>({});
+  const [undoError, setUndoError] = useState<Record<string, boolean>>({});
 
   const steps: RailStepModel[] = composeRailSteps({
     letters,
@@ -243,6 +256,8 @@ export function CaseRail({
     firstNumber,
     insurerNameByDispute,
     providerName,
+    // Client clock — calendars are the user's timezone (letter-type.ts rule).
+    now: new Date(),
   });
   if (steps.length === 0) return null;
 
@@ -282,11 +297,11 @@ export function CaseRail({
                   card={s.card}
                   whnOpen={whnOpen[s.key] ?? s.card.whn?.defaultOpen ?? false}
                   onWhnToggle={(open) => setWhnOpen((m) => ({ ...m, [s.key]: open }))}
-                  onLogResponse={() => goToLetter(s.card.disputeId)}
+                  onLogResponse={() => onLogResponse(s.card.disputeId)}
                   onDoor={() =>
                     s.card.door.kind === "collection_resumed"
                       ? logCollectionResumed(s.card.disputeId)
-                      : goToLetter(s.card.disputeId)
+                      : onSomethingElse(s.card.disputeId)
                   }
                   doorLogged={doorLogged[s.card.disputeId] ?? false}
                   doorBusy={doorBusy[s.card.disputeId] ?? false}
@@ -303,13 +318,28 @@ export function CaseRail({
                 sub={s.receipt ? <span className={receiptClass}>{s.receipt}</span> : undefined}
                 right={
                   s.undo ? (
-                    <button
-                      type="button"
-                      onClick={() => goToLetter(s.disputeId)}
-                      className="border-none bg-transparent p-0 text-[12px] text-gray-400 underline underline-offset-2 transition-colors hover:text-gray-600"
-                    >
-                      {CASE_RAIL.quietUndoResult}
-                    </button>
+                    <div className="flex flex-col items-start gap-1 sm:items-end">
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (undoBusy[s.disputeId]) return;
+                          setUndoBusy((m) => ({ ...m, [s.disputeId]: true }));
+                          setUndoError((m) => ({ ...m, [s.disputeId]: false }));
+                          const ok = await onUndoResult(s.disputeId);
+                          if (!ok) setUndoError((m) => ({ ...m, [s.disputeId]: true }));
+                          setUndoBusy((m) => ({ ...m, [s.disputeId]: false }));
+                        }}
+                        disabled={undoBusy[s.disputeId] ?? false}
+                        className="border-none bg-transparent p-0 text-[12px] text-gray-400 underline underline-offset-2 transition-colors hover:text-gray-600 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {CASE_RAIL.quietUndoResult}
+                      </button>
+                      {(undoError[s.disputeId] ?? false) && (
+                        <span className="text-[11.5px] text-red-600">
+                          {"Couldn't undo — please try again."}
+                        </span>
+                      )}
+                    </div>
                   ) : undefined
                 }
                 last={last}

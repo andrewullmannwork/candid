@@ -11,6 +11,7 @@ import { InlineSubscribePanel } from "@/components/billing/InlineSubscribePanel"
 import { downloadCaseFile } from "@/lib/casefile";
 import { disputeUrlForResult } from "@/lib/disputes/url";
 import { letterRecipientKind } from "@/lib/disputes";
+import { LETTER_TYPE_LABELS, parseLetterDate } from "@/lib/disputes/letter-type";
 import { isTerminalRung, suggestDoors } from "@/lib/guides/pack-registry";
 import { DisputeLetterHero } from "@/components/disputes/DisputeLetterHero";
 import { EvidenceStrengthModal } from "@/components/disputes/EvidenceStrengthModal";
@@ -2867,12 +2868,11 @@ function isSentStatus(status: string | null | undefined): boolean {
 
 function formatFiledDate(iso: string): string {
   try {
-    // S286 — date-only strings ("2026-06-02") parse as UTC midnight, which
-    // renders as the PREVIOUS day in US timezones (the on-page "Sent Jun 1"
-    // vs "Sent Jun 2" disagreement between the checklist and the old case
-    // card). Pin date-only values to LOCAL midnight; full ISO timestamps
-    // (sent_at) parse natively. Single formatter = one date truth per page.
-    const d = /^\d{4}-\d{2}-\d{2}$/.test(iso) ? new Date(`${iso}T00:00:00`) : new Date(iso);
+    // S286 rule, derivation shared since S299 (letter-type.ts parseLetterDate):
+    // date-only strings pin to LOCAL midnight; full ISO timestamps parse
+    // natively. One date truth across the dispute page AND the case rail.
+    const d = parseLetterDate(iso);
+    if (!d) return iso;
     return d.toLocaleDateString("en-US", {
       month: "short",
       day: "numeric",
@@ -2914,17 +2914,8 @@ function NextStep({ n, title, body }: { n: number; title: string; body: React.Re
   );
 }
 
-const LETTER_TYPE_LABELS: Record<DisputeLetter["letterType"], string> = {
-  insurance_appeal: "Appeal to Insurer",
-  overcharge: "Billing Dispute",
-  balance_billing: "Balance Billing Dispute",
-  duplicate_charge: "Duplicate Charge Dispute",
-  itemized_request: "Itemized Bill Request",
-  negotiation: "Self-Pay Negotiation",
-  final_notice: "Final Notice",
-  external_review: "External Review Request",
-  debt_validation: "Debt Validation",
-};
+// LETTER_TYPE_LABELS moved to @/lib/disputes/letter-type (S299) — one label
+// source shared with the case rail; imported above.
 
 // ── S292 (#7) — server `lineCostShare` row (the claim page's own cost-share
 // resolution per disputed line, projected by /api/disputes/[disputeId]) ────────

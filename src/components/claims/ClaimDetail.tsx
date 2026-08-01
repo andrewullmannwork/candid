@@ -23,6 +23,8 @@ import type { CostShareAssumption, CostShareOverrides } from "@/lib/claims/recov
 import { useFeatureFlag } from "@/lib/config/use-feature-flag";
 import { GuidedPhoneSteps, ShowFullStepButton, derivePhonePackState, type GuideStepState, type PhonePackState } from "@/components/claims/GuidedPhoneSteps";
 import { CaseRail, RailStep } from "@/components/claims/CaseRail";
+import { OutcomeReportingModal } from "@/components/disputes/OutcomeReportingModal";
+import { CollectorModal, type CollectorSubmit } from "@/components/disputes/CollectorModal";
 import { railHasExtension, fmtRailDate } from "@/lib/case/rail-steps";
 import type { ProjectedLetterStep } from "@/lib/case/timeline-projector";
 import { letterRecipientKind } from "@/lib/disputes";
@@ -536,6 +538,12 @@ export function ClaimDetail({
   // separately by case_timeline_v1; see mig 222).
   const caseRailFlag = useFeatureFlag("case_rail_v1");
   const [fourBFullOpen, setFourBFullOpen] = useState(false);
+  // S299 — the rail's inline actions (shared dispute-side modals; see the
+  // CaseRail mount + the modal mounts below).
+  const [railOutcomeDisputeId, setRailOutcomeDisputeId] = useState<string | null>(null);
+  const [railCollectorFromDisputeId, setRailCollectorFromDisputeId] = useState<string | null>(null);
+  const [railEscalating, setRailEscalating] = useState(false);
+  const [railActionError, setRailActionError] = useState<string | null>(null);
   // "Show full step" client state for the done-collapsed rail steps 1-2
   // (collapsed by default when done; expansion is throwaway, not persisted).
   const [assumpFullOpen, setAssumpFullOpen] = useState(false);
@@ -768,6 +776,63 @@ export function ClaimDetail({
     // chrome (state badge, recovery, unknown count) reflects the new coverage.
     if (onClaimUpdated) await onClaimUpdated();
   }, [data, refetchClaim, onClaimUpdated]);
+
+  // S299 — rail inline actions: the dispute page's own requests, reused
+  // VERBATIM (undo = /api/disputes/outcome with status "filed" +
+  // clearOutcomeDetail, the S266 contract; something-else = the collections
+  // escalate). After a mutation the claim refetches so the projection —
+  // the rail's one derivation — re-renders the new state.
+  const handleRailUndoResult = useCallback(
+    async (disputeId: string): Promise<boolean> => {
+      try {
+        const token = await getAuthToken();
+        if (!token) return false;
+        const res = await fetch(`/api/disputes/outcome`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ disputeId, status: "filed", clearOutcomeDetail: true }),
+        });
+        if (!res.ok) return false;
+        await refetchClaim();
+        if (onClaimUpdated) void onClaimUpdated();
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [getAuthToken, refetchClaim, onClaimUpdated],
+  );
+
+  const handleRailCollectorSubmit = useCallback(
+    async (input: CollectorSubmit) => {
+      if (!railCollectorFromDisputeId || railEscalating) return;
+      setRailEscalating(true);
+      setRailActionError(null);
+      try {
+        const token = await getAuthToken();
+        if (!token) throw new Error("not signed in");
+        const res = await fetch(`/api/disputes/${railCollectorFromDisputeId}/escalate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ targetLetterType: "debt_validation", ...input }),
+        });
+        if (!res.ok) throw new Error("escalate failed");
+        const result = await res.json();
+        setRailCollectorFromDisputeId(null);
+        if (result?.disputeId) {
+          // Dispute-side parity: the new letter needs review before send.
+          router.push(`/disputes?dispute=${result.disputeId}`);
+        } else {
+          await refetchClaim();
+        }
+      } catch {
+        setRailActionError("We couldn't create that letter. Please try again.");
+      } finally {
+        setRailEscalating(false);
+      }
+    },
+    [railCollectorFromDisputeId, railEscalating, getAuthToken, router, refetchClaim],
+  );
 
   // Cost-Share v2 (W3) — post ONE assumption correction, then refetch so the
   // engine recomputes live. Uses refetchClaim + onClaimUpdated (NOT
@@ -3288,16 +3353,61 @@ export function ClaimDetail({
           rendered from the projector via rail-steps. Numbering continues the
           prep rail (5 after the guided 4a/4b split). */}
       {isFlagged && railExtends && railTimeline && (
-        <CaseRail
-          letters={railTimeline.letters}
-          insurerNameByDispute={railTimeline.insurerNameByDispute}
-          providerName={providerName === "Unknown Provider" ? null : providerName}
-          primaryDisputeId={railPrimaryDisputeId}
-          firstNumber={guidedCtx ? 5 : railStepRecover + 1}
-          claimId={claimId}
-          getAuthToken={getAuthToken}
-        />
+        <>
+          {railActionError && (
+            <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              <span>{railActionError}</span>
+              <button
+                type="button"
+                onClick={() => setRailActionError(null)}
+                className="text-xs text-red-700 hover:text-red-900"
+                aria-label="Dismiss"
+              >
+                ✕
+              </button>
+            </div>
+          )}
+          <CaseRail
+            letters={railTimeline.letters}
+            insurerNameByDispute={railTimeline.insurerNameByDispute}
+            providerName={providerName === "Unknown Provider" ? null : providerName}
+            primaryDisputeId={railPrimaryDisputeId}
+            firstNumber={guidedCtx ? 5 : railStepRecover + 1}
+            claimId={claimId}
+            getAuthToken={getAuthToken}
+            onLogResponse={(id) => setRailOutcomeDisputeId(id)}
+            onSomethingElse={(id) => {
+              setRailActionError(null);
+              setRailCollectorFromDisputeId(id);
+            }}
+            onUndoResult={handleRailUndoResult}
+          />
+        </>
       )}
+      {/* S299 — the rail's inline-action modals: the dispute page's OWN
+          components mounted here (one modal source; zero new UI machinery).
+          Open state is settable only from the rail, so flag-OFF renders
+          neither. */}
+      <OutcomeReportingModal
+        open={railOutcomeDisputeId != null}
+        disputeId={railOutcomeDisputeId ?? ""}
+        defaultAmount={null}
+        onCancel={() => setRailOutcomeDisputeId(null)}
+        onSubmitted={() => {
+          setRailOutcomeDisputeId(null);
+          void (async () => {
+            await refetchClaim();
+            if (onClaimUpdated) void onClaimUpdated();
+          })();
+        }}
+        getIdToken={getAuthToken}
+      />
+      <CollectorModal
+        open={railCollectorFromDisputeId != null}
+        submitting={railEscalating}
+        onCancel={() => setRailCollectorFromDisputeId(null)}
+        onSubmit={handleRailCollectorSubmit}
+      />
 
       {billState === "needs_review" && !data.costShareBill && (() => {
         // Synthesize a "Specific blockers" list from line-item state so the

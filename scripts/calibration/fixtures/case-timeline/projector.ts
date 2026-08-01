@@ -313,53 +313,12 @@ const project = (
 }
 
 // ── 9 · S299 phase-1a per-letter display fields ─────────────────────────────
-// All rail clock math lives in the projector (one derivation): daysSinceSent
-// (date-only floor), daysRemaining (sentLetterMeta ceil semantics), amber,
-// counterpartyName (collector letters only), mailedCertified (checklist attest).
+// counterpartyName (collector letters only) + mailedCertified (checklist
+// attest). Deliberately NO day-count checks here: the projector carries no
+// calendars (it runs server-side in UTC while the user's calendar is local —
+// the S299 "sent Jul 31 vs Jul 30" lesson); day-math lives client-side and is
+// exercised in fixtures/case-timeline/rail-steps.ts with an injected clock.
 {
-  const dated = mkDispute({
-    status: "filed",
-    sent_at: iso(-6),
-    governing_deadline_date: dateOnly(54),
-    deadline_type: "plan_response",
-    metadata: { letterType: "insurance_appeal" },
-  });
-  const t = project(mkClaim(), [dated]);
-  const l = t.letters[0];
-  check("s299 · daysSinceSent = calendar floor (6)", l.daysSinceSent === 6, l.daysSinceSent);
-  check("s299 · daysRemaining = ceil (54)", l.daysRemaining === 54, l.daysRemaining);
-  check("s299 · amber false outside threshold", l.amber === false);
-  check(
-    "s299 · per-letter daysRemaining matches the case fold",
-    t.sentLetterMeta?.daysRemaining === l.daysRemaining,
-  );
-
-  const today = project(mkClaim(), [mkDispute({ status: "filed", sent_at: iso(0) })]);
-  check("s299 · sent today → daysSinceSent 0", today.letters[0].daysSinceSent === 0, today.letters[0].daysSinceSent);
-
-  const overdue = project(mkClaim(), [
-    mkDispute({
-      status: "filed",
-      sent_at: iso(-40),
-      governing_deadline_date: dateOnly(-3),
-      deadline_type: "plan_response",
-    }),
-  ]);
-  check(
-    "s299 · overdue → negative daysRemaining",
-    (overdue.letters[0].daysRemaining ?? 0) < 0,
-    overdue.letters[0].daysRemaining,
-  );
-  check("s299 · overdue is amber", overdue.letters[0].amber === true);
-
-  const draft = project(mkClaim(), [mkDispute({})]);
-  check(
-    "s299 · unsent letter has no clocks",
-    draft.letters[0].daysSinceSent === null &&
-      draft.letters[0].daysRemaining === null &&
-      draft.letters[0].amber === false,
-  );
-
   const collector = project(mkClaim(), [
     mkDispute({
       status: "filed",
