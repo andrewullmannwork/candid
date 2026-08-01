@@ -744,5 +744,8 @@ export const CASE_RAIL = {
   regulatorLead: "Choose the regulator(s) based on which party wronged you.",
   regulatorFoot:
     "Gather your paper trail → file it → log the confirmation number. Your letters make the case.",
+  /** Rail-side filed-note placeholder (Andrew verbatim, S299 1b E2E) — the
+   *  dispute-side PACK_D_STEPS row keeps its own until phase 3 retires it. */
+  filedNotePlaceholder: "Enter your confirmation number",
   proChip: "Pro",
 } as const;

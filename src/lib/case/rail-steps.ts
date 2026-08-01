@@ -398,12 +398,27 @@ export function composeRailSteps(input: ComposeRailInput): RailStepModel[] {
       l.outcome != null &&
       isTerminalRung({ letterType: l.letterType, status: l.outcome.status });
     if (l.stage === "next" || terminalResolved) {
-      const sns =
+      const snsRaw =
         l.stage === "next" && l.outcome
           ? suggestNextStep(l.letterType as DisputeLetterType, l.outcome.detail)
           : null;
+      // Offer suppression (Andrew, 1b E2E): once a letter of the suggested
+      // type EXISTS on the case it has its own rung/steps — a lingering
+      // start-offer would duplicate it. The step keeps the regulator card;
+      // the "two paths" sub retires with the offer (doors-only anatomy,
+      // same as the terminal rung).
+      const sns =
+        snsRaw &&
+        !letters.some(
+          (x) =>
+            x.disputeId !== l.disputeId &&
+            x.letterType === snsRaw.nextLetterType &&
+            x.stage !== "none",
+        )
+          ? snsRaw
+          : null;
       const counterparty = counterpartyFor(l, input);
-      const sub =
+      const subRaw =
         l.outcome?.detail === "denied_fully"
           ? CASE_RAIL.nextMoveSubSaidNo(counterparty)
           : l.outcome?.detail === "denied_partial" ||
@@ -412,6 +427,7 @@ export function composeRailSteps(input: ComposeRailInput): RailStepModel[] {
             : l.outcome?.detail === "denied_counteroffer"
               ? CASE_RAIL.nextMoveSubCounteroffer(counterparty)
               : null;
+      const sub = sns ? subRaw : null;
       const suggested = suggestDoors({
         track: l.recipientKind === "insurer" ? "insurer" : "provider",
         hasCollections: letters.some(
@@ -467,7 +483,7 @@ export function composeRailSteps(input: ComposeRailInput): RailStepModel[] {
                 key: "packD:filed",
                 title: filedStep?.title ?? "File it, then log the confirmation number",
                 checkboxLabel: filedStep?.checkboxLabel ?? "Complaint filed",
-                notePlaceholder: filedStep?.note?.placeholder ?? "Door · confirmation number",
+                notePlaceholder: CASE_RAIL.filedNotePlaceholder,
                 filed: l.regulatorFiled,
                 note: l.regulatorFiledNote,
               },

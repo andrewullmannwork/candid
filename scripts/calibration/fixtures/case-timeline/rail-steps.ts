@@ -420,10 +420,10 @@ const compose = (
       nm.move.regulator.lead === "Choose the regulator(s) based on which party wronged you.",
     );
     check(
-      "next-move · filed attest row (registry verbatim, defaults off)",
+      "next-move · filed attest row (registry label + Andrew's rail placeholder)",
       nm.move.regulator.attest.key === "packD:filed" &&
         nm.move.regulator.attest.checkboxLabel === "Complaint filed" &&
-        nm.move.regulator.attest.notePlaceholder === "Door · confirmation number" &&
+        nm.move.regulator.attest.notePlaceholder === "Enter your confirmation number" &&
         nm.move.regulator.attest.filed === false &&
         nm.move.regulator.attest.note === null,
     );
@@ -474,6 +474,11 @@ const compose = (
     "terminal · no letter offer (ladder exhausted)",
     tNm?.kind === "next-move" && tNm.move.letterOffer === null,
   );
+  check(
+    "terminal · doors-only drops the two-paths sub",
+    tNm?.kind === "next-move" && tNm.sub === null,
+    tNm?.kind === "next-move" ? tNm.sub : tNm?.kind,
+  );
   const tReceipt = tSteps.find((s) => s.kind === "wait-receipt");
   check(
     "terminal · receipt has no undo at stage resolved",
@@ -517,6 +522,39 @@ const compose = (
     fNm?.kind === "next-move" &&
       fNm.move.regulator.attest.filed === true &&
       fNm.move.regulator.attest.note === "DOI #4417",
+  );
+
+  // (g) Offer suppression (Andrew, 1b E2E): once the suggested letter EXISTS
+  // it has its own rung — the step keeps the doors only, sub retires, and the
+  // new letter contributes its own draft send-step.
+  const deniedAppeal = mkDispute({
+    status: "lost",
+    sent_at: iso(-6),
+    metadata: {
+      letterType: "insurance_appeal",
+      outcomeDetail: "denied_fully",
+      outcomeReportedAt: iso(-1),
+    },
+  });
+  const startedReview = mkDispute({
+    created_at: iso(0, -1000),
+    metadata: { letterType: "external_review" },
+  });
+  const { steps: gSteps } = compose([deniedAppeal, startedReview], deniedAppeal.id, {});
+  const gNm = gSteps.find((s) => s.kind === "next-move");
+  check(
+    "suppression · offer gone once the letter exists",
+    gNm?.kind === "next-move" && gNm.move.letterOffer === null,
+  );
+  check(
+    "suppression · two-paths sub retires with the offer",
+    gNm?.kind === "next-move" && gNm.sub === null,
+  );
+  check("suppression · doors remain", gNm?.kind === "next-move" && gNm.move.regulator.doors.length > 0);
+  check(
+    "suppression · the started letter gets its own draft step",
+    gSteps.some((s) => s.kind === "send-draft"),
+    gSteps.map((s) => s.kind),
   );
 
   // (f) A non-terminal open outcome (needs_info → stage awaiting) gets NO

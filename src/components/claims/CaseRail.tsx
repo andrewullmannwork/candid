@@ -382,7 +382,8 @@ export function CaseRail({
                 last={last}
               />
             );
-          case "next-move":
+          case "next-move": {
+            const filedNow = filedOverride[s.move.disputeId] ?? s.move.regulator.attest.filed;
             return (
               <RailStep key={s.key} n={s.badge} title={s.title} sub={s.sub ?? undefined} last={last}>
                 <div className="space-y-2.5">
@@ -449,37 +450,50 @@ export function CaseRail({
                       ))}
                     </div>
                     <div className="mt-3 border-t border-gray-100 pt-2.5">
-                      <label className="flex cursor-pointer items-start gap-2.5">
+                      <div className="text-[13px] font-semibold text-gray-900">
+                        {s.move.regulator.attest.title}
+                      </div>
+                      {/* Log input + attest button — the Pack A′ row anatomy
+                          (Andrew, 1b E2E: match "work it by phone" + the
+                          "I made the call" button). */}
+                      <div className="mt-2 flex flex-wrap items-start gap-x-3 gap-y-2">
                         <input
-                          type="checkbox"
-                          checked={filedOverride[s.move.disputeId] ?? s.move.regulator.attest.filed}
-                          onChange={(e) => void toggleFiled(s.move.disputeId, e.target.checked)}
-                          aria-label={s.move.regulator.attest.checkboxLabel}
-                          className="mt-0.5 h-[17px] w-[17px] rounded accent-emerald-600"
+                          type="text"
+                          defaultValue={s.move.regulator.attest.note ?? ""}
+                          placeholder={s.move.regulator.attest.notePlaceholder}
+                          maxLength={500}
+                          onBlur={(e) => {
+                            const v = e.target.value.trim();
+                            if (v !== (s.move.regulator.attest.note ?? "")) {
+                              void persistAttest(s.move.disputeId, { note: v });
+                            }
+                          }}
+                          className="min-w-[220px] flex-1 rounded-lg border border-gray-200 px-3 py-[7px] text-[12.5px] text-gray-800 placeholder:text-gray-400 focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-100"
                         />
-                        <span className="text-[13px] font-semibold text-gray-900">
-                          {s.move.regulator.attest.title}
-                        </span>
-                      </label>
-                      <input
-                        type="text"
-                        defaultValue={s.move.regulator.attest.note ?? ""}
-                        placeholder={s.move.regulator.attest.notePlaceholder}
-                        maxLength={500}
-                        onBlur={(e) => {
-                          const v = e.target.value.trim();
-                          if (v !== (s.move.regulator.attest.note ?? "")) {
-                            void persistAttest(s.move.disputeId, { note: v });
+                        <button
+                          type="button"
+                          onClick={() => void toggleFiled(s.move.disputeId, !filedNow)}
+                          className={
+                            filedNow
+                              ? "inline-flex items-center gap-1.5 rounded-xl border border-emerald-300 bg-emerald-50 px-3.5 py-[7px] text-[12.5px] font-semibold text-emerald-700"
+                              : "inline-flex items-center gap-1.5 rounded-xl border-[1.5px] border-blue-400 bg-white px-3.5 py-[6.5px] text-[12.5px] font-semibold text-blue-700 transition-colors hover:bg-blue-50"
                           }
-                        }}
-                        className="mt-2 w-full max-w-[320px] rounded-lg border border-gray-200 px-3 py-1.5 text-[12.5px] placeholder:text-gray-400"
-                      />
+                        >
+                          {s.move.regulator.attest.checkboxLabel}
+                          {filedNow && (
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                              <path d="M5 13l4 4L19 7" />
+                            </svg>
+                          )}
+                        </button>
+                      </div>
                     </div>
                     <div className="mt-2.5 text-[11.5px] text-gray-400">{s.move.regulator.foot}</div>
                   </div>
                 </div>
               </RailStep>
             );
+          }
           case "send-receipt":
             return (
               <RailStep
