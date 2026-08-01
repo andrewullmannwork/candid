@@ -55,7 +55,12 @@ export interface LetterViewProps {
     postalCode?: string | null;
   } | null;
   /** §0.9 rule 4 stack (server-banked; newest last). */
-  versions: Array<{ body: string; sentAt: string; unsentAt?: string }>;
+  versions: Array<{
+    body: string;
+    sentAt: string;
+    unsentAt?: string;
+    collector?: { name?: string; address?: string | null } | null;
+  }>;
   /** Present while stage `awaiting` — drives the pointer card's deadline line. */
   waitingDueLabel: string | null;
   /** §0.9b guard — true ONLY at stage `awaiting` (no outcome logged). */
@@ -72,8 +77,15 @@ function letterLabel(letterType: string): string {
 export function LetterView(p: LetterViewProps) {
   const router = useRouter();
   const goClaim = () => router.push(`/claim?claim=${p.claimId}`);
+  // The recipient AS MAILED (S299): the latest live sent version banks its
+  // collector at send time — the sent view reads THAT, so a post-send
+  // metadata mutation (the "Test" clobber) can never re-address a mailed
+  // letter's page. Legacy sends (no banked version) fall back to current
+  // metadata.
+  const sentCollector =
+    [...p.versions].reverse().find((v) => v.unsentAt == null)?.collector ?? p.collector;
   const counterparty =
-    p.collector?.name ?? p.insurerName ?? p.providerName ?? null;
+    sentCollector?.name ?? p.insurerName ?? p.providerName ?? null;
   const sentLabel = fmtRailDate(p.sentAtIso);
   const addr = p.appealsAddress;
   const addrLines = addr
@@ -139,11 +151,11 @@ export function LetterView(p: LetterViewProps) {
           <div className="mb-1 text-[10.5px] font-bold uppercase tracking-[0.05em] text-gray-400">
             Sent to
           </div>
-          {p.collector?.name ? (
+          {sentCollector?.name ? (
             <>
-              {p.collector.name}
-              {p.collector.address ? (
-                <span className="block text-gray-500">{p.collector.address}</span>
+              {sentCollector.name}
+              {sentCollector.address ? (
+                <span className="block text-gray-500">{sentCollector.address}</span>
               ) : null}
             </>
           ) : (

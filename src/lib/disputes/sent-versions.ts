@@ -24,6 +24,14 @@ export interface SentVersionEntry {
   sentAt: string;
   /** Present when this version was unsent — never mailed (§0.9b label). */
   unsentAt?: string;
+  /**
+   * The recipient AS MAILED (S299 E2E: current metadata.collector was
+   * clobbered to "Test" after send while the mailed body said "Cascade
+   * Recovery" — the sent VIEW must read the artifact's own recipient, one
+   * truth per version). Absent on legacy sends → readers fall back to
+   * current metadata.
+   */
+  collector?: { name?: string; address?: string | null } | null;
 }
 
 function entries(meta: Record<string, unknown> | null | undefined): SentVersionEntry[] {
@@ -54,14 +62,20 @@ export function bankSentVersion(
   meta: Record<string, unknown> | null | undefined,
   body: string,
   sentAtIso: string,
+  collector?: { name?: string; address?: string | null } | null,
 ): Record<string, unknown> {
   const base = { ...(meta ?? {}) };
   const stack = entries(base);
   const last = stack[stack.length - 1];
+  const entry: SentVersionEntry = {
+    body,
+    sentAt: sentAtIso,
+    ...(collector != null ? { collector } : {}),
+  };
   const next =
     last && last.unsentAt == null && last.body === body
-      ? [...stack.slice(0, -1), { ...last, sentAt: sentAtIso }]
-      : [...stack, { body, sentAt: sentAtIso }];
+      ? [...stack.slice(0, -1), { ...last, ...entry }]
+      : [...stack, entry];
   return { ...base, sentVersions: next };
 }
 

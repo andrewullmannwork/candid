@@ -63,6 +63,19 @@ check("read · partial entries filtered", readSentVersions({ sentVersions: [{ bo
 const merged = bankSentVersion({ letterType: "insurance_appeal" }, "B", T1);
 check("bank · preserves sibling metadata", merged.letterType === "insurance_appeal");
 
+// Recipient-as-mailed (S299 E2E "Test" clobber): the version banks its
+// collector at send time; readers prefer it over mutable current metadata.
+const withRecipient = bankSentVersion(null, "B", T1, { name: "Cascade Recovery", address: null });
+check(
+  "bank · collector banked as mailed",
+  readSentVersions(withRecipient)[0].collector?.name === "Cascade Recovery",
+);
+const noRecipient = bankSentVersion(null, "B", T1);
+check(
+  "bank · absent collector stays absent (legacy fallback path)",
+  readSentVersions(noRecipient)[0].collector === undefined,
+);
+
 console.log(`\nsent-versions fixture: ${pass} passed, ${fails.length} failed`);
 if (fails.length) {
   console.log(fails.join("\n"));

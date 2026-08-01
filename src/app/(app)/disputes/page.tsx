@@ -289,7 +289,12 @@ function DisputesContent() {
     providerName: string | null;
   } | null>(null);
   const [sentVersions, setSentVersions] = useState<
-    Array<{ body: string; sentAt: string; unsentAt?: string }>
+    Array<{
+      body: string;
+      sentAt: string;
+      unsentAt?: string;
+      collector?: { name?: string; address?: string | null } | null;
+    }>
   >([]);
   const [letterCollector, setLetterCollector] = useState<{
     name?: string;
@@ -518,7 +523,12 @@ function DisputesContent() {
       } | null) ?? null,
     );
     setSentVersions(
-      (data.sentVersions as Array<{ body: string; sentAt: string; unsentAt?: string }>) ?? [],
+      (data.sentVersions as Array<{
+        body: string;
+        sentAt: string;
+        unsentAt?: string;
+        collector?: { name?: string; address?: string | null } | null;
+      }>) ?? [],
     );
     setLetterCollector(
       (data.collector as { name?: string; address?: string | null } | null) ?? null,

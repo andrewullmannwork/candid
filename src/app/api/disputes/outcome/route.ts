@@ -338,6 +338,10 @@ export async function POST(req: NextRequest) {
                 (existing.metadata as Record<string, unknown> | null) ?? null,
                 (existing.letter_content as string) ?? "",
                 sentAt.toISOString(),
+                // Recipient AS MAILED (one truth per version — S299).
+                (((existing.metadata as Record<string, unknown> | null)
+                  ?.collector as { name?: string; address?: string | null } | undefined) ??
+                  null),
               ),
             })
             .eq("id", disputeId);
