@@ -44,3 +44,64 @@ export function resolveLetterTypeFromDispute(dispute: {
       return "overcharge";
   }
 }
+
+// ── Letter display semantics (S299) — labels + the ONE letter-date rule ─────
+//
+// LETTER_TYPE_LABELS moved here from the disputes page (page-local since the
+// v2 build) so the case rail and the dispute page share one label source —
+// the same drift class the resolver consolidation above killed.
+//
+// Date rule (S286 formatFiledDate, promoted repo-wide at S299): date-only
+// strings ("2026-09-29" — governing deadlines, resolution dates) pin to LOCAL
+// midnight (UTC-midnight parsing renders the PREVIOUS day in US timezones);
+// full ISO timestamps (sent_at, outcomeReportedAt) parse natively and land on
+// the user's LOCAL calendar. Calendar math is CLIENT-side only — a server
+// computes calendars in ITS timezone (UTC on Vercel), which is exactly how
+// the rail said "sent Jul 31" while the dispute page said "sent Jul 30" for
+// the same send (S299 E2E catch, Andrew).
+
+export const LETTER_TYPE_LABELS: Record<DisputeLetterType, string> = {
+  insurance_appeal: "Appeal to Insurer",
+  overcharge: "Billing Dispute",
+  balance_billing: "Balance Billing Dispute",
+  duplicate_charge: "Duplicate Charge Dispute",
+  itemized_request: "Itemized Bill Request",
+  negotiation: "Self-Pay Negotiation",
+  final_notice: "Final Notice",
+  external_review: "External Review Request",
+  debt_validation: "Debt Validation",
+};
+
+/** The one parse rule: date-only → LOCAL midnight; timestamps → native. */
+export function parseLetterDate(iso: string): Date | null {
+  const t = /^\d{4}-\d{2}-\d{2}$/.test(iso) ? Date.parse(`${iso}T00:00:00`) : Date.parse(iso);
+  return Number.isNaN(t) ? null : new Date(t);
+}
+
+/** "Sep 29" — the case rail's short date label. */
+export function formatLetterDateShort(iso: string): string {
+  const d = parseLetterDate(iso);
+  if (!d) return iso;
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+/** Local start-of-day in ms (DST-safe via setHours). */
+function startOfLocalDay(d: Date): number {
+  const c = new Date(d.getTime());
+  c.setHours(0, 0, 0, 0);
+  return c.getTime();
+}
+
+/** Local-calendar days since `iso` (0 = same local day, 1 = yesterday). */
+export function daysSinceLocal(iso: string, now: Date): number | null {
+  const d = parseLetterDate(iso);
+  if (!d) return null;
+  return Math.round((startOfLocalDay(now) - startOfLocalDay(d)) / 86_400_000);
+}
+
+/** Local-calendar days until `iso` (0 = today; negative = passed). */
+export function daysUntilLocal(iso: string, now: Date): number | null {
+  const d = parseLetterDate(iso);
+  if (!d) return null;
+  return Math.round((startOfLocalDay(d) - startOfLocalDay(now)) / 86_400_000);
+}

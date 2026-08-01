@@ -113,6 +113,14 @@ export interface ProjectedLetterStep {
   /** Parity-exact responseDueDate (governing ?? sent+30d, date-only). */
   responseDueDate: string | null;
   deadlineType: string | null;
+  // ── S299 phase-1a additive display fields. Deliberately NO day-counts here:
+  // the projector runs server-side (UTC on Vercel), and calendars belong to
+  // the USER's timezone — day-math lives client-side in rail-steps via the
+  // shared letter-type.ts date rule (the S299 "sent Jul 31 vs Jul 30" lesson).
+  /** Collector display name (metadata.collector.name) on collector letters; null otherwise. */
+  counterpartyName: string | null;
+  /** Dispute-side "Mail it certified" attest (metadata.checklist.mailcert === true). */
+  mailedCertified: boolean;
   outcome: { detail: OutcomeDetail; status: string; loggedAt: string | null } | null;
 }
 
@@ -306,6 +314,7 @@ export function deriveResponseDueDate(d: ProjectorDisputeRow): string | null {
 function projectLetterStep(d: ProjectorDisputeRow): ProjectedLetterStep {
   const meta = d.metadata ?? {};
   const letterType = resolveLetterType(d);
+  const recipientKind = letterRecipientKind(letterType);
   const outcomeDetail =
     typeof meta.outcomeDetail === "string" && isOutcomeDetail(meta.outcomeDetail)
       ? meta.outcomeDetail
@@ -315,10 +324,12 @@ function projectLetterStep(d: ProjectorDisputeRow): ProjectedLetterStep {
   const hasNextStep = outcomeDetail
     ? suggestNextStep(letterType as DisputeLetterType, outcomeDetail) != null
     : false;
+  const collector = meta.collector as { name?: unknown } | null | undefined;
+  const checklist = meta.checklist as Record<string, unknown> | null | undefined;
   return {
     disputeId: d.id,
     letterType,
-    recipientKind: letterRecipientKind(letterType),
+    recipientKind,
     startAt: d.created_at,
     stage: computeCaseStage({
       status: d.status,
@@ -332,6 +343,15 @@ function projectLetterStep(d: ProjectorDisputeRow): ProjectedLetterStep {
     redraftCount: 0,
     responseDueDate: deriveResponseDueDate(d),
     deadlineType: d.deadline_type,
+    counterpartyName:
+      recipientKind === "collector" &&
+      collector != null &&
+      typeof collector === "object" &&
+      typeof collector.name === "string" &&
+      collector.name.length > 0
+        ? collector.name
+        : null,
+    mailedCertified: checklist != null && checklist.mailcert === true,
     outcome: outcomeDetail
       ? {
           detail: outcomeDetail,

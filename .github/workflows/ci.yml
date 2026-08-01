@@ -71,6 +71,16 @@ jobs:
         # synthesis exclusions (deadline_lapsed / followup_sent are cron-owned).
         run: npx tsx scripts/calibration/fixtures/case-timeline/projector.ts
 
+      - name: Case-timeline rail composition fixture (S299 phase 1a)
+        # The extension rail's contract — chronological numbering after 4b
+        # (send steps at row birth, waits at latest send, primary send never
+        # duplicated), stage→step-kind mapping via the stage machine, the
+        # APPROVED copy verbatim (titles/chips/doors/whn incl. overdue +
+        # day-grammar variants), dated-furniture-keys-on-deadlineType (the
+        # sent+30d fallback is never asserted as a deadline), countdown %,
+        # and the sole-active-wait default-open rule.
+        run: npx tsx scripts/calibration/fixtures/case-timeline/rail-steps.ts
+
       - name: Canonical link is a pair (S292 / mig 218)
         # Fails the build if any code writes insurance_plans.canonical_plan_id
         # without canonical_match_confidence. An unscored link reads as UNKNOWN to

@@ -53,6 +53,26 @@ export function isOutcomeDetail(v: unknown): v is OutcomeDetail {
 }
 
 /**
+ * Display labels — ONE source for every surface (S299). The outcome modal's
+ * options and the case rail's logged-response receipts both import from here;
+ * a second copy in the rail would be the same drift class the S298
+ * letter-type consolidation killed. `collections` is included so receipts on
+ * a collections-outcome row render (the modal itself never offers it — it
+ * routes through the dedicated "Sent to collections" entry).
+ */
+export const OUTCOME_LABELS: Record<OutcomeDetail, string> = {
+  resolved_win: "Resolved — they approved it / paid in full",
+  denied_partial: "Partially paid — less than the billed amount",
+  denied_some_covered: "Covered some services, denied others",
+  denied_counteroffer: "They made a counteroffer",
+  denied_fully: "Fully denied — no payment",
+  needs_info: "They asked for more information",
+  no_response: "No response yet",
+  new_problem: "A new problem came up",
+  collections: "Sent to collections",
+};
+
+/**
  * Coarse status for the existing `dispute_outcomes.status` column.
  *
  * TERMINAL (won/lost/settled — in persist.ts RESOLVED_STATUSES → cancels pending

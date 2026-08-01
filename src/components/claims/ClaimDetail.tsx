@@ -22,8 +22,13 @@ import { AddPlanDetailsModal } from "@/components/claims/AddPlanDetailsModal";
 import type { CostShareAssumption, CostShareOverrides } from "@/lib/claims/recovery-math";
 import { useFeatureFlag } from "@/lib/config/use-feature-flag";
 import { GuidedPhoneSteps, ShowFullStepButton, derivePhonePackState, type GuideStepState, type PhonePackState } from "@/components/claims/GuidedPhoneSteps";
+import { CaseRail, RailStep } from "@/components/claims/CaseRail";
+import { OutcomeReportingModal } from "@/components/disputes/OutcomeReportingModal";
+import { CollectorModal, type CollectorSubmit } from "@/components/disputes/CollectorModal";
+import { railHasExtension, fmtRailDate } from "@/lib/case/rail-steps";
+import type { ProjectedLetterStep } from "@/lib/case/timeline-projector";
 import { letterRecipientKind } from "@/lib/disputes";
-import { GUIDE_4B, GUIDE_CHROME, PHONE_OUTCOME, type GuideFillContext, type GuideFinding } from "@/lib/guides/pack-registry";
+import { CASE_RAIL, GUIDE_4B, GUIDE_CHROME, PHONE_OUTCOME, type GuideFillContext, type GuideFinding } from "@/lib/guides/pack-registry";
 
 interface CodeIdentityState {
   identityId: string | null;
@@ -195,6 +200,17 @@ interface ClaimData {
   claim: Record<string, unknown>;
   lineItems: LineItem[];
   disputes: Array<{ id: string; dispute_type: string; status: string; amount_disputed: number; amount_recovered: number; isStale?: boolean; chargeCount?: number }>;
+  // S299 timeline unification phase 1a — attached by the claim GET ONLY when
+  // case_rail_v1 is ON (absent = today's payload, byte-identical). history[]
+  // is deliberately omitted until phase 2 renders it.
+  caseTimeline?: {
+    letters: ProjectedLetterStep[];
+    waitingCount: number;
+    soonestResponseDue: { date: string; disputeId: string } | null;
+    sentLetterMeta: { responseDueDate: string | null; daysRemaining: number | null; amber: boolean } | null;
+    /** Per-letter insurer display names (pinned plan), for wait titles. */
+    insurerNameByDispute: Record<string, string>;
+  };
   relatedClaims: Array<{ id: string; date_of_service: string; status: string; total_billed: number; provider_name: string | null }>;
   // S132 iter-6 Phase 1 — slugs present in user's plan_covered_services for
   // this claim's plan_id. Drives CategoryCorrectionModal filtering + best-
@@ -518,6 +534,16 @@ export function ClaimDetail({
   // Guided Steps v1 (S297) — one flag gates the phone subflow AND the done-
   // step rail collapse. OFF (or still loading) = today's page, byte-identical.
   const guidedStepsFlag = useFeatureFlag("guided_steps_v1");
+  // S299 phase 1a — the extended rail's UI flag (the event spine is gated
+  // separately by case_timeline_v1; see mig 222).
+  const caseRailFlag = useFeatureFlag("case_rail_v1");
+  const [fourBFullOpen, setFourBFullOpen] = useState(false);
+  // S299 — the rail's inline actions (shared dispute-side modals; see the
+  // CaseRail mount + the modal mounts below).
+  const [railOutcomeDisputeId, setRailOutcomeDisputeId] = useState<string | null>(null);
+  const [railCollectorFromDisputeId, setRailCollectorFromDisputeId] = useState<string | null>(null);
+  const [railEscalating, setRailEscalating] = useState(false);
+  const [railActionError, setRailActionError] = useState<string | null>(null);
   // "Show full step" client state for the done-collapsed rail steps 1-2
   // (collapsed by default when done; expansion is throwaway, not persisted).
   const [assumpFullOpen, setAssumpFullOpen] = useState(false);
@@ -750,6 +776,63 @@ export function ClaimDetail({
     // chrome (state badge, recovery, unknown count) reflects the new coverage.
     if (onClaimUpdated) await onClaimUpdated();
   }, [data, refetchClaim, onClaimUpdated]);
+
+  // S299 — rail inline actions: the dispute page's own requests, reused
+  // VERBATIM (undo = /api/disputes/outcome with status "filed" +
+  // clearOutcomeDetail, the S266 contract; something-else = the collections
+  // escalate). After a mutation the claim refetches so the projection —
+  // the rail's one derivation — re-renders the new state.
+  const handleRailUndoResult = useCallback(
+    async (disputeId: string): Promise<boolean> => {
+      try {
+        const token = await getAuthToken();
+        if (!token) return false;
+        const res = await fetch(`/api/disputes/outcome`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ disputeId, status: "filed", clearOutcomeDetail: true }),
+        });
+        if (!res.ok) return false;
+        await refetchClaim();
+        if (onClaimUpdated) void onClaimUpdated();
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [getAuthToken, refetchClaim, onClaimUpdated],
+  );
+
+  const handleRailCollectorSubmit = useCallback(
+    async (input: CollectorSubmit) => {
+      if (!railCollectorFromDisputeId || railEscalating) return;
+      setRailEscalating(true);
+      setRailActionError(null);
+      try {
+        const token = await getAuthToken();
+        if (!token) throw new Error("not signed in");
+        const res = await fetch(`/api/disputes/${railCollectorFromDisputeId}/escalate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ targetLetterType: "debt_validation", ...input }),
+        });
+        if (!res.ok) throw new Error("escalate failed");
+        const result = await res.json();
+        setRailCollectorFromDisputeId(null);
+        if (result?.disputeId) {
+          // Dispute-side parity: the new letter needs review before send.
+          router.push(`/disputes?dispute=${result.disputeId}`);
+        } else {
+          await refetchClaim();
+        }
+      } catch {
+        setRailActionError("We couldn't create that letter. Please try again.");
+      } finally {
+        setRailEscalating(false);
+      }
+    },
+    [railCollectorFromDisputeId, railEscalating, getAuthToken, router, refetchClaim],
+  );
 
   // Cost-Share v2 (W3) — post ONE assumption correction, then refetch so the
   // engine recomputes live. Uses refetchClaim + onClaimUpdated (NOT
@@ -1266,6 +1349,17 @@ export function ClaimDetail({
   // there while its rail still shows those steps outstanding. Cancelled drafts
   // don't count — the letter has to actually exist.
   const hasDraftedDispute = data.disputes.some((d) => d.status !== "cancelled");
+  // S299 phase 1a — the extended rail (projection attached by the GET only
+  // when case_rail_v1 is ON). The PRIMARY letter is the one 4b renders — its
+  // send step is never duplicated on the extension (rail-steps contract).
+  const railTimeline = caseRailFlag.enabled ? (data.caseTimeline ?? null) : null;
+  const railPrimaryDisputeId =
+    railTimeline?.letters.find((l) => l.stage !== "none")?.disputeId ?? null;
+  const railPrimaryLetter =
+    railTimeline?.letters.find((l) => l.disputeId === railPrimaryDisputeId) ?? null;
+  const railExtends =
+    railTimeline != null && railHasExtension(railTimeline.letters, railPrimaryDisputeId);
+  const railPrimarySent = railExtends && railPrimaryLetter?.latestSendAt != null;
 
   // ── Guided Steps v1 (S297) ─────────────────────────────────────────────────
   const guidedOn = guidedStepsFlag.enabled;
@@ -1386,12 +1480,12 @@ export function ClaimDetail({
 
   // Disputes list — step 4 body on flagged bills, bottom "Disputes" section
   // otherwise. Defined once so both placements render identically.
-  const disputesListNode =
-    data.disputes.length > 0 ? (
+  const disputesListNodeFor = (list: ClaimData["disputes"]) =>
+    list.length > 0 ? (
         <div className="mb-4">
           <h3 className="text-sm font-semibold text-gray-900 mb-2">Disputes</h3>
           <div className="space-y-2">
-            {data.disputes.map((d) => (
+            {list.map((d) => (
               <DisputeRow
                 key={d.id}
                 dispute={d}
@@ -1415,6 +1509,7 @@ export function ClaimDetail({
           </button>
         </div>
     ) : null;
+  const disputesListNode = disputesListNodeFor(data.disputes);
 
   // Step-4 recover panel + drafted cards — ONE builder for the flag-OFF step 4
   // AND the guided 4b (S297). muted=true is 4b's inactive treatment (white bg,
@@ -1423,7 +1518,13 @@ export function ClaimDetail({
   // letter generation); muted=false emits today's classes byte-identically.
   const recoverBranchNode = (muted: boolean) =>
     data.disputes.length > 0 ? (
-      disputesListNode
+      // S299 — when the extension rail owns the escalated letters, 4b lists
+      // only the primary letter's card (rail OFF → full list, byte-identical).
+      railExtends && railPrimaryDisputeId != null ? (
+        disputesListNodeFor(data.disputes.filter((d) => d.id === railPrimaryDisputeId))
+      ) : (
+        disputesListNode
+      )
     ) : (
       <div className={`mb-4 flex flex-col gap-4 rounded-[18px] border ${muted ? "border-gray-200 bg-white" : "border-blue-200 bg-gradient-to-br from-blue-50 to-white"} px-6 py-5 sm:-ml-[43px] sm:flex-row sm:items-center sm:justify-between`}>
         <div className="max-w-[50ch] text-[13px] leading-[1.55] text-gray-600">
@@ -1548,6 +1649,18 @@ export function ClaimDetail({
             </svg>
             Verified bill
           </span>
+          {/* S299 — case-header waiting chip (§0.9a rule 2d: count + soonest
+              clock, projector-derived, never stored). */}
+          {railTimeline != null && railTimeline.waitingCount > 0 && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-[3px] text-[11px] font-semibold text-amber-800 ring-1 ring-inset ring-amber-300">
+              {CASE_RAIL.headerChip(
+                railTimeline.waitingCount,
+                railTimeline.soonestResponseDue
+                  ? fmtRailDate(railTimeline.soonestResponseDue.date)
+                  : null,
+              )}
+            </span>
+          )}
         </div>
       </div>
 
@@ -3179,10 +3292,43 @@ export function ClaimDetail({
               n="4b"
               done={hasDraftedDispute}
               title={guidedTrack === "insurer" ? GUIDE_4B.titleInsurer : GUIDE_4B.titleProvider}
-              sub={guidedPack.outcome === "yes" ? GUIDE_4B.subResolved : GUIDE_4B.sub}
-              last
+              sub={
+                railPrimarySent && railPrimaryLetter ? (
+                  // S299 — the mock's collapsed-4b receipt (history grammar).
+                  <span className="text-[13px] font-semibold text-emerald-700">
+                    {guidedTrack === "insurer"
+                      ? CASE_RAIL.receipt4bInsurer(
+                          railTimeline?.insurerNameByDispute[railPrimaryLetter.disputeId] ?? null,
+                          fmtRailDate(railPrimaryLetter.latestSendAt!),
+                          railPrimaryLetter.mailedCertified,
+                        )
+                      : CASE_RAIL.receipt4bProvider(
+                          providerName === "Unknown Provider" ? null : providerName,
+                          fmtRailDate(railPrimaryLetter.latestSendAt!),
+                          railPrimaryLetter.mailedCertified,
+                        )}
+                  </span>
+                ) : guidedPack.outcome === "yes" ? (
+                  GUIDE_4B.subResolved
+                ) : (
+                  GUIDE_4B.sub
+                )
+              }
+              right={
+                railPrimarySent ? (
+                  <ShowFullStepButton
+                    open={fourBFullOpen}
+                    onToggle={() => setFourBFullOpen((v) => !v)}
+                  />
+                ) : undefined
+              }
+              last={!railExtends}
             >
-              {recoverBranchNode(muted4b)}
+              {/* Mounted-but-hidden while collapsed (the 4a idiom) — the
+                  drafted dispute cards keep their state across toggles. */}
+              <div className={railPrimarySent && !fourBFullOpen ? "hidden" : undefined}>
+                {recoverBranchNode(muted4b)}
+              </div>
             </RailStep>
           </>
         );
@@ -3193,7 +3339,7 @@ export function ClaimDetail({
           done={hasDraftedDispute}
           title="Recover the money"
           sub="Call the billing office to verify the charge or send the appeal — many members do both."
-          last
+          last={!railExtends}
         >
           {/* S290 (Andrew) — recover card spans the full container: sm:-ml-[43px]
               cancels the rail body's indent so it runs from under the step badge
@@ -3202,6 +3348,66 @@ export function ClaimDetail({
           {recoverBranchNode(false)}
         </RailStep>
       )}
+      {/* S299 phase 1a — the extension rail (approved mock Panels A+B):
+          per-letter waiting cards + concurrent waits + collapsed receipts,
+          rendered from the projector via rail-steps. Numbering continues the
+          prep rail (5 after the guided 4a/4b split). */}
+      {isFlagged && railExtends && railTimeline && (
+        <>
+          {railActionError && (
+            <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              <span>{railActionError}</span>
+              <button
+                type="button"
+                onClick={() => setRailActionError(null)}
+                className="text-xs text-red-700 hover:text-red-900"
+                aria-label="Dismiss"
+              >
+                ✕
+              </button>
+            </div>
+          )}
+          <CaseRail
+            letters={railTimeline.letters}
+            insurerNameByDispute={railTimeline.insurerNameByDispute}
+            providerName={providerName === "Unknown Provider" ? null : providerName}
+            primaryDisputeId={railPrimaryDisputeId}
+            firstNumber={guidedCtx ? 5 : railStepRecover + 1}
+            claimId={claimId}
+            getAuthToken={getAuthToken}
+            onLogResponse={(id) => setRailOutcomeDisputeId(id)}
+            onSomethingElse={(id) => {
+              setRailActionError(null);
+              setRailCollectorFromDisputeId(id);
+            }}
+            onUndoResult={handleRailUndoResult}
+          />
+        </>
+      )}
+      {/* S299 — the rail's inline-action modals: the dispute page's OWN
+          components mounted here (one modal source; zero new UI machinery).
+          Open state is settable only from the rail, so flag-OFF renders
+          neither. */}
+      <OutcomeReportingModal
+        open={railOutcomeDisputeId != null}
+        disputeId={railOutcomeDisputeId ?? ""}
+        defaultAmount={null}
+        onCancel={() => setRailOutcomeDisputeId(null)}
+        onSubmitted={() => {
+          setRailOutcomeDisputeId(null);
+          void (async () => {
+            await refetchClaim();
+            if (onClaimUpdated) void onClaimUpdated();
+          })();
+        }}
+        getIdToken={getAuthToken}
+      />
+      <CollectorModal
+        open={railCollectorFromDisputeId != null}
+        submitting={railEscalating}
+        onCancel={() => setRailCollectorFromDisputeId(null)}
+        onSubmit={handleRailCollectorSubmit}
+      />
 
       {billState === "needs_review" && !data.costShareBill && (() => {
         // Synthesize a "Specific blockers" list from line-item state so the
@@ -3495,86 +3701,10 @@ export function ClaimDetail({
   );
 }
 
-// ── Surface 3 — flagged-bill guided step rail chrome ──────────────────────
-// Numbered step section per design bill-detail.jsx StepSection + styles.css
-// .bd-step family: 30px blue number circle (green ✓ when done), 1.5px
-// connector line, body indented 43px on ≥sm. `headerOnly` renders just the
-// header (the step body lives outside — the in-place line-items table);
-// `last` drops the connector + bottom padding. Exported for reuse by other
-// guided flows (and the dev preview harness).
-export function RailStep({
-  n,
-  title,
-  sub,
-  done,
-  attention,
-  right,
-  last,
-  headerOnly,
-  children,
-}: {
-  /** Badge content — numeric for the classic rail, "4a"/"4b" for the S297 split. */
-  n: number | string;
-  title: string;
-  sub?: React.ReactNode;
-  done?: boolean;
-  /**
-   * S291 (Andrew) — this step still needs the user, and they've moved past it.
-   * Amber badge keeping the NUMBER (not a check): the step is skipped, not
-   * finished, so it must stay findable. `done` wins if both are set.
-   */
-  attention?: boolean;
-  right?: React.ReactNode;
-  last?: boolean;
-  headerOnly?: boolean;
-  children?: React.ReactNode;
-}) {
-  return (
-    <section className={!last && !headerOnly ? "relative pb-[30px]" : "relative"}>
-      {!last && !headerOnly && (
-        <span
-          className="absolute bottom-1 left-[14px] top-[34px] hidden w-[1.5px] bg-gray-200 sm:block"
-          aria-hidden
-        />
-      )}
-      <header className="mb-3.5 flex flex-wrap items-start gap-3.5">
-        <span
-          className={
-            "relative z-10 grid h-[30px] w-[30px] flex-shrink-0 place-items-center rounded-full text-sm font-bold text-white " +
-            (done
-              ? "bg-emerald-700 shadow-[0_2px_8px_rgba(4,120,87,0.25)]"
-              : attention
-                ? "bg-amber-500 shadow-[0_2px_8px_rgba(245,158,11,0.28)]"
-                : "bg-blue-600 shadow-[0_2px_8px_rgba(37,99,235,0.25)]")
-          }
-        >
-          {done ? "\u2713" : n}
-        </span>
-        {/* S297 (Andrew E2E) — min-w-[12rem], not min-w-0: with a wide right
-            cluster, flex was crushing the title into a one-word-per-line
-            sliver through the rail line; now the right cluster wraps below
-            instead (flex-wrap) and the title keeps a readable column. */}
-        <div className="min-w-[12rem] flex-1 pt-0.5">
-          <div className="text-[16.5px] font-bold tracking-[-0.005em] text-gray-900">{title}</div>
-          {sub && <div className="mt-0.5 text-[13px] leading-normal text-gray-500">{sub}</div>}
-        </div>
-        {/* S297 (Andrew) — three responsive states in pure CSS:
-            · wide: inline, flush RIGHT (ml-auto; the pl-[44px] hides inside
-              the right-aligned box's leading space)
-            · mid (doesn't fit): flex-wrap drops the box to its own row at
-              x=0 — the pl-[44px] lands its content exactly at the TEXT
-              column (badge 30px + gap 14px), left-aligned under the words
-            · mobile (<sm): w-full, no rail indent, buttons align left. */}
-        {right && (
-          <div className="w-full sm:ml-auto sm:w-auto sm:flex-shrink-0 sm:self-center sm:pl-[44px]">
-            {right}
-          </div>
-        )}
-      </header>
-      {children != null && <div className="sm:ml-[43px]">{children}</div>}
-    </section>
-  );
-}
+// RailStep moved VERBATIM to @/components/claims/CaseRail (S299) — the
+// extension rail owns the chrome now; ClaimDetail imports it back, which
+// avoids a ClaimDetail⇄CaseRail module cycle (same idiom as importing
+// ShowFullStepButton from GuidedPhoneSteps).
 
 // ── S74.5 D6 G4 LOCK — Community-vs-user conflict modal ───────────────────
 //

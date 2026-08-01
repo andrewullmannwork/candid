@@ -312,6 +312,44 @@ const project = (
   check("exclusions · redraftCount wired", t.letters[0].redraftCount === 1);
 }
 
+// ── 9 · S299 phase-1a per-letter display fields ─────────────────────────────
+// counterpartyName (collector letters only) + mailedCertified (checklist
+// attest). Deliberately NO day-count checks here: the projector carries no
+// calendars (it runs server-side in UTC while the user's calendar is local —
+// the S299 "sent Jul 31 vs Jul 30" lesson); day-math lives client-side and is
+// exercised in fixtures/case-timeline/rail-steps.ts with an injected clock.
+{
+  const collector = project(mkClaim(), [
+    mkDispute({
+      status: "filed",
+      sent_at: iso(-1),
+      metadata: {
+        letterType: "debt_validation",
+        collector: { name: "Cascade Recovery", address: null, originalCreditor: null },
+        checklist: { mailcert: true },
+      },
+    }),
+  ]);
+  check(
+    "s299 · counterpartyName from metadata.collector.name",
+    collector.letters[0].counterpartyName === "Cascade Recovery",
+  );
+  check("s299 · mailedCertified from checklist attest", collector.letters[0].mailedCertified === true);
+
+  const insurerLetter = project(mkClaim(), [
+    mkDispute({
+      status: "filed",
+      sent_at: iso(-1),
+      metadata: { letterType: "insurance_appeal", collector: { name: "X" } },
+    }),
+  ]);
+  check(
+    "s299 · counterpartyName null on non-collector letters",
+    insurerLetter.letters[0].counterpartyName === null,
+  );
+  check("s299 · mailedCertified defaults false", insurerLetter.letters[0].mailedCertified === false);
+}
+
 console.log(`\ncase-timeline projector fixture: ${pass} passed, ${fails.length} failed`);
 if (fails.length) {
   console.log(fails.join("\n"));

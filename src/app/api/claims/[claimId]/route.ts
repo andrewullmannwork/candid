@@ -41,7 +41,12 @@ import {
   readUserPatientPaidOverride,
   applyUserPatientPaidOverride,
 } from "@/lib/claims/effective-totals";
-import { isFeatureEnabled } from "@/lib/config/product-flags";
+import { isFeatureEnabled, readFeatureFlagConfig } from "@/lib/config/product-flags";
+import {
+  projectCaseTimeline,
+  type ProjectorDisputeRow,
+  type ProjectorEventRow,
+} from "@/lib/case/timeline-projector";
 import {
   loadFingerprintInputForClaim,
   computeEvidenceFingerprint,
@@ -150,6 +155,9 @@ export async function GET(
   // client keys off the presence of the per-line `costShareVerdict` field, so
   // there is NO client flag read.
   const costShareV2 = await isFeatureEnabled("recovery_cost_share_v2");
+  // S299 phase 1a — gates the caseTimeline projection payload (+ the widened
+  // dispute select it needs). OFF = today's payload, byte-identical.
+  const caseRailV1 = await isFeatureEnabled("case_rail_v1");
   // S291 (mig 216) — see /api/claims. Resolved once per request; engine stays pure.
   const csHonestyGate = costShareV2
     ? await isFeatureEnabled("unverified_plan_honesty_gate_v1")
@@ -755,16 +763,22 @@ export async function GET(
 
   // Fetch linked disputes (userScoped adds `.eq("user_id")`; +DiD — these are
   // the owner's disputes on the owned claim).
+  // Cost-Share v2 (§17.4) — when the flag is ON, also pull the fields the
+  // dispute card needs to render `isStale` + `chargeCount` WITHOUT the heavy
+  // per-dispute GET (~4.5s). OFF → the original narrow shape (byte-identical).
+  const disputeSelectBase = costShareV2
+    ? "id, dispute_type, status, amount_disputed, amount_recovered, filed_date, resolution_date, evidence_fingerprint, sent_at, claim_line_item_id, metadata"
+    : "id, dispute_type, status, amount_disputed, amount_recovered, filed_date, resolution_date";
+  // S299 phase 1a — the projector needs the full ProjectorDisputeRow column
+  // set; appended ADDITIVELY when the rail flag is ON (OFF keeps today's
+  // select strings exactly). The raw rows stay server-side — enrichedDisputes
+  // below still drops metadata/fingerprint before the payload.
+  const disputeSelect = caseRailV1
+    ? `${disputeSelectBase}, claim_id, created_at, governing_deadline_date, deadline_type, insurance_plan_id${costShareV2 ? "" : ", sent_at, metadata"}`
+    : disputeSelectBase;
   const { data: disputes } = await userScoped(supabase, user.id)
     .table("dispute_outcomes")
-    .select(
-      // Cost-Share v2 (§17.4) — when the flag is ON, also pull the fields the
-      // dispute card needs to render `isStale` + `chargeCount` WITHOUT the heavy
-      // per-dispute GET (~4.5s). OFF → the original narrow shape (byte-identical).
-      costShareV2
-        ? "id, dispute_type, status, amount_disputed, amount_recovered, filed_date, resolution_date, evidence_fingerprint, sent_at, claim_line_item_id, metadata"
-        : "id, dispute_type, status, amount_disputed, amount_recovered, filed_date, resolution_date",
-    )
+    .select(disputeSelect)
     .eq("claim_id", claimId);
 
   // Cost-Share v2 (§17.4) — fold `isStale` + `chargeCount` into the claim GET so
@@ -817,6 +831,90 @@ export async function GET(
         chargeCount,
       };
     });
+  }
+
+  // S299 phase 1a — the case-timeline projection (timeline-projector, agenda
+  // §1 ONE derivation), computed from the RAW dispute rows (which carry
+  // metadata; enrichedDisputes deliberately drops it) + the claim's case
+  // events. Attached ONLY when case_rail_v1 is ON. history[] is omitted from
+  // the payload until phase 2 renders it — events are still fetched so the
+  // per-letter send/unsend counts are true. Fail-soft: a projection failure
+  // must never take down the claim page.
+  let caseTimeline: Record<string, unknown> | null = null;
+  if (caseRailV1 && disputes && disputes.length > 0) {
+    try {
+      const { data: eventRows, error: eventsError } = await userScoped(supabase, user.id)
+        .table("claim_case_events")
+        .select("dispute_id, kind, actor, occurred_at, payload")
+        .eq("claim_id", claimId)
+        .order("occurred_at", { ascending: true });
+      if (eventsError) {
+        console.error(
+          "[claims GET] case events load failed; projecting from rows only:",
+          eventsError,
+        );
+      }
+      const amberDays = await readFeatureFlagConfig(
+        "guided_steps_v1",
+        "sent_countdown_amber_days",
+        7,
+      );
+      const projected = projectCaseTimeline({
+        claim: {
+          id: claim.id as string,
+          created_at: claim.created_at as string,
+          metadata: (claim.metadata as Record<string, unknown> | null) ?? null,
+        },
+        disputes: disputes as unknown as ProjectorDisputeRow[],
+        events: (eventRows ?? []) as ProjectorEventRow[],
+        now: new Date(),
+        amberDays,
+      });
+      // Wait titles need insurer display names — resolved from each letter's
+      // PINNED plan (dispute_plan_pinning_v1, migs 171+172). Unpinned rows /
+      // load failures fall back to the approved "your plan" rendering
+      // client-side; the raw plan rows never reach the payload.
+      const insurerNameByDispute: Record<string, string> = {};
+      const planIds = Array.from(
+        new Set(
+          (disputes as Array<Record<string, unknown>>)
+            .map((d) => d.insurance_plan_id)
+            .filter((v): v is string => typeof v === "string" && v.length > 0),
+        ),
+      );
+      if (planIds.length > 0) {
+        const { data: planRows, error: planError } = await userScoped(supabase, user.id)
+          .table("insurance_plans")
+          .select("id, insurer_name")
+          .in("id", planIds);
+        if (planError) {
+          console.error(
+            "[claims GET] pinned-plan insurer load failed; wait titles fall back:",
+            planError,
+          );
+        }
+        const insurerByPlan = new Map(
+          (planRows ?? []).map((p) => [p.id as string, p.insurer_name as string | null]),
+        );
+        for (const d of disputes as Array<Record<string, unknown>>) {
+          const planId = d.insurance_plan_id;
+          const name = typeof planId === "string" ? insurerByPlan.get(planId) : null;
+          if (typeof name === "string" && name.length > 0) {
+            insurerNameByDispute[d.id as string] = name;
+          }
+        }
+      }
+      caseTimeline = {
+        letters: projected.letters,
+        waitingCount: projected.waitingCount,
+        soonestResponseDue: projected.soonestResponseDue,
+        sentLetterMeta: projected.sentLetterMeta,
+        insurerNameByDispute,
+      };
+    } catch (err) {
+      console.error("[claims GET] case-timeline projection failed; rail omitted:", err);
+      caseTimeline = null;
+    }
   }
 
   // Fetch related claims in same group. S139 (B4.2 multi-line) — lift
@@ -872,6 +970,9 @@ export async function GET(
     claim,
     lineItems: enrichedLineItems,
     disputes: enrichedDisputes,
+    // S299 phase 1a — projector-derived case timeline (absent when
+    // case_rail_v1 is OFF → byte-identical payload).
+    ...(caseTimeline ? { caseTimeline } : {}),
     relatedClaims,
     recovery: claimRecovery,
     // Cost-Share v2 (D1) — bill-level verdict for the §5 banner; flag-gated
