@@ -1,0 +1,39 @@
+-- 223 — DROP path_b_backfill_audit (S135 RC-3 Path B audit telemetry)
+--
+-- WHAT THIS IS. At S135, PR #130 backfilled ~50K historical drifted
+-- `canonical_plans` + `canonical_plan_services` rows from JSONB
+-- `field_provenance` to their typed columns. To audit that run, a scratch
+-- table was created by hand THROUGH SUPABASE STUDIO — not through a numbered
+-- migration — recording one row per UPDATE the script fired. A receipt book.
+--
+-- WHY IT GOES. The table has no reader: no application code selects from it
+-- (verified by grep at S144 and again at S300). Its only cost is SCHEMA DRIFT
+-- — the migration lineage no longer describes the actual PROD database, so
+-- anyone rebuilding from migrations gets something different from what runs.
+-- This migration is what puts the two back in agreement.
+--
+-- THE GATE (spec: plans/path-b-backfill-audit-drop.md §1). The 7-day soak
+-- closed 2026-06-03. Its confirm step named `scripts/findings/rc-3-audit-v2.ts`
+-- — a script that does not exist and never did (searched the working tree and
+-- the full git history across all branches at S300; the only related file ever
+-- committed is scripts/admin/rc-3-path-b-backfill.ts). That missing tool is
+-- almost certainly why the gate sat unresolved for two months. Its replacement
+-- is the read-only drift SELECT in
+-- plans/findings/path-b-drift-verify-2026-08-02.sql, which MUST be run
+-- against PROD (not the DEV clone — post-OPS.9 `.env.local` points at DEV, so
+-- a local run would audit the wrong database and return a confidently wrong
+-- 0%) and MUST return zero drift rows before this migration is applied.
+--
+-- SEQUENCING. Apply in the SAME Studio session as migs 221 + 222 at the
+-- timeline-unification promote — one trip, and it avoids a PROD schema change
+-- while `main` sits ahead of `production`.
+--
+-- ROLLBACK. Forward-only. To restore: re-apply the CREATE TABLE from
+-- scripts/admin/rc-3-path-b-backfill.ts (~line 96) via Studio and re-run the
+-- backfill script with --dry-run to repopulate. This recreates observability
+-- only; it never re-fires an UPDATE against a canonical table. If a forensic
+-- record of the original backfill is wanted, `pg_dump path_b_backfill_audit`
+-- BEFORE applying.
+
+DROP INDEX IF EXISTS idx_path_b_backfill_audit_source;
+DROP TABLE IF EXISTS path_b_backfill_audit;
