@@ -21,11 +21,12 @@
  * complaint_filed, document_attached) are a code change when their emitter or
  * UI exists, not a migration.
  *
- * Emitter coverage: 17 of 18 kinds fire from server routes.
- * `collection_resumed_reported` fires from the rail's quiet door
- * (POST /api/claims/[claimId]/case-events, S299 phase 1a). Remaining:
- * `letter_downloaded` (download is client-side today — a one-line ping lands
- * with the phase-2 letter-page work) — checkpoint note, not silent scope.
+ * Emitter coverage: 18 of 18 kinds fire. `collection_resumed_reported` (S299
+ * phase 1a) and `letter_downloaded` (S300 phase 2b — the download is a
+ * client-side Blob, so it pings) both ride
+ * POST /api/claims/[claimId]/case-events; everything else emits from the
+ * mutation site that owns the write. The vocabulary is closed — a NEW kind
+ * needs an emitter in the same change, never a declaration alone.
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { isFeatureEnabled } from "@/lib/config/product-flags";

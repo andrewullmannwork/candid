@@ -1,6 +1,16 @@
 /**
- * GET  /api/disputes/followups — Fetch active follow-ups for the authenticated user
+ * GET  /api/disputes/followups — the banner's per-CLAIM waiting rows
  * POST /api/disputes/followups — Handle a follow-up action (won/settled/lost/still_waiting/dismiss)
+ *
+ * S300 phase 2b (agenda §0.9c) — the GET returns CLAIM GROUPS, not follow-up
+ * rows: the banner is a standing per-claim pointer ("«provider» — 2 letters
+ * waiting"), so grouping happens here rather than in the component. A
+ * client-side grouping would be a second place deriving case state.
+ * `followups` is still returned alongside for the dismiss plumbing.
+ *
+ * The POST keeps its full action set even though the banner now only sends
+ * `dismiss`: the outcome actions remain the API contract, and phase 3 retires
+ * them with the UnifiedTodo work rather than mid-flight here.
  *
  * Auth: Firebase bearer token.
  */
@@ -9,7 +19,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { userScoped } from "@/lib/security/user-scoped";
-import { getActiveFollowups, handleFollowupAction } from "@/lib/disputes/followups";
+import {
+  getActiveFollowups,
+  groupFollowupsByClaim,
+  handleFollowupAction,
+} from "@/lib/disputes/followups";
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -40,7 +54,7 @@ export async function GET(req: NextRequest) {
   }
 
   const followups = await getActiveFollowups(supabase, user.id);
-  return NextResponse.json({ followups });
+  return NextResponse.json({ followups, claims: groupFollowupsByClaim(followups) });
 }
 
 export async function POST(req: NextRequest) {
@@ -62,18 +76,47 @@ export async function POST(req: NextRequest) {
   }
 
   const body = await req.json();
-  const { followupId, action, amountRecovered } = body;
-
-  if (!followupId || !action) {
-    return NextResponse.json({ error: "followupId and action required" }, { status: 400 });
-  }
+  const { followupId, followupIds, action, amountRecovered } = body;
 
   const validActions = ["won", "settled", "lost", "still_waiting", "dismiss"];
-  if (!validActions.includes(action)) {
+  if (!action || !validActions.includes(action)) {
     return NextResponse.json(
       { error: `action must be one of: ${validActions.join(", ")}` },
       { status: 400 }
     );
+  }
+
+  // S300 phase 2b — CLAIM-SCOPED dismiss. The banner row covers every letter
+  // waiting on one bill, so its ✕ dismisses all of that claim's due nudges in
+  // one press. Deliberately NOT a new dismissal path: it loops the existing
+  // per-followup handler, which already owns ownership scoping and the
+  // status transition. Only `dismiss` may fan out — an outcome is per-letter
+  // by construction and belongs in the rail's modal.
+  if (Array.isArray(followupIds)) {
+    if (action !== "dismiss") {
+      return NextResponse.json(
+        { error: "followupIds is only valid with action=dismiss" },
+        { status: 400 },
+      );
+    }
+    const ids = followupIds.filter((id: unknown): id is string => typeof id === "string");
+    if (ids.length === 0) {
+      return NextResponse.json({ error: "followupIds must be non-empty" }, { status: 400 });
+    }
+    let dismissed = 0;
+    for (const id of ids) {
+      const r = await handleFollowupAction(supabase, {
+        followupId: id,
+        userId: user.id,
+        action: "dismiss",
+      });
+      if (r.success) dismissed += 1;
+    }
+    return NextResponse.json({ success: dismissed > 0, dismissed });
+  }
+
+  if (!followupId) {
+    return NextResponse.json({ error: "followupId or followupIds required" }, { status: 400 });
   }
 
   const result = await handleFollowupAction(supabase, {

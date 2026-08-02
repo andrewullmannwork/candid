@@ -419,6 +419,20 @@ export async function POST(req: NextRequest) {
       await emitCaseEvents(supabase, userId, events);
     }
 
+    // S300 phase 2b — a logged response RE-ANCHORS this letter's nudge chain.
+    // The banner is a pure pointer now, so its "Still waiting" button (the only
+    // thing that used to advance initial→reprompt→final) is gone; without this
+    // a user who reports "they asked for more information" — one of the FIVE
+    // outcome details that map to `in_progress`, so persist.ts's terminal sweep
+    // never fires — keeps being asked "did you hear back?" forever.
+    // Deliberately re-anchors instead of cancelling: those cases are still
+    // OPEN, and going dark on them would lose the outcome that actually feeds
+    // the flywheel. Fail-soft inside.
+    if (outcomeDetail && isOutcomeDetail(outcomeDetail)) {
+      const { quietOutcomeFollowups } = await import("@/lib/disputes/followups");
+      await quietOutcomeFollowups(supabase, { disputeId, userId, outcomeDetail });
+    }
+
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error("Dispute outcome update error:", error);

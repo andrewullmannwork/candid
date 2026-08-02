@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { BillCard } from "@/components/claims/BillCard";
 import { VisitGroupCard } from "@/components/claims/VisitGroupCard";
 import { ClaimDetail } from "@/components/claims/ClaimDetail";
@@ -107,6 +107,12 @@ export default function CandidClaimPage() {
   const urlClaimId = searchParams.get("claim");
   const urlFocusId = searchParams.get("focus");
   const urlFromTab = toTab(searchParams.get("from"));
+  // S300 phase 2b (§0.9c) — a follow-up EMAIL is a per-letter event, so its
+  // single button lands on that letter's step. Anchored on the dispute id, not
+  // a step number: emails outlive rail numbering (phase 3 renumbers; inboxes
+  // don't re-render). The banner deliberately has no `letter` — it covers
+  // several letters at once and lands at the rail top.
+  const urlLetterId = searchParams.get("letter");
 
   const [tab, setTab] = useState<Tab>(urlFromTab || "bills");
   const tabsRef = useRef<HTMLDivElement | null>(null);
@@ -118,6 +124,38 @@ export default function CandidClaimPage() {
   // /dashboard's Claim hero via useClaimPipeline (Surface 1) so both surfaces
   // read identical pipeline counts.
   const pipeline = useClaimPipeline();
+
+  // S300 phase 2b — scroll the emailed letter's step into view once the rail
+  // has rendered it. Polls briefly rather than firing once: the rail mounts
+  // after the claim GET resolves, so a single post-mount attempt would miss.
+  // Silent no-op when the step never appears (an old link to a letter the rail
+  // no longer extends) — the user still lands on the right claim.
+  useEffect(() => {
+    if (!urlLetterId || !urlClaimId) return;
+    let cancelled = false;
+    let attempts = 0;
+    const tick = () => {
+      if (cancelled) return;
+      const matches = document.querySelectorAll<HTMLElement>(
+        `[data-case-letter="${CSS.escape(urlLetterId)}"]`,
+      );
+      // The LAST match is the letter's most recent step — the actionable one
+      // (its earlier steps are collapsed receipts above it).
+      const target = matches.length > 0 ? matches[matches.length - 1] : null;
+      if (target) {
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+        target.classList.add("ring-2", "ring-amber-400", "rounded-2xl");
+        window.setTimeout(() => target.classList.remove("ring-2", "ring-amber-400", "rounded-2xl"), 2400);
+        return;
+      }
+      if (++attempts < 20) window.setTimeout(tick, 250);
+    };
+    const first = window.setTimeout(tick, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(first);
+    };
+  }, [urlLetterId, urlClaimId]);
   const {
     claims,
     disputeData,
@@ -303,8 +341,10 @@ export default function CandidClaimPage() {
         sub="Every bill audited line by line. Every overcharge flagged. Every dollar tracked."
       />
 
-      {/* FollowupBanner above hero — D-§1.D.1-F + Round 2 Item 1 Option A */}
-      <FollowupBanner />
+      {/* FollowupBanner above hero — D-§1.D.1-F + Round 2 Item 1 Option A.
+          S300 phase 2b: per-claim rows; the open bill's own row is suppressed
+          (its waiting cards are already on screen in the rail). */}
+      <FollowupBanner suppressClaimId={urlClaimId} />
 
       {/* Empty state replaces hero + tabs entirely (Round 2 Item 2 render rule) */}
       {!hasBills && (

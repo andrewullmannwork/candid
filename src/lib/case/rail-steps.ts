@@ -158,6 +158,32 @@ export type RailStepModel =
       openLetterLabel: string;
     };
 
+/**
+ * The letter a rail step belongs to — the S300 deep-link anchor key.
+ *
+ * Every variant already carries its dispute id (directly, or one hop through
+ * `card`/`move`), so the anchor needs no new model field and cannot drift from
+ * what the step renders. Total by construction: a new variant that forgets to
+ * expose one fails the exhaustiveness check below rather than silently
+ * anchoring nothing.
+ */
+export function railStepDisputeId(step: RailStepModel): string {
+  switch (step.kind) {
+    case "wait-active":
+      return step.card.disputeId;
+    case "next-move":
+      return step.move.disputeId;
+    case "wait-receipt":
+    case "send-receipt":
+    case "send-draft":
+      return step.disputeId;
+    default: {
+      const _exhaustive: never = step;
+      return _exhaustive;
+    }
+  }
+}
+
 export interface ComposeRailInput {
   letters: ProjectedLetterStep[];
   /** The dispute the prep rail's 4b renders — its send step is never duplicated. */

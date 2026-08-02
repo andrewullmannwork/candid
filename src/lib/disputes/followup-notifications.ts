@@ -59,10 +59,47 @@ async function sendEmail(params: {
   }
 }
 
+// ── Date helpers ────────────────────────────────────────────────────────────
+
+/**
+ * Email-safe date rendering. Date-only strings ("2026-08-12" — governing
+ * deadlines) are pinned to UTC so they never render as the previous day; full
+ * timestamps parse natively. Same rule the letters' formatDate follows.
+ */
+function formatEmailDate(iso: string): string {
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(iso);
+  const d = new Date(dateOnly ? `${iso}T00:00:00Z` : iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+/** Date-only comparison for the deadline tense guard. */
+function isPastDate(iso: string): boolean {
+  const today = new Date().toISOString().split("T")[0];
+  return iso < today;
+}
+
 // ── Follow-up notifications ─────────────────────────────────────────────────
 
 /**
- * Send a follow-up notification for a dispute that's been open for 30+ days.
+ * Send a follow-up notification for ONE letter (agenda §0.9c — one topic per
+ * email). Each email is fired by a single letter's clock, so its subject, body
+ * and destination name the SAME letter and land on that letter's step. Other
+ * waits on the same bill get one muted context line, never co-billing.
+ *
+ * Still deliberately generic on DETAIL — no dollar amounts, no insurer or
+ * provider names in email; those live behind login (Andrew review 2026-07-17).
+ * The letter's TYPE is not identifying, so it can be named.
+ *
+ * Dates, not day-counts: `daysAgo` was computed server-side from a DATE column
+ * against the server's clock, which is the same UTC-calendar defect that made
+ * the rail say "Jul 31" while the dispute page said "Jul 30" (S299). A date is
+ * timezone-proof and reads better.
  */
 export async function notifyDisputeFollowup(params: {
   userEmail: string;
@@ -72,33 +109,88 @@ export async function notifyDisputeFollowup(params: {
   filedDate: string;
   followupType: string;
   insurerName?: string;
+  /** S300 — the letter this nudge is about + where it lives. */
+  claimId?: string | null;
+  letterLabel?: string | null;
+  sentDate?: string | null;
+  /** Graduated deadline nudges (`deadline_interim` / `deadline_final`) get variant B. */
+  followupKind?: string | null;
+  governingDeadlineDate?: string | null;
+  /** Other letters waiting on the SAME bill — one muted line, no detail. */
+  otherWaitingCount?: number;
 }): Promise<void> {
   const { userEmail, disputeType, amountDisputed, filedDate, followupType } = params;
   const daysAgo = Math.floor((Date.now() - new Date(filedDate).getTime()) / (1000 * 60 * 60 * 24));
-  const claimUrl = `${APP_URL}/claim`;
-  const typeLabel = disputeType.replace(/_/g, " ");
+  // Per-letter landing: the claim rail, anchored on THIS letter's step. The
+  // anchor is the dispute id, never a step number — emails outlive step
+  // numbering (phase 3 renumbers the rail; inboxes don't re-render).
+  const claimUrl = params.claimId
+    ? `${APP_URL}/claim?claim=${params.claimId}${params.disputeId ? `&letter=${params.disputeId}` : ""}`
+    : `${APP_URL}/claim`;
+  const label = params.letterLabel || disputeType.replace(/_/g, " ");
+  const sentOn = params.sentDate ? formatEmailDate(params.sentDate) : null;
+  const deadlineOn = params.governingDeadlineDate
+    ? formatEmailDate(params.governingDeadlineDate)
+    : null;
+  const isDeadline =
+    typeof params.followupKind === "string" && params.followupKind.startsWith("deadline_");
+  const isFinal = params.followupKind === "deadline_final" || followupType === "final";
+  const others = params.otherWaitingCount ?? 0;
+  const contextLine =
+    others > 0
+      ? others === 1
+        ? "You have 1 other letter waiting on this bill &mdash; you'll find it on the same page."
+        : `You have ${others} other letters waiting on this bill &mdash; you'll find them on the same page.`
+      : "";
 
-  // Email notification — deliberately generic (no amounts / insurer names in
-  // email; the details live behind login). Copy per Andrew review 2026-07-17.
-  const subject = "Your dispute is due for a follow-up";
+  let subject: string;
+  let heading: string;
+  let body1: string;
+  if (isDeadline) {
+    subject = isFinal ? `Last call on your ${label} deadline` : `Your ${label} deadline is coming up`;
+    heading = isFinal ? "Your deadline is here" : "The response window is closing";
+    // The cron sends any row with due_date <= today, so a delayed or backed-up
+    // final can land AFTER the deadline — tense guard, not a new claim.
+    const closed = deadlineOn ? isPastDate(params.governingDeadlineDate!) : false;
+    if (isFinal) {
+      body1 = closed
+        ? `The response window on your ${label} closed on ${deadlineOn}.`
+        : `The response window on your ${label} closes on ${deadlineOn}. If you still haven't heard back, your final follow-up letter is ready to send.`;
+    } else {
+      body1 = `Your ${label} went out on ${sentOn}, and the response window closes on ${deadlineOn}. If they haven't answered yet, a follow-up letter is ready to send.`;
+    }
+  } else {
+    subject = `Checking in on your ${label}`;
+    heading = "Did you hear back?";
+    body1 = sentOn
+      ? `Your ${label} went out on ${sentOn}. This is when responses usually arrive. If you haven't heard back, there are steps you can take now.`
+      : `This is when responses to your ${label} usually arrive. If you haven't heard back, there are steps you can take now.`;
+  }
+  const body2 = isDeadline
+    ? "Open your claim to log a response, or send the follow-up."
+    : "Open your claim to log what happened, or pick up your next steps if you're still waiting.";
+
   const html = `
     <div style="font-family: -apple-system, sans-serif; max-width: 500px; margin: 0 auto;">
-      <h2 style="color: #111827; font-size: 18px;">Time to check on your dispute</h2>
+      <h2 style="color: #111827; font-size: 18px;">${heading}</h2>
       <p style="color: #6b7280; font-size: 14px; line-height: 1.6;">
-        It's been <strong>${daysAgo} days</strong> since your ${typeLabel} went out. This is the
-        window when responses usually land &mdash; and when a quick call makes the difference if
-        they haven't answered yet.
+        ${body1}
       </p>
       <p style="color: #6b7280; font-size: 14px; line-height: 1.6;">
-        Open Candid to log what happened, or grab your next steps if you're still waiting.
+        ${body2}
       </p>
       <a href="${claimUrl}" style="display: inline-block; background: #2563eb; color: white; padding: 10px 20px; border-radius: 8px; text-decoration: none; font-size: 14px; font-weight: 600; margin-top: 8px;">
-        Open your dispute
+        Open your claim
       </a>
+      ${contextLine ? `
+      <p style="color: #9ca3af; font-size: 12px; margin-top: 16px;">
+        ${contextLine}
+      </p>
+      ` : ""}
       ${followupType === "final" ? `
       <p style="color: #9ca3af; font-size: 12px; margin-top: 16px;">
-        This is our last automatic reminder for this dispute &mdash; you can always update it from
-        your Claim page.
+        This is our last automatic reminder for this letter &mdash; you can always update it from
+        your claim page.
       </p>
       ` : ""}
       <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 24px 0;" />
@@ -112,13 +204,13 @@ export async function notifyDisputeFollowup(params: {
 
   // Slack notification (admin visibility)
   await sendSlack({
-    text: `Dispute follow-up sent: ${typeLabel} ($${amountDisputed}) — ${daysAgo} days`,
+    text: `Dispute follow-up sent: ${label} ($${amountDisputed}) — ${daysAgo} days`,
     blocks: [
       { type: "header", text: { type: "plain_text", text: "Dispute Follow-up Sent" } },
       {
         type: "section",
         fields: [
-          { type: "mrkdwn", text: `*Type:* ${typeLabel}` },
+          { type: "mrkdwn", text: `*Type:* ${label}` },
           { type: "mrkdwn", text: `*Amount:* $${amountDisputed.toLocaleString()}` },
           { type: "mrkdwn", text: `*Days since filed:* ${daysAgo}` },
           { type: "mrkdwn", text: `*Follow-up:* ${followupType}` },

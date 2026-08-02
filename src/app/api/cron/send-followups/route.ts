@@ -11,6 +11,17 @@ import { createServerClient } from "@/lib/supabase/server";
 import { isAuthorizedCron } from "@/lib/security/require-cron-secret";
 import { userScoped } from "@/lib/security/user-scoped";
 import { emitCaseEvent } from "@/lib/case/case-events";
+import { LETTER_TYPE_LABELS } from "@/lib/disputes/letter-type";
+import { resolveLetterType } from "@/lib/case/timeline-projector";
+
+/**
+ * The letter's display name for the email, from the SHARED label source
+ * (S299 consolidation) — never a second copy. Unknown/legacy types fall
+ * through to null and the email keeps its generic phrasing.
+ */
+function letterLabelFor(letterType: string): string | null {
+  return (LETTER_TYPE_LABELS as Record<string, string>)[letterType] ?? null;
+}
 
 export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
@@ -23,7 +34,7 @@ export async function GET(req: NextRequest) {
   // Get all pending follow-ups due today or earlier
   const { data: followups, error } = await supabase
     .from("dispute_followups")
-    .select("id, dispute_id, user_id, followup_type")
+    .select("id, dispute_id, user_id, followup_type, metadata")
     .eq("status", "pending")
     .lte("due_date", today)
     .limit(100);
@@ -40,7 +51,9 @@ export async function GET(req: NextRequest) {
       // Fetch dispute details
       const { data: dispute } = await supabase
         .from("dispute_outcomes")
-        .select("id, claim_id, dispute_type, status, amount_disputed, filed_date")
+        .select(
+          "id, claim_id, dispute_type, status, amount_disputed, filed_date, sent_at, governing_deadline_date, metadata",
+        )
         .eq("id", followup.dispute_id)
         .single();
 
@@ -61,6 +74,26 @@ export async function GET(req: NextRequest) {
 
       if (!user?.email) continue;
 
+      // S300 phase 2b (§0.9c) — one email, one letter. The rows are already
+      // per-letter (the deadline engine schedules per dispute); what was
+      // missing was the email knowing WHICH letter and where it lives.
+      // `otherWaitingCount` = the OTHER letters on this same bill with a due
+      // nudge — one muted context line, never co-billing.
+      let otherWaitingCount = 0;
+      if (dispute.claim_id) {
+        const { data: siblings } = await supabase
+          .from("dispute_followups")
+          .select("dispute_id, dispute_outcomes!inner(claim_id)")
+          .eq("status", "pending")
+          .lte("due_date", today)
+          .eq("dispute_outcomes.claim_id", dispute.claim_id);
+        otherWaitingCount = new Set(
+          (siblings ?? [])
+            .map((s) => s.dispute_id as string)
+            .filter((id) => id !== dispute.id),
+        ).size;
+      }
+
       // Send notification
       await notifyDisputeFollowup({
         userEmail: user.email,
@@ -69,6 +102,15 @@ export async function GET(req: NextRequest) {
         amountDisputed: dispute.amount_disputed,
         filedDate: dispute.filed_date,
         followupType: followup.followup_type,
+        claimId: (dispute.claim_id as string | null) ?? null,
+        letterLabel: letterLabelFor(resolveLetterType(dispute as never)),
+        sentDate: (dispute.sent_at as string | null) ?? dispute.filed_date ?? null,
+        followupKind:
+          typeof (followup.metadata as Record<string, unknown> | null)?.followup_kind === "string"
+            ? ((followup.metadata as Record<string, unknown>).followup_kind as string)
+            : null,
+        governingDeadlineDate: (dispute.governing_deadline_date as string | null) ?? null,
+        otherWaitingCount,
       });
 
       // Mark as shown

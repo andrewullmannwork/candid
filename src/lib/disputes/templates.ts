@@ -7,7 +7,6 @@ import type { DisputeEvidence, LineItemEvidence } from "./evidence-resolver";
 import { groundFindingsForEvidence, type GroundFinding, type LineRecovery, type LetterRecoveryResult } from "./dispute-grounds";
 import type { RequestBucket } from "./dispute-ground-catalog";
 import { buildObligationContext, renderObligationClauses } from "./obligation-render";
-import type { GuidedCallLogEntry } from "@/lib/guides/pack-registry";
 import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
 
 interface LetterTemplate {
@@ -123,7 +122,16 @@ interface TemplateParams {
    * request body at launch (the FE collects them in S5/S6). Fail-closed: absent → the gated clause
    * is OMITTED via renderGated (never a placeholder).
    */
-  priorContactDates?: string[]; // final_notice — recital of prior attempts (attested)
+  /**
+   * S300 (Item N) — the ONE prior-contact recital, pre-built by
+   * `buildPriorContactRecital` and injected in this template's OPENING
+   * (Andrew, Position B: a Final Notice's argument is "I tried, repeatedly,
+   * and you didn't fix it", which has to precede the escalation, not trail
+   * it). Every OTHER letter type receives the same block before the sign-off,
+   * injected by the build paths. Replaces the client-supplied
+   * `priorContactDates`, which cited one browser-passed date.
+   */
+  priorContactRecital?: string; // final_notice — opening recital of prior attempts (attested)
   certifiedMail?: boolean; // final_notice — user opted to send certified → adds the notation
   appealExhausted?: { attested: boolean; denialDate?: string | null }; // external_review gate
   collector?: { name: string; address?: string | null; originalCreditor?: string | null }; // debt_validation recipient (user-supplied)
@@ -236,56 +244,11 @@ export function renderGated<T>(value: T | null | undefined, clause: (v: T) => st
   return clause(value);
 }
 
-/** Guided Steps v1 (S297) — attested-call recital. Renders the user's OWN
- *  attested phone actions (claims.metadata.guideSteps checkedAt) as factual
- *  prior-contact lines, recipient-matched, injected before the sign-off by
- *  BOTH build paths (generateDisputeLetter + rerenderDisputeLetter — keep in
- *  lockstep). Fail-closed: no attested entries → "" (byte-identical letter).
- *  Log NOTES are deliberately NOT rendered (tracker Item X — structured use
- *  later). Copy rides the launch-adopted attestation-recital framework; no
- *  new legal assertion (Andrew copy pass S297). */
-const GUIDED_RECITAL_EXCLUDED: ReadonlySet<string> = new Set([
-  "itemized_request",
-  "negotiation",
-  "debt_validation",
-]);
-
-export function renderGuidedCallRecital(
-  entries: GuidedCallLogEntry[] | null | undefined,
-  recipient: "insurer" | "provider" | "collector",
-  letterType: string,
-): string {
-  if (!entries || entries.length === 0) return "";
-  if (recipient === "collector" || GUIDED_RECITAL_EXCLUDED.has(letterType)) return "";
-  const lines: string[] = [];
-  for (const e of entries) {
-    if (recipient === "insurer") {
-      if (e.kind === "insurer_call") {
-        lines.push(
-          `On ${formatDate(e.calledAt)}, I called your member services line about this claim and asked that it be reviewed and reprocessed.`,
-        );
-      }
-    } else {
-      if (e.kind === "billing_hold_call") {
-        lines.push(
-          `On ${formatDate(e.calledAt)}, I called your billing office and requested a hold on this account — no further billing or collection activity — while this claim is reviewed.`,
-        );
-      }
-      if (e.kind === "itemized_request_call") {
-        lines.push(
-          `On ${formatDate(e.calledAt)}, I requested a fully itemized bill for this account by phone.`,
-        );
-      }
-      if (e.kind === "flagged_charges_call") {
-        lines.push(
-          `On ${formatDate(e.calledAt)}, I called your billing office and disputed specific charges on this account.`,
-        );
-      }
-    }
-  }
-  if (lines.length === 0) return "";
-  return `\n\n${lines.join(" ")}`;
-}
+/* Guided Steps v1's attested-call recital (S297) MOVED to
+ * `src/lib/disputes/prior-contact.ts` at S300 (tracker Item N). Its sentences
+ * are carried there verbatim — the move consolidates WHO RENDERS the contact
+ * history into one builder so a letter can never receive two contact blocks;
+ * it does not rewrite the prose. See that module's header for the full rule. */
 
 /** dispute-letters v2 S2 — state-specific citation registry. INERT at launch (no verified entries),
  *  so `resolveStateCitation` returns null for every (state, lever). Counsel-verified, per-entry
@@ -1455,7 +1418,7 @@ function renderLineItemEvidence(
   return bullets.length > 0 ? [headline, ...bullets].join("\n") : "";
 }
 
-function formatDate(iso: string): string {
+export function formatDate(iso: string): string {
   // S109 PR #2 (Chunk A fix) — render with timeZone: 'UTC' so ISO dates like
   // "2023-04-25" don't shift to "April 24, 2023" in PT timezone (Date()
   // parses ISO as UTC midnight; toLocaleDateString without timeZone converts
@@ -2040,14 +2003,13 @@ DISCLAIMER: This letter is informational only. Candid does not negotiate on your
 const finalNoticeTemplate: LetterTemplate = {
   type: "final_notice",
   subject: (provider) => `Final Notice Before Escalation — ${provider}`,
-  body: ({ patientName, providerName, serviceDate, accountNumber, planContext, bill, findings, priorContactDates, certifiedMail }) => {
+  body: ({ patientName, providerName, serviceDate, accountNumber, planContext, bill, findings, priorContactRecital, certifiedMail }) => {
     const recipientBlock = buildProviderRecipientBlock(providerName, planContext?.providerContact, bill);
     const patientRefBlock = buildPatientReferenceBlock(patientName, undefined, planContext?.providerContact, bill);
     const total = (findings ?? []).reduce((s, f) => s + f.estimatedOvercharge, 0);
     const state = planContext?.userState ?? null;
     const certifiedLine = certifiedMail ? "\nSent via certified mail, return receipt requested" : "";
-    const recital = renderGated(priorContactDates, (dates) =>
-      ` I previously contacted you about these charges on ${dates.join(", ")} and have not received a resolution.`);
+    const recital = renderGated(priorContactRecital, (r) => ` ${r}`);
     const amountLine = total > 0 ? ` The amount in dispute is ${formatCurrency(total)}.` : "";
     const forum = state
       ? `my state's consumer-protection authority (the ${state} Attorney General's office)`

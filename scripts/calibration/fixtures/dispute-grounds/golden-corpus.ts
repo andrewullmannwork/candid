@@ -428,7 +428,11 @@ for (const { type, findings } of ZERO_BUG_TYPES) {
   const finalNotice = LETTER_TEMPLATES.final_notice.body({
     patientName: bill.patient.name, providerName: bill.provider.name, serviceDate: bill.serviceDate,
     accountNumber: "ACCT-1", findings: [makeFinding()], bill, planContext: null,
-    priorContactDates: ["January 10, 2024", "February 2, 2024"], certifiedMail: true,
+    // S300 (Item N) — the template now receives a PRE-BUILT recital string
+    // (buildPriorContactRecital) instead of a date array it formats itself.
+    priorContactRecital:
+      "I have been working to resolve these charges since January 10, 2024. I wrote to you on January 10, 2024 and February 2, 2024. None of these attempts has produced a resolution.",
+    certifiedMail: true,
   });
   snapshot("final_notice.generate", finalNotice);
   check("final_notice → provider Compliance Department", finalNotice.includes("Compliance Department"), finalNotice);

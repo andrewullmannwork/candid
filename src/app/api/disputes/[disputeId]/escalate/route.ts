@@ -70,7 +70,6 @@ export async function POST(
     collector,
     appealExhausted,
     certifiedMail,
-    priorContactDates,
     collectorFirstContactDate,
     denialNoticeDate,
   } = (body ?? {}) as {
@@ -78,7 +77,6 @@ export async function POST(
     collector?: { name: string; address?: string | null; originalCreditor?: string | null };
     appealExhausted?: { attested: boolean; denialDate?: string | null };
     certifiedMail?: boolean;
-    priorContactDates?: string[];
     collectorFirstContactDate?: string | null;
     denialNoticeDate?: string | null;
   };
@@ -190,7 +188,11 @@ export async function POST(
     planContext,
     evidence,
     accountNumber,
-    priorContactDates: Array.isArray(priorContactDates) ? priorContactDates : undefined,
+    // S300 (Item N) — `priorContactDates` from the request body is no longer
+    // threaded: rerenderDisputeLetter derives the recital from the case
+    // projection + attested calls server-side. The rail passed one date (the
+    // parent's latest send); the ledger knows every genuine send, and it can't
+    // be shaped by the client.
     certifiedMail: typeof certifiedMail === "boolean" ? certifiedMail : undefined,
     appealExhausted: appealExhausted ?? undefined,
     collector: collector ?? undefined,

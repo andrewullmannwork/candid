@@ -14,8 +14,10 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { DisputeLetterType, AuditReport } from "@/lib/billing/types";
 import type { PlanContext } from "./plan-context";
 import type { DisputeEvidence } from "./evidence-resolver";
-import { LETTER_TEMPLATES, renderGuidedCallRecital } from "./templates";
+import { LETTER_TEMPLATES } from "./templates";
 import { letterRecipientKind } from "./index";
+import { buildPriorContactRecital, RECITAL_IN_OPENING } from "./prior-contact";
+import { loadCaseProjection } from "@/lib/case/load-case-timeline";
 import { guidedCallLogFromMeta } from "@/lib/guides/pack-registry";
 import { resolveLetterRecovery } from "./dispute-grounds";
 import { loadDisputeGroundBasis } from "./dispute-ground-basis";
@@ -44,7 +46,6 @@ interface RerenderParams {
    * the shapes generateDisputeLetter passes so the two build paths can't diverge.
    */
   accountNumber?: string | null;
-  priorContactDates?: string[];
   certifiedMail?: boolean;
   appealExhausted?: { attested: boolean; denialDate?: string | null };
   collector?: { name: string; address?: string | null; originalCreditor?: string | null };
@@ -159,6 +160,29 @@ export async function rerenderDisputeLetter(
       : null;
   const letterRecovery = recovery?.byLine;
 
+  // S300 (Item N) — the prior-contact recital, rebuilt on EVERY render so a
+  // call logged (or a sibling letter mailed) after drafting lands in the letter
+  // on the next refresh/redraft. Sends come from the case projection, calls
+  // from claim.metadata.guideSteps — see prior-contact.ts for why each fact
+  // reads from its own authority. Fail-soft: no projection → calls only.
+  const recitalRecipient = letterRecipientKind(letterType);
+  const recitalInOpening = RECITAL_IN_OPENING.has(letterType);
+  const caseProjection = await loadCaseProjection(supabase, userId, claimId);
+  const priorContactRecital = buildPriorContactRecital({
+    variant: recitalInOpening ? "opening" : "signoff",
+    history: caseProjection?.projected.history ?? null,
+    letters: caseProjection?.projected.letters ?? null,
+    callLog: guidedCallLogFromMeta(
+      ((claim.metadata as Record<string, unknown> | null)?.guideSteps as
+        | Record<string, { checkedAt?: string | null; note?: string }>
+        | undefined) ?? null,
+    ),
+    recipientKind: recitalRecipient,
+    letterType,
+    excludeDisputeId: params.disputeId,
+    includeOtherTrack: true,
+  });
+
   const body = template.body({
     patientName: bill.patient.name ?? "",
     providerName: bill.provider.name ?? "",
@@ -177,29 +201,19 @@ export async function rerenderDisputeLetter(
     // Zone-3 (S266) — escalation/collections inputs for the ladder-advance
     // templates (absent for redraft/GET → renderGated omits → byte-identical).
     accountNumber: params.accountNumber ?? undefined,
-    priorContactDates: params.priorContactDates,
+    priorContactRecital: recitalInOpening ? priorContactRecital : undefined,
     certifiedMail: params.certifiedMail,
     appealExhausted: params.appealExhausted,
     collector: params.collector,
     debtWithinWindow: params.debtWithinWindow,
   });
 
-  // Guided Steps v1 (S297) — attested-call recital, same injection as
-  // generateDisputeLetter (the two build paths mirror; keep in lockstep).
-  // The refresh path re-reads guideSteps every render, so a call logged
-  // AFTER drafting lands in the letter on the next refresh/redraft.
-  const guidedRecital = renderGuidedCallRecital(
-    guidedCallLogFromMeta(
-      ((claim.metadata as Record<string, unknown> | null)?.guideSteps as
-        | Record<string, { checkedAt?: string | null; note?: string }>
-        | undefined) ?? null,
-    ),
-    letterRecipientKind(letterType),
-    letterType,
-  );
-  const finalBody = guidedRecital
-    ? body.replace("\n\nSincerely,", `${guidedRecital}\n\nSincerely,`)
-    : body;
+  // Sign-off injection — mirrors generateDisputeLetter exactly (keep the two
+  // build paths in lockstep). ONE placement decision governs both branches.
+  const finalBody =
+    !recitalInOpening && priorContactRecital
+      ? body.replace("\n\nSincerely,", `\n\n${priorContactRecital}\n\nSincerely,`)
+      : body;
 
   return {
     body: finalBody,

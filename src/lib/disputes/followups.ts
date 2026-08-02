@@ -87,7 +87,77 @@ export interface ActiveFollowup extends FollowupRow {
     // banner can say so and deeplink. Additive; null when unresolvable.
     claim_id?: string | null;
     provider_name?: string | null;
+    // S300 phase 2b — the per-letter governing deadline, so the per-claim
+    // banner row can name the SOONEST one. Null when the deadline engine
+    // never resolved a governing date for that letter.
+    governing_deadline_date?: string | null;
   };
+}
+
+/**
+ * S300 phase 2b (agenda §0.9c) — ONE CLAIM PER POINTER.
+ *
+ * The banner is a STANDING PER-CLAIM ROW, not an event: one row per bill,
+ * one button to that claim's rail top. Grouping happens HERE (server-side,
+ * pure) rather than in the banner, because a client-side grouping would be a
+ * second place deriving case state — the drift class S298's letter-type
+ * consolidation killed.
+ *
+ * Followups whose dispute has no resolvable `claim_id` are DROPPED, not
+ * bucketed under a null key: the row's only affordance is a claim deeplink,
+ * so a claim-less row would render a button that goes nowhere.
+ */
+export interface ClaimFollowupGroup {
+  claimId: string;
+  providerName: string | null;
+  /** Distinct LETTERS waiting on this claim (not follow-up rows — a letter with
+   *  an interim + final nudge pending is still ONE letter waiting). */
+  letterCount: number;
+  /** Soonest governing deadline across this claim's waiting letters (YYYY-MM-DD), or null. */
+  nextDeadline: string | null;
+  /** Every due follow-up id on this claim — the claim-scoped dismiss acts on all of them. */
+  followupIds: string[];
+}
+
+export function groupFollowupsByClaim(rows: ActiveFollowup[]): ClaimFollowupGroup[] {
+  const byClaim = new Map<string, { group: ClaimFollowupGroup; disputeIds: Set<string> }>();
+  // Input order is due_date ASC (getActiveFollowups) — preserved, so the claim
+  // with the most urgent nudge leads the banner.
+  for (const row of rows) {
+    const claimId = row.dispute.claim_id;
+    if (typeof claimId !== "string" || claimId.length === 0) continue;
+    let entry = byClaim.get(claimId);
+    if (!entry) {
+      entry = {
+        group: {
+          claimId,
+          providerName: row.dispute.provider_name ?? null,
+          letterCount: 0,
+          nextDeadline: null,
+          followupIds: [],
+        },
+        disputeIds: new Set<string>(),
+      };
+      byClaim.set(claimId, entry);
+    }
+    entry.disputeIds.add(row.dispute.id);
+    entry.group.followupIds.push(row.id);
+    if (entry.group.providerName === null && row.dispute.provider_name) {
+      entry.group.providerName = row.dispute.provider_name;
+    }
+    const deadline = row.dispute.governing_deadline_date;
+    if (typeof deadline === "string" && deadline.length > 0) {
+      // Date-only strings compare correctly as strings (YYYY-MM-DD) — no clock,
+      // no timezone, which is the point (the S299 letter-date rule).
+      if (entry.group.nextDeadline === null || deadline < entry.group.nextDeadline) {
+        entry.group.nextDeadline = deadline;
+      }
+    }
+  }
+  return [...byClaim.values()].map(({ group, disputeIds }) => ({
+    ...group,
+    letterCount: disputeIds.size,
+  }));
 }
 
 /**
@@ -254,7 +324,9 @@ export async function getActiveFollowups(
 
   const { data, error } = await userScoped(supabase, userId)
     .table("dispute_followups")
-    .select("*, dispute_outcomes!inner(id, dispute_type, status, amount_disputed, filed_date, claim_id, metadata)")
+    .select(
+      "*, dispute_outcomes!inner(id, dispute_type, status, amount_disputed, filed_date, claim_id, governing_deadline_date, metadata)",
+    )
     .eq("status", "pending")
     .lte("due_date", today)
     .order("due_date", { ascending: true });
@@ -300,9 +372,127 @@ export async function getActiveFollowups(
         filed_date: dispute.filed_date,
         claim_id: claimId,
         provider_name: claimId ? (providerByClaim.get(claimId) ?? null) : null,
+        governing_deadline_date: (dispute.governing_deadline_date as string | null) ?? null,
       },
     };
   });
+}
+
+/**
+ * S300 phase 2b — what a LOGGED OUTCOME does to that letter's pending nudges.
+ *
+ * The banner becomes a pure pointer (§0.9c), so its "Still waiting" button —
+ * today the only thing that advances the initial→reprompt→final chain — goes
+ * away. That escape hatch has to move to where the fact is actually recorded,
+ * or a user who logs "they asked for more information" keeps being asked "did
+ * you hear back?" forever (5 of 9 outcome details map to `in_progress`, so
+ * persist.ts's RESOLVED_STATUSES sweep never fires for them).
+ *
+ * The rule RE-ANCHORS, it does not kill:
+ *  - terminal outcomes      → untouched here; persist.ts already dismisses ALL
+ *                             pending rows (case closed, outcome captured).
+ *  - `no_response`          → advance the chain exactly as the old "Still
+ *                             waiting" button did (they genuinely haven't heard).
+ *  - other OPEN outcomes    → dismiss the STALE nudge and schedule the next
+ *                             rung from today. The user stops being asked a
+ *                             question they answered, and the flywheel still
+ *                             comes back for the outcome that matters. Killing
+ *                             the chain outright would go dark on every case
+ *                             that stays open — a flywheel regression.
+ *
+ * DEADLINE-anchored rows (`metadata.followup_kind` = `deadline_*`) are NEVER
+ * touched: a legal deadline exists whether or not the counterparty wrote back.
+ * Only resolution or the deadline passing ends those.
+ *
+ * Fail-soft (mirrors its call site's neighbours) — a failed re-anchor loses a
+ * future nudge, never the outcome write that preceded it.
+ */
+const OPEN_OUTCOME_NEXT_TYPE: Partial<Record<FollowupType, FollowupType>> = {
+  initial_30d: "reprompt_14d",
+  reprompt_14d: "final",
+  // `final` is the end of the cadence — re-anchoring stops here by design.
+};
+
+/** The check-in cadence, in order. Deadline rows are NOT part of it. */
+const CHECK_IN_ORDER: FollowupType[] = ["initial_30d", "reprompt_14d", "final"];
+
+export interface PendingFollowupRow {
+  id: string;
+  followup_type: FollowupType;
+  metadata: Record<string, unknown> | null;
+}
+
+export interface FollowupQuietingPlan {
+  /** Rows to mark dismissed (never deadline-anchored ones). */
+  dismissIds: string[];
+  /** The rung to schedule from today, or null when the cadence is exhausted. */
+  nextType: FollowupType | null;
+}
+
+/**
+ * PURE decision half of {@link quietOutcomeFollowups} — exercised by
+ * scripts/calibration/fixtures/dispute-grounds/followup-quieting.ts.
+ */
+export function planFollowupQuieting(
+  pending: PendingFollowupRow[],
+  outcomeDetail: string,
+): FollowupQuietingPlan {
+  // Check-in chain only — a legal deadline exists whether or not the
+  // counterparty wrote back.
+  const checkIn = pending.filter((r) => {
+    const kind = r.metadata?.followup_kind;
+    return !(typeof kind === "string" && kind.startsWith("deadline_"));
+  });
+  if (checkIn.length === 0) return { dismissIds: [], nextType: null };
+
+  // Nothing arrived — the existing reactive chain is already right. Leave the
+  // rows alone; the cron re-nudges on their own cadence.
+  if (outcomeDetail === "no_response") return { dismissIds: [], nextType: null };
+
+  // Re-anchor from the FURTHEST-ALONG row being dismissed, so an answered
+  // reprompt escalates to final rather than looping back to another reprompt.
+  const furthest = checkIn
+    .map((r) => r.followup_type)
+    .filter((t) => CHECK_IN_ORDER.includes(t))
+    .sort((a, b) => CHECK_IN_ORDER.indexOf(a) - CHECK_IN_ORDER.indexOf(b))
+    .pop();
+  return {
+    dismissIds: checkIn.map((r) => r.id),
+    nextType: furthest ? (OPEN_OUTCOME_NEXT_TYPE[furthest] ?? null) : null,
+  };
+}
+
+export async function quietOutcomeFollowups(
+  supabase: SupabaseClient,
+  params: { disputeId: string; userId: string; outcomeDetail: string },
+): Promise<void> {
+  const { disputeId, userId, outcomeDetail } = params;
+  try {
+    const { data: rows } = await userScoped(supabase, userId)
+      .table("dispute_followups")
+      .select("id, followup_type, metadata")
+      .eq("dispute_id", disputeId)
+      .eq("status", "pending");
+
+    const plan = planFollowupQuieting((rows ?? []) as PendingFollowupRow[], outcomeDetail);
+    if (plan.dismissIds.length === 0) return;
+
+    await userScoped(supabase, userId)
+      .table("dispute_followups")
+      .update({ status: "dismissed", updated_at: new Date().toISOString() })
+      .in("id", plan.dismissIds);
+
+    if (!plan.nextType) return;
+    const { repeatDays } = await readCadence(supabase);
+    await userScoped(supabase, userId).table("dispute_followups").insert({
+      dispute_id: disputeId,
+      followup_type: plan.nextType,
+      due_date: addDays(repeatDays),
+      status: "pending",
+    });
+  } catch (err) {
+    console.error("[followups] quietOutcomeFollowups failed (non-fatal):", err);
+  }
 }
 
 /**

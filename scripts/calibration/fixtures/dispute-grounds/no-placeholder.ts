@@ -100,7 +100,7 @@ for (const t of ["overcharge", "duplicate_charge", "balance_billing", "itemized_
 // inputs (recital / attestation / collector absent-or-minimal). They already use
 // renderGated; this guards against a regression re-introducing a placeholder.
 try {
-  assertClean("final_notice [sparse]", LETTER_TEMPLATES.final_notice.body({ ...COMMON, bill: sparseBill(), priorContactDates: [], certifiedMail: false }));
+  assertClean("final_notice [sparse]", LETTER_TEMPLATES.final_notice.body({ ...COMMON, bill: sparseBill(), priorContactRecital: "", certifiedMail: false }));
 } catch (e) {
   check("render final_notice [sparse] does not throw", false, e instanceof Error ? e.message : e);
 }

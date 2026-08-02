@@ -87,6 +87,24 @@ jobs:
         # Case-2 resend (two artifacts, one step), defensive reads.
         run: npx tsx scripts/calibration/fixtures/dispute-grounds/sent-versions.ts
 
+      - name: Prior-contact recital (S300 phase 2b / tracker Item N)
+        # The ONE contact recital. Guards the false-statement cases first:
+        # recipient matching (a provider letter never recites insurer-directed
+        # sends as "I wrote to you"), §0.9b unsend netting (never-mailed is
+        # never recited), the composing letter's own draft excluded, and the
+        # other-track clause ONLY on an ATTESTED conclusion (absence of a
+        # logged outcome is not evidence of silence). Also locks that the
+        # `signoff` variant is byte-equal to the S297 call recital it absorbed.
+        run: npx tsx scripts/calibration/fixtures/dispute-grounds/prior-contact.ts
+
+      - name: Follow-up grouping + quieting (S300 phase 2b / §0.9c)
+        # ONE CLAIM PER POINTER (distinct letter counts, soonest deadline,
+        # claim-less rows dropped) + the rule that replaced the banner's
+        # "Still waiting" button: a logged response RE-ANCHORS the check-in
+        # chain instead of cancelling it, "no response yet" leaves it alone,
+        # and deadline-anchored rows are never touched by an outcome.
+        run: npx tsx scripts/calibration/fixtures/dispute-grounds/followup-quieting.ts
+
       - name: Canonical link is a pair (S292 / mig 218)
         # Fails the build if any code writes insurance_plans.canonical_plan_id
         # without canonical_match_confidence. An unscored link reads as UNKNOWN to
