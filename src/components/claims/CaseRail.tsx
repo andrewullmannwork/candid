@@ -153,6 +153,7 @@ function WaitCardBody({
   onDoor,
   doorLogged,
   doorBusy,
+  doorFailed,
 }: {
   card: RailWaitCard;
   whnOpen: boolean;
@@ -161,6 +162,8 @@ function WaitCardBody({
   onDoor: () => void;
   doorLogged: boolean;
   doorBusy: boolean;
+  /** The last door write FAILED. Rendered — never swallowed (S300 lesson). */
+  doorFailed: boolean;
 }) {
   return (
     <div className="rounded-xl border border-gray-200 bg-white px-4 py-3.5">
@@ -216,6 +219,11 @@ function WaitCardBody({
           </button>
         )}
       </div>
+      {doorFailed && (
+        <p className="mt-2 text-[11.5px] font-medium text-red-600">
+          That didn&apos;t save — please try again.
+        </p>
+      )}
       {card.foot && <div className="mt-2 text-[11.5px] text-gray-400">{card.foot}</div>}
       {card.whn && (
         <details
@@ -341,7 +349,11 @@ function GuideStepCard({
                 disabled={busy || (step.action.kind !== "attest" && !value.trim())}
                 className="inline-flex items-center rounded-xl bg-blue-600 px-3.5 py-[7px] text-[12.5px] font-semibold text-white transition-colors hover:bg-blue-700 disabled:opacity-60"
               >
-                {step.action.kind === "attest" ? step.action.label : step.action.saveLabel}
+                {busy
+                  ? "Working…"
+                  : step.action.kind === "attest"
+                    ? step.action.label
+                    : step.action.saveLabel}
               </button>
               {step.skippable && (
                 <button
@@ -415,6 +427,7 @@ export function CaseRail({
   const [whnOpen, setWhnOpen] = useState<Record<string, boolean>>({});
   const [doorLogged, setDoorLogged] = useState<Record<string, boolean>>({});
   const [doorBusy, setDoorBusy] = useState<Record<string, boolean>>({});
+  const [doorError, setDoorError] = useState<Record<string, boolean>>({});
   const [undoBusy, setUndoBusy] = useState<Record<string, boolean>>({});
   const [undoError, setUndoError] = useState<Record<string, boolean>>({});
   // S301 — collections step state, keyed by stepId (claim-scoped, so one per bill).
@@ -453,17 +466,23 @@ export function CaseRail({
   const logCollectionResumed = async (disputeId: string) => {
     if (doorBusy[disputeId] || doorLogged[disputeId]) return;
     setDoorBusy((m) => ({ ...m, [disputeId]: true }));
+    setDoorError((m) => ({ ...m, [disputeId]: false }));
+    // Optimistic + snap-back, matching every other action on this rail (Andrew,
+    // S301). It used to flip ONLY on success and swallow failure entirely — the
+    // S300 acknowledge bug exactly: a write that 400s and shows no symptom.
+    setDoorLogged((m) => ({ ...m, [disputeId]: true }));
     try {
       const token = await getAuthToken();
-      if (!token) return;
+      if (!token) throw new Error("no token");
       const res = await fetch(`/api/claims/${claimId}/case-events`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ kind: "collection_resumed_reported", disputeId }),
       });
-      if (res.ok) setDoorLogged((m) => ({ ...m, [disputeId]: true }));
+      if (!res.ok) throw new Error(`case-events ${res.status}`);
     } catch {
-      // fail-quiet — the door stays available
+      setDoorLogged((m) => ({ ...m, [disputeId]: false }));
+      setDoorError((m) => ({ ...m, [disputeId]: true }));
     } finally {
       setDoorBusy((m) => ({ ...m, [disputeId]: false }));
     }
@@ -636,6 +655,7 @@ export function CaseRail({
                   }
                   doorLogged={doorLogged[s.card.disputeId] ?? false}
                   doorBusy={doorBusy[s.card.disputeId] ?? false}
+                  doorFailed={doorError[s.card.disputeId] ?? false}
                 />
               </RailStep>
             );
