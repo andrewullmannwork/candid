@@ -66,7 +66,6 @@ export interface LetterViewProps {
   /** §0.9b guard — true ONLY at stage `awaiting` (no outcome logged). */
   canUnlock: boolean;
   onDownload: () => void;
-  onDraftUpdated: () => void;
   onUnlock: () => void;
 }
 
@@ -230,22 +229,35 @@ export function LetterView(p: LetterViewProps) {
 
       <hr className="my-4 border-gray-200" />
       <div className="flex flex-wrap items-center justify-between gap-3">
+        {/* S301 — "Draft an updated letter" REMOVED from the sent view.
+            It could never work: /redraft rewrites `letter_content`, while the
+            GET serves the immutable `sent_letter` for as long as `sent_at` is
+            set (S74.5 chain-of-custody). The write landed and no code path
+            could ever display it. Drafting alongside a genuinely-mailed letter
+            is §0.9 rule-4 Case 2, which is specified but unbuilt — so the
+            honest affordance is unsend-then-redraft, and the hint says so
+            INCLUDING the consequence (Andrew, S301: unsending restarts the
+            response clock, so the user must know before they choose it).
+
+            Where a response is already logged, §0.9b withholds unsend too —
+            correctly, so it can never orphan an outcome — and the real forward
+            path is the escalation the rail offers. Nothing renders here then. */}
         <div className="flex flex-wrap items-center gap-3">
-          <button
-            type="button"
-            onClick={p.onDraftUpdated}
-            className="inline-flex items-center rounded-lg border border-gray-200 bg-white px-4 py-2 text-[13.5px] font-semibold text-gray-700 transition-colors hover:bg-gray-50"
-          >
-            Draft an updated letter
-          </button>
           {p.canUnlock && (
-            <button
-              type="button"
-              onClick={p.onUnlock}
-              className="border-none bg-transparent p-0 text-[12px] text-gray-400 underline underline-offset-2 transition-colors hover:text-gray-600"
-            >
-              I haven&apos;t actually sent this — unlock and edit
-            </button>
+            <div className="flex flex-col gap-1">
+              <button
+                type="button"
+                onClick={p.onUnlock}
+                className="self-start border-none bg-transparent p-0 text-[12px] text-gray-400 underline underline-offset-2 transition-colors hover:text-gray-600"
+              >
+                I haven&apos;t actually sent this — unlock and edit
+              </button>
+              {/* COPY PENDING ANDREW APPROVAL (S301) */}
+              <span className="text-[11.5px] text-gray-400">
+                Need to send an updated letter? Unlock it first — that reopens it for editing and
+                restarts their response clock.
+              </span>
+            </div>
           )}
         </div>
         <button

@@ -1070,50 +1070,41 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
   // Both are CLAIM-scoped (`claims.metadata.collector`) exactly as the provider
   // contact is, so they cascade — the user types the agency once for the bill and
   // every later letter on it reads the same values.
-  if (wantsCollectorAddress) {
+  // ONE row for the collection agency (Andrew, S301 E2E). It was two — address
+  // and account number — that opened the SAME modal, next to a contact-date row
+  // that used a different inline editor: three rows, one action, two interaction
+  // models. One row, one action, one modal.
+  //
+  // Done means BOTH required fields are on file: the address is what the letter
+  // prints, the account number is what the dispute is keyed on. Either missing
+  // and the row still needs the user, so a half-filled agency can never read as
+  // complete.
+  if (wantsCollectorAddress || wantsAccountNumber) {
+    const agencyDone = collectorAddressOnFile && accountNumberOnFile;
     descs.push({
-      key: "collector-addr",
-      done: collectorAddressOnFile,
+      key: "collector-details",
+      done: agencyDone,
       importance: "important",
-      node: collectorAddressOnFile ? (
+      node: agencyDone ? (
         <Row
           icon={MapPinIcon}
-          label="Collector's address"
+          label="Collection agency details"
           control={<DoneEdit label="On file" onEdit={() => onAddCollectorDetails?.()} />}
         />
       ) : (
         <Row
           icon={MapPinIcon}
-          label="Collector's address"
+          label="Collection agency details"
           badge={ImportantBadge}
-          control={<AddButton label="Add" onClick={() => onAddCollectorDetails?.()} />}
+          control={
+            <AddButton
+              label={collectorAddressOnFile || accountNumberOnFile ? "Finish" : "Add"}
+              onClick={() => onAddCollectorDetails?.()}
+            />
+          }
         >
-          Where your debt validation letter gets mailed — it&apos;s printed on the notice they sent
-          you.
-        </Row>
-      ),
-    });
-  }
-
-  if (wantsAccountNumber) {
-    descs.push({
-      key: "collector-account",
-      done: accountNumberOnFile,
-      importance: "helpful",
-      node: accountNumberOnFile ? (
-        <Row
-          icon={ReceiptIcon}
-          label="Account / reference number"
-          control={<DoneEdit label="On file" onEdit={() => onAddCollectorDetails?.()} />}
-        />
-      ) : (
-        <Row
-          icon={ReceiptIcon}
-          label="Account / reference number"
-          control={<AddButton label="Add" onClick={() => onAddCollectorDetails?.()} />}
-        >
-          The collector&apos;s file number for this debt — it&apos;s on their notice, usually near
-          the top.
+          Their mailing address and the account number for this debt — both are printed on the
+          notice they sent you, and your letter needs both.
         </Row>
       ),
     });

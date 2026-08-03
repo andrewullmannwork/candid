@@ -67,8 +67,21 @@ export function CollectorModal({
   if (!open) return null;
 
   function handleSubmit() {
+    // S301 (Andrew) — the address and the account number are REQUIRED, not
+    // optional: the address is what the debt-validation letter's recipient
+    // block prints, and the account number is what every FDCPA dispute is
+    // keyed on. Both are printed on the notice the collector just sent, so
+    // they are in hand at exactly the moment this form is filled.
     if (!name.trim()) {
       setError("The collection agency's name is required.");
+      return;
+    }
+    if (!address.trim()) {
+      setError("The collection agency's mailing address is required — it's on their notice.");
+      return;
+    }
+    if (!accountNumber.trim()) {
+      setError("The account / reference number is required — it's on their notice.");
       return;
     }
     setError(null);
@@ -124,7 +137,7 @@ export function CollectorModal({
           </div>
           <div>
             <label htmlFor="collector-address" className="block text-xs font-semibold uppercase tracking-wide text-slate-500">
-              Mailing address <span className="font-normal normal-case text-slate-400">(optional)</span>
+              Mailing address <span className="text-red-500">*</span>
             </label>
             <textarea
               id="collector-address"
@@ -138,8 +151,7 @@ export function CollectorModal({
           <div>
             {/* Copy Andrew-approved S301. */}
             <label htmlFor="collector-account" className="block text-xs font-semibold uppercase tracking-wide text-slate-500">
-              Account / reference number{" "}
-              <span className="font-normal normal-case text-slate-400">(optional)</span>
+              Account / reference number <span className="text-red-500">*</span>
             </label>
             <input
               id="collector-account"

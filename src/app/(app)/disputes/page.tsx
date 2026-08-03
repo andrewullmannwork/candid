@@ -2602,7 +2602,6 @@ function DisputesContent() {
           }
           canUnlock={entry?.stage === "awaiting"}
           onDownload={handleDownload}
-          onDraftUpdated={() => void handleRedraft()}
           onUnlock={() => void handleUndoSent()}
         />
       </div>
