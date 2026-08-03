@@ -29,6 +29,8 @@ import { ExhaustionAttestModal } from "@/components/disputes/ExhaustionAttestMod
 import { railHasExtension, fmtRailDate } from "@/lib/case/rail-steps";
 import type { ProjectedLetterStep } from "@/lib/case/timeline-projector";
 import { letterRecipientKind } from "@/lib/disputes";
+import { UnsendControl } from "@/components/disputes/UnsendControl";
+import { OUTCOME_LABELS } from "@/lib/disputes/outcome-taxonomy";
 import {
   markSentPayload,
   undoResultPayload,
@@ -551,6 +553,8 @@ export function ClaimDetail({
   const [railExhaustionFromDisputeId, setRailExhaustionFromDisputeId] = useState<string | null>(null);
   const [railEscalating, setRailEscalating] = useState(false);
   const [railActionError, setRailActionError] = useState<string | null>(null);
+  const [primaryUnsendBusy, setPrimaryUnsendBusy] = useState(false);
+  const [primaryUnsendFailed, setPrimaryUnsendFailed] = useState(false);
   // "Show full step" client state for the done-collapsed rail steps 1-2
   // (collapsed by default when done; expansion is throwaway, not persisted).
   const [assumpFullOpen, setAssumpFullOpen] = useState(false);
@@ -3454,6 +3458,38 @@ export function ClaimDetail({
               <div className={railPrimarySent && !fourBFullOpen ? "hidden" : undefined}>
                 {recoverBranchNode(muted4b)}
               </div>
+              {/* S301 (Andrew) — unsend on the PRIMARY letter's step too. Its
+                  send step is 4b in the prep rail, never the extension rail
+                  (contributesSendStep excludes the primary), so without this the
+                  case surface offered unsend for every letter EXCEPT the main
+                  one — reachable only by opening the letter page. Same shared
+                  control, same atomic request: unsending here reopens the letter
+                  as a draft, which is exactly what clicking into it then shows. */}
+              {railPrimarySent && fourBFullOpen && railPrimaryLetter && (
+                <div className="mt-3">
+                  <UnsendControl
+                    loggedOutcomeLabel={
+                      railPrimaryLetter.outcome
+                        ? OUTCOME_LABELS[railPrimaryLetter.outcome.detail]
+                        : null
+                    }
+                    loggedOutcomeDateLabel={
+                      railPrimaryLetter.outcome?.loggedAt
+                        ? fmtRailDate(railPrimaryLetter.outcome.loggedAt)
+                        : null
+                    }
+                    busy={primaryUnsendBusy}
+                    failed={primaryUnsendFailed}
+                    onUnsend={() => {
+                      setPrimaryUnsendBusy(true);
+                      setPrimaryUnsendFailed(false);
+                      void handleRailMarkSent(railPrimaryLetter.disputeId, false)
+                        .then((ok) => setPrimaryUnsendFailed(!ok))
+                        .finally(() => setPrimaryUnsendBusy(false));
+                    }}
+                  />
+                </div>
+              )}
             </RailStep>
           </>
         );

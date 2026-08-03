@@ -350,7 +350,12 @@ function GuideStepCard({
                 disabled={busy || (step.action.kind !== "attest" && !value.trim())}
                 className="inline-flex items-center rounded-xl bg-blue-600 px-3.5 py-[7px] text-[12.5px] font-semibold text-white transition-colors hover:bg-blue-700 disabled:opacity-60"
               >
-                {busy
+                {/* "Working…" ONLY for the structural action (mark-as-sent).
+                    Round 3b put it on every button, which masked the optimistic
+                    flip it was supposed to complement — an attest that already
+                    turned green still read as pending for the whole refetch
+                    (Andrew, S301: "the undo is still pretty slow"). */}
+                {busy && step.derivedFromSend
                   ? "Working…"
                   : step.action.kind === "attest"
                     ? step.action.label
@@ -592,12 +597,16 @@ export function CaseRail({
       if (s.doneSource === "date") {
         // Undo on a date step CLEARS it (null); saving sets it. Both go through
         // the existing deadline-inputs route — the engine keeps one input path.
-        if (s.state === "done") {
-          await onSaveFirstContactDate(s.disputeId, null);
-          return;
+        // Optimistic like every other field flip: the stored date IS the answer,
+        // so the step can show its new state immediately and reconcile after.
+        const clearing = s.state === "done";
+        if (!clearing && !value) return;
+        applyOptimistic(s.stepId, clearing ? "open" : "done");
+        try {
+          await onSaveFirstContactDate(s.disputeId, clearing ? null : value);
+        } finally {
+          clearOptimistic(s.stepId);
         }
-        if (!value) return;
-        await onSaveFirstContactDate(s.disputeId, value);
         return;
       }
       const nextDone = s.action.kind === "text" ? true : s.state !== "done";
