@@ -27,6 +27,7 @@ const EXPOSED_FLAGS = new Set([
   "onboarding_simplified_v1", // Simplified onboarding (S285) — /onboarding route, profile meter, signup redirect
   "guided_steps_v1", // S297 Guided Steps v1 — phone subflow on /claim, spine packs C/D, done-step rail collapse
   "case_rail_v1", // S299 Timeline unification phase 1a — extended claim rail UI (spine gated separately by case_timeline_v1)
+  "letter_requirements_v1", // S301 — each letter asks only for what it needs (CaseNeedsPanel row set; gaps + readiness floor gate server-side on the same flag)
 ]);
 
 // KV-store flags exposed through this same endpoint. Two-system note: the keys

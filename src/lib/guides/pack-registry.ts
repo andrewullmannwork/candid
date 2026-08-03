@@ -387,6 +387,116 @@ export type PackCContext = {
   validationDeadlineLabel: string | null;
 };
 
+// ── Collections steps (S301) — the guard-rail rebuilt as RAIL steps ─────────
+//
+// Andrew's S301 critique, applied:
+//   1. "Collections guard-rail" told a user nothing about what was behind the
+//      click. The header names the situation and the first move, and names the
+//      agency when we know it.
+//   2. NO CHECKBOXES. Every step is an ACTION — a button, or input(s) plus a
+//      confirming button. The indicator is an empty circle that fills green with
+//      a white check once done, matching the rest of the timeline.
+//   3. Steps that already exist on the rail are NOT rebuilt here. "Your debt
+//      validation letter is ready" is the rail's own send step and "What did the
+//      collector do?" is its waiting card (already collections-specific: the
+//      undated §1692g wait, the "Collection must pause" chip, the approved
+//      what-happens-next rows). Re-creating either would put two doors on the
+//      same act — exactly the duplication this relocation exists to dissolve.
+//      So the registry holds only the FOUR net-new steps.
+//   4. A skipped step is NOT green: light grey with a skip mark, never a check.
+//      These attestations feed letters (the prior-contact recital) and the
+//      flywheel, so "skipped" must never be readable as "done" — the rail may
+//      not claim the user did something they didn't (S297 §3.2, attested-only).
+//
+// Timestamps: these persist through the CLAIM checklist route, whose stamps are
+// server-side, so every completed step can say WHEN. That is also why they are
+// claim-scoped — the collections track belongs to the bill, and escalate dedups
+// debt_validation to one row per claim.
+
+export type CollectionsStepAction =
+  /** A single confirming button. */
+  | { kind: "attest"; label: string }
+  /** A date field plus its save button. */
+  | { kind: "date"; label: string; saveLabel: string }
+  /** A short text field plus its save button. */
+  | { kind: "text"; label: string; placeholder: string; saveLabel: string };
+
+export type CollectionsStep = {
+  /** Stable, KEY_RE-valid. Persisted in claims.metadata.guideSteps. */
+  id: string;
+  title: string;
+  body: string;
+  action: CollectionsStepAction;
+  /**
+   * Whether the user may dismiss this step without doing it. Only the two
+   * certified-mail steps are dismissible: not-paying, the first-contact date,
+   * and the outcome are facts the track needs, not preferences.
+   */
+  skippable: boolean;
+};
+
+/** Header. Names the agency when the claim knows it (S301 — it always has). */
+export function collectionsTitle(collectorName: string | null): string {
+  return collectorName
+    ? `${collectorName} contacted you. View playbook.`
+    : "A collector contacted you. View playbook.";
+}
+
+export const COLLECTIONS_STEPS: CollectionsStep[] = [
+  {
+    id: "packC:not-paid",
+    title: "Don't pay anything yet",
+    body: "From this moment, this dispute lives on paper — letters, certified mail, copies of everything. You're asking them to prove their case before any money moves.",
+    action: { kind: "attest", label: "I haven't paid the collector" },
+    skippable: false,
+  },
+  {
+    id: "packC:first-contact",
+    // Replaces "First contact date — already on file", which asserted the date
+    // WAS on file in precisely the state where it wasn't — and, being a derived
+    // row, vanished silently when absent, taking the §1692g deadline sentence
+    // with it. It is now an open step you can see and answer.
+    title: "When did they first contact you?",
+    body: "This starts the 30-day window to demand proof — FDCPA §1692g.",
+    action: { kind: "date", label: "Date of their first contact", saveLabel: "Save date" },
+    skippable: false,
+  },
+  {
+    id: "packC:mailed",
+    title: "Mail it certified",
+    body: "Certified mail is what makes this provable. Keep your copy.",
+    action: { kind: "attest", label: "I mailed it" },
+    // NOT skippable (S301 refinement): this step IS mark-as-sent — the two are
+    // bidirectional, so "skipping" it would mean skipping the send itself, which
+    // is not a preference, just a not-yet. Its state derives from the letter's
+    // own send record rather than a second boolean, which is what dissolves the
+    // old Pack-C "I mailed it" / spine mail-certified duplication.
+    skippable: false,
+  },
+  {
+    id: "packC:receipt",
+    title: "Certified mail — staple the receipt to your copy",
+    body: "That receipt is your proof you disputed inside the 30-day window.",
+    action: {
+      kind: "text",
+      label: "USPS tracking number",
+      placeholder: "USPS tracking number",
+      saveLabel: "Save",
+    },
+    skippable: true,
+  },
+];
+
+/** Skip affordance + the resolved-state labels (S301, Andrew-approved). */
+export const COLLECTIONS_CHROME = {
+  skipLabel: "Skip",
+  skippedLabel: "skipped",
+  undoSkipLabel: "Undo",
+} as const;
+
+/** @deprecated S301 — superseded by COLLECTIONS_STEPS. Reachable only with
+ *  `case_rail_v1` OFF, where GuidedPackCSection still mounts on the dispute
+ *  page. Removed with the UnifiedTodo retirement (phase 3 remainder). */
 export const PACK_C_TITLE = "Collections guard-rail";
 
 export const PACK_C_STEPS: GuideStep[] = [

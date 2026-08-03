@@ -7,6 +7,7 @@ import type {
   DisputeLetterType,
   FindingType,
 } from "../billing/types";
+import { letterRecipientKind } from "./letter-type";
 import { LETTER_TEMPLATES } from "./templates";
 import type { PlanBenefitEvidence } from "./templates";
 import { RECITAL_IN_OPENING } from "./prior-contact";
@@ -29,52 +30,22 @@ const FINDING_TO_LETTER: Partial<Record<FindingType, DisputeLetterType>> = deriv
 /**
  * Who the finished letter is addressed to — the single source of truth shared by
  * the templates (which recipient block + request verbs to emit) and the
- * readiness floor (which mailing address MVDL #3 requires). Only the
- * insurance-appeal letter is addressed to the INSURER (templates.ts
- * `insuranceAppealTemplate` is the sole `buildInsurerRecipientBlock` call site);
- * every other letter type goes to the PROVIDER.
+ * readiness floor (which mailing address MVDL #3 requires).
  *
- * Accepts either the resolved `DisputeLetterType` ("insurance_appeal") OR a raw
- * `dispute_outcomes.dispute_type` ("internal_appeal", "cost_share_misapplication",
- * "coverage_contradiction", "not_covered") so callers can pass whichever they
- * have without a second resolve. Unknown / undefined → "provider" (the common
- * case + the conservative default: requires the address the provider letter prints).
+ * MOVED to `./letter-type` at S301 and re-exported here so every existing
+ * `letterRecipientKind` import site is unchanged. It lives beside the letter-type
+ * resolver because `letterNeeds` derives from it, and deriving inside this barrel
+ * would make the module graph circular (index → evidence-resolver → letter-type
+ * → index) and drag templates/prior-contact into every needs consumer.
  */
-// EXHAUSTIVE over DisputeLetterType — the compiler forces every letter type to declare its
-// recipient here, so a new type cannot silently fall through to "provider" (dispute-letters v2
-// S2 hardening; replaces the prior silent-omit Set).
-export type LetterRecipientKind = "insurer" | "provider" | "collector";
-
-const RECIPIENT_BY_LETTER_TYPE: Record<DisputeLetterType, LetterRecipientKind> = {
-  overcharge: "provider",
-  duplicate_charge: "provider",
-  balance_billing: "provider",
-  itemized_request: "provider",
-  negotiation: "provider",
-  insurance_appeal: "insurer",
-  final_notice: "provider",
-  external_review: "insurer",
-  debt_validation: "collector",
-};
-
-// Raw dispute_outcomes.dispute_type values (NOT DisputeLetterType) that resolve to the insurer —
-// the legacy rerender path passes these directly.
-const INSURER_DISPUTE_TYPES = new Set<string>([
-  "internal_appeal",
-  "cost_share_misapplication",
-  "coverage_contradiction",
-  "not_covered",
-]);
-
-export function letterRecipientKind(
-  type: string | null | undefined,
-): LetterRecipientKind {
-  if (!type) return "provider";
-  if (Object.prototype.hasOwnProperty.call(RECIPIENT_BY_LETTER_TYPE, type)) {
-    return RECIPIENT_BY_LETTER_TYPE[type as DisputeLetterType];
-  }
-  return INSURER_DISPUTE_TYPES.has(type) ? "insurer" : "provider";
-}
+export {
+  letterRecipientKind,
+  letterNeeds,
+  type LetterRecipientKind,
+  type LetterNeeds,
+  type LetterNeedKey,
+  type RecipientAddressGapKind,
+} from "./letter-type";
 
 export interface GenerateDisputeLetterOptions {
   planEvidence?: PlanBenefitEvidence[];

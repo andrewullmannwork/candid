@@ -47,6 +47,7 @@ import {
   type SecondaryCoverage,
 } from "@/lib/audit/coverage-loader";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
+import { letterNeeds } from "./letter-type";
 import { userScoped, selectOwnedChildren } from "@/lib/security/user-scoped";
 
 const K_ANON_PRICING = 5;
@@ -489,6 +490,13 @@ export interface EvidenceGap {
      *  hasn't confirmed it's correct. Optional "make it stronger" item: the UI
      *  shows a Confirm / Edit affordance mirroring the insurer verified-state. */
     | "provider_address_confirm"
+    /** S301 — collector mailing address missing on a collections letter. The
+     *  debt-validation letter's recipient block prints THIS address
+     *  (templates.ts `buildCollectorRecipientBlock`), so its absence fails the
+     *  MVDL floor exactly as a missing provider address does on a provider
+     *  letter. Emitted only under `letter_requirements_v1`; before that flag the
+     *  collections track was asked for a PROVIDER address it never prints. */
+    | "collector_address_missing"
     /** S74 Pillar 3 — at least one planBenefit-row is not cite-grade
      *  (sbcExcerptVerified=false). The user can click Re-draft to re-parse
      *  un-searched plan-document sections and attempt to upgrade those rows
@@ -1027,6 +1035,7 @@ export async function resolveEvidence(
     letterType ?? null,
     userConfirmedSamePlan,
     canonicalPlanIdForBillYear,
+    await isFeatureEnabled("letter_requirements_v1"),
   );
 
   return {
@@ -1068,6 +1077,8 @@ function computeEvidenceGaps(
   letterType: string | null,
   userConfirmedSamePlan: "yes" | "no" | "not_sure" | null,
   canonicalPlanIdForBillYear: string | null,
+  /** `letter_requirements_v1` — OFF reproduces the pre-S301 binary exactly. */
+  letterRequirementsOn: boolean,
 ): EvidenceGap[] {
   const gaps: EvidenceGap[] = [];
 
@@ -1180,14 +1191,32 @@ function computeEvidenceGaps(
     });
   }
 
-  // S74 Pillar 3 — insurer appeals address missing. Only meaningful when the
-  // letter actually goes to the insurer (insurance_appeal). For other letter
-  // types the provider gap below covers the recipient gap; the insurer name
-  // still appears in the body but no address is required.
+  // ── Recipient address (S301) — ONE derivation, keyed on the letter ────────
+  //
+  // `needs.recipientAddress` is the machine image of the letter composer's own
+  // recipient decision (index.ts), so the address we ask for is always the
+  // address the letter prints. Before this, the two questions were answered
+  // independently: `insurer_address_missing` fired ONLY for insurance_appeal
+  // and `provider_address_missing` fired for everything that ISN'T
+  // insurance_appeal — so an insurer-directed external review was asked for a
+  // provider address and never for its appeals address, and a collector letter
+  // was asked for the clinic's address instead of the collector's.
+  //
+  // Flag OFF → the legacy binary below, byte-identical.
+  const needs = letterNeeds(letterType);
+  const wantsInsurerAddress = letterRequirementsOn
+    ? needs.recipientAddress === "insurer_appeals_address"
+    : letterType === "insurance_appeal";
+  const wantsProviderAddress = letterRequirementsOn
+    ? needs.recipientAddress === "provider_address"
+    : letterType !== "insurance_appeal" && letterType !== null;
+  const wantsCollectorAddress =
+    letterRequirementsOn && needs.recipientAddress === "collector_address";
+
   const insurerAddressMissing =
     !!planContext?.plan &&
     (!planContext.insurer || !planContext.insurer.appealsAddress);
-  if (insurerAddressMissing && letterType === "insurance_appeal") {
+  if (insurerAddressMissing && wantsInsurerAddress) {
     gaps.push({
       kind: "insurer_address_missing",
       title: "We don't have your insurer's appeals address on file",
@@ -1198,14 +1227,28 @@ function computeEvidenceGaps(
     });
   }
 
+  // S301 — collector mailing address. The letter prints it; without it the
+  // recipient block renders the agency NAME alone (templates.ts
+  // `buildCollectorRecipientBlock` joins name + address, skipping nulls).
+  // Reads the SAME planContext field every other consumer reads — no per-caller
+  // threading, so a caller cannot forget to supply it and silently suppress the gap.
+  const collectorAddressOnFile = !!planContext?.collectorContact?.address;
+  if (wantsCollectorAddress && !collectorAddressOnFile) {
+    gaps.push({
+      kind: "collector_address_missing",
+      title: "Where do we mail the collector?",
+      description:
+        "The collection agency's mailing address — it's printed on the notice they sent you. Your debt validation letter goes to this address.",
+      // No ctaHref — the UI renders an inline form that POSTs to
+      // /api/disputes/[disputeId]/collector-contact.
+    });
+  }
+
   // S74 Pillar 3 — provider mailing address missing on the linked claim.
-  // Suppress when the letter goes to the insurer (insurance_appeal) — the
-  // recipient there is the insurer, not the provider.
   const providerAddressMissing =
     !!planContext &&
     (!planContext.providerContact || !planContext.providerContact.address);
-  const goesToProvider =
-    letterType !== "insurance_appeal" && letterType !== null;
+  const goesToProvider = wantsProviderAddress;
   if (providerAddressMissing && goesToProvider) {
     gaps.push({
       kind: "provider_address_missing",

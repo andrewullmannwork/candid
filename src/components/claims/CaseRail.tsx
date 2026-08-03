@@ -29,7 +29,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { ShowFullStepButton } from "@/components/claims/GuidedPhoneSteps";
-import { CASE_RAIL } from "@/lib/guides/pack-registry";
+import { CASE_RAIL, COLLECTIONS_CHROME } from "@/lib/guides/pack-registry";
 import {
   composeRailSteps,
   railStepDisputeId,
@@ -231,6 +231,150 @@ function WaitCardBody({
   );
 }
 
+/**
+ * S301 — one collections step. Andrew's grammar, exactly:
+ *
+ *   open     empty white CIRCLE (never a checkbox — the affordance is the
+ *            button, not the indicator)
+ *   done     green fill + white check, with the server stamp beside it
+ *   skipped  light grey + a skip mark, NEVER a check — a declined step must not
+ *            be readable as a performed one (these feed letters)
+ *
+ * Every step's action is a button, or input(s) plus a confirming button.
+ */
+function GuideStepCard({
+  step,
+  busy,
+  failed,
+  draft,
+  onDraft,
+  onAct,
+  onSkip,
+  onUndoSkip,
+}: {
+  step: Extract<RailStepModel, { kind: "guide-step" }>;
+  busy: boolean;
+  /** The last write for this step FAILED. Rendered — never swallowed (S300). */
+  failed: boolean;
+  draft: string | undefined;
+  onDraft: (v: string) => void;
+  onAct: (value: string | null) => void;
+  onSkip: () => void;
+  onUndoSkip: () => void;
+}) {
+  const value = draft ?? step.value ?? "";
+  const dot =
+    step.state === "done" ? (
+      <span
+        className="mt-0.5 grid h-[18px] w-[18px] flex-shrink-0 place-items-center rounded-full bg-emerald-600 text-white"
+        aria-label="Done"
+      >
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round">
+          <path d="M5 13l4 4L19 7" />
+        </svg>
+      </span>
+    ) : step.state === "skipped" ? (
+      <span
+        className="mt-0.5 grid h-[18px] w-[18px] flex-shrink-0 place-items-center rounded-full bg-gray-200 text-gray-500"
+        aria-label="Skipped"
+      >
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round">
+          <path d="M5 12h14" />
+        </svg>
+      </span>
+    ) : (
+      <span
+        className="mt-0.5 h-[18px] w-[18px] flex-shrink-0 rounded-full border-[1.5px] border-gray-300 bg-white"
+        aria-label="Not done"
+      />
+    );
+
+  return (
+    <div className="flex gap-2.5 rounded-xl border border-gray-200 bg-white px-4 py-3.5">
+      {dot}
+      <div className="min-w-0 flex-1">
+        <div className="text-[13.5px] font-bold text-gray-900">{step.title}</div>
+        <div className="mt-0.5 text-[12.5px] leading-[1.55] text-gray-500">{step.body}</div>
+
+        {step.state === "skipped" ? (
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <span className="text-[11.5px] font-medium text-gray-400">
+              {COLLECTIONS_CHROME.skippedLabel}
+            </span>
+            <button
+              type="button"
+              onClick={onUndoSkip}
+              disabled={busy}
+              className="text-[11.5px] font-medium text-gray-500 underline underline-offset-2 hover:text-gray-700 disabled:opacity-60"
+            >
+              {COLLECTIONS_CHROME.undoSkipLabel}
+            </button>
+          </div>
+        ) : step.state === "done" ? (
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <span className="text-[11.5px] font-medium text-emerald-700">
+              {step.action.kind === "date" && step.value
+                ? `${step.value}`
+                : step.doneAt
+                  ? `Done ${step.doneAt}`
+                  : "Done"}
+            </span>
+            <button
+              type="button"
+              onClick={() => onAct(null)}
+              disabled={busy}
+              className="text-[11.5px] font-medium text-gray-500 underline underline-offset-2 hover:text-gray-700 disabled:opacity-60"
+            >
+              Undo
+            </button>
+          </div>
+        ) : (
+          <div className="mt-2 flex flex-wrap items-end gap-2">
+            {step.action.kind !== "attest" && (
+              <label className="flex flex-col gap-1">
+                <span className="text-[11px] font-medium text-gray-500">{step.action.label}</span>
+                <input
+                  type={step.action.kind === "date" ? "date" : "text"}
+                  value={value}
+                  placeholder={step.action.kind === "text" ? step.action.placeholder : undefined}
+                  onChange={(e) => onDraft(e.target.value)}
+                  className="w-56 rounded-lg border border-gray-200 px-3 py-[7px] text-[12.5px] text-gray-800 placeholder:text-gray-400 focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-100"
+                />
+              </label>
+            )}
+            <button
+              type="button"
+              onClick={() => onAct(step.action.kind === "attest" ? null : value)}
+              disabled={busy || (step.action.kind !== "attest" && !value.trim())}
+              className="inline-flex items-center rounded-xl bg-blue-600 px-3.5 py-[7px] text-[12.5px] font-semibold text-white transition-colors hover:bg-blue-700 disabled:opacity-60"
+            >
+              {step.action.kind === "attest" ? step.action.label : step.action.saveLabel}
+            </button>
+            {step.skippable && (
+              <button
+                type="button"
+                onClick={onSkip}
+                disabled={busy}
+                className="text-[11.5px] font-medium text-gray-500 underline underline-offset-2 hover:text-gray-700 disabled:opacity-60"
+              >
+                {COLLECTIONS_CHROME.skipLabel}
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* A write that fails must SAY so. The S300 `acknowledge` bug 400'd on
+            every click and showed nothing, because the UI moved on regardless. */}
+        {failed && (
+          <p className="mt-2 text-[11.5px] font-medium text-red-600">
+            That didn&apos;t save — please try again.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function CaseRail({
   letters,
   insurerNameByDispute,
@@ -244,6 +388,9 @@ export function CaseRail({
   onUndoResult,
   onStartNextLetter,
   escalating,
+  onMarkSent,
+  onSaveFirstContactDate,
+  onRefetch,
 }: Omit<ComposeRailInput, "insurerNameByDispute" | "providerName" | "now"> & {
   insurerNameByDispute: Record<string, string>;
   providerName: string | null;
@@ -261,6 +408,13 @@ export function CaseRail({
   onStartNextLetter: (disputeId: string, targetLetterType: string) => void;
   /** Escalate in flight (ClaimDetail state) — disables the offer buttons. */
   escalating: boolean;
+  /** S301 — mark-as-sent / unsend for the collections "Mail it certified" step.
+   *  Routes to the EXISTING mark-sent + unsend paths (one writer). */
+  onMarkSent: (disputeId: string, sent: boolean) => Promise<void>;
+  /** S301 — the FDCPA §1692g anchor, through the existing deadline-inputs route. */
+  onSaveFirstContactDate: (disputeId: string, date: string) => Promise<void>;
+  /** Refetch the claim projection after a collections step writes. */
+  onRefetch: () => Promise<void>;
 }) {
   const router = useRouter();
   const [openSteps, setOpenSteps] = useState<Record<string, boolean>>({});
@@ -269,6 +423,10 @@ export function CaseRail({
   const [doorBusy, setDoorBusy] = useState<Record<string, boolean>>({});
   const [undoBusy, setUndoBusy] = useState<Record<string, boolean>>({});
   const [undoError, setUndoError] = useState<Record<string, boolean>>({});
+  // S301 — collections step state, keyed by stepId (claim-scoped, so one per bill).
+  const [guideBusy, setGuideBusy] = useState<Record<string, boolean>>({});
+  const [guideError, setGuideError] = useState<Record<string, boolean>>({});
+  const [guideDrafts, setGuideDrafts] = useState<Record<string, string>>({});
   // Pack-D filed attest (phase 1b) — optimistic with snap-back (S295 idiom);
   // server truth arrives with the next projection refetch. Note drafts are
   // controlled (GuidedPhoneSteps idiom) so the attest click can carry the
@@ -339,6 +497,78 @@ export function CaseRail({
     // request ordering converges on both fields either way.
     const ok = await persistAttest(disputeId, { done: next, note });
     if (!ok) setFiledOverride((m) => ({ ...m, [disputeId]: !next }));
+  };
+
+  // ── Collections steps (S301) ──────────────────────────────────────────────
+  //
+  // Persist through the EXISTING claim-checklist route: its stamps are
+  // server-side, which is where each step's "done «date»" comes from, and being
+  // claim-scoped they stay with the bill across escalation.
+  //
+  // ⚠ These calls do NOT navigate, and they surface failure. The S300 lesson was
+  // an `acknowledge` write that 400'd on every click with no symptom, because
+  // the button navigated whether or not the write landed. Every action here
+  // awaits its result and reverts the row on failure.
+  const runGuideStep = async (
+    body: { stepId: string; checked?: boolean; skipped?: boolean; note?: string },
+  ): Promise<boolean> => {
+    try {
+      const token = await getAuthToken();
+      if (!token) return false;
+      const res = await fetch(`/api/claims/${claimId}/checklist`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify(body),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  };
+
+  const runGuideAction = async (
+    s: Extract<RailStepModel, { kind: "guide-step" }>,
+    value: string | null,
+  ) => {
+    setGuideBusy((m) => ({ ...m, [s.stepId]: true }));
+    setGuideError((m) => ({ ...m, [s.stepId]: false }));
+    try {
+      // "Mail it certified" IS mark-as-sent — one writer, so the immutable
+      // snapshot, the clock, the version stack, and the letter_sent event all
+      // happen exactly once, on the path that already owns them.
+      if (s.derivedFromSend) {
+        await onMarkSent(s.disputeId, s.state !== "done");
+        return;
+      }
+      if (s.action.kind === "date") {
+        if (!value) return;
+        await onSaveFirstContactDate(s.disputeId, value);
+        return;
+      }
+      const ok =
+        s.action.kind === "text"
+          ? await runGuideStep({ stepId: s.stepId, checked: true, note: value ?? "" })
+          : await runGuideStep({ stepId: s.stepId, checked: s.state !== "done" });
+      if (ok) await onRefetch();
+      else setGuideError((m) => ({ ...m, [s.stepId]: true }));
+    } finally {
+      setGuideBusy((m) => ({ ...m, [s.stepId]: false }));
+    }
+  };
+
+  const runGuideSkip = async (
+    s: Extract<RailStepModel, { kind: "guide-step" }>,
+    skipped: boolean,
+  ) => {
+    setGuideBusy((m) => ({ ...m, [s.stepId]: true }));
+    setGuideError((m) => ({ ...m, [s.stepId]: false }));
+    try {
+      const ok = await runGuideStep({ stepId: s.stepId, skipped });
+      if (ok) await onRefetch();
+      else setGuideError((m) => ({ ...m, [s.stepId]: true }));
+    } finally {
+      setGuideBusy((m) => ({ ...m, [s.stepId]: false }));
+    }
   };
 
   return (
@@ -566,6 +796,21 @@ export function CaseRail({
                     {s.openLetterLabel}
                   </button>
                 </div>
+              </RailStep>
+            );
+          case "guide-step":
+            return (
+              <RailStep key={s.key} dataLetter={railStepDisputeId(s)} n={s.badge} title={s.title} last={last}>
+                <GuideStepCard
+                  step={s}
+                  busy={guideBusy[s.stepId] === true}
+                  failed={guideError[s.stepId] === true}
+                  draft={guideDrafts[s.stepId]}
+                  onDraft={(v) => setGuideDrafts((d) => ({ ...d, [s.stepId]: v }))}
+                  onAct={(value) => void runGuideAction(s, value)}
+                  onSkip={() => void runGuideSkip(s, true)}
+                  onUndoSkip={() => void runGuideSkip(s, false)}
+                />
               </RailStep>
             );
         }

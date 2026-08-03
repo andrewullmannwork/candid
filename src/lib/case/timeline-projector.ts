@@ -119,6 +119,15 @@ export interface ProjectedLetterStep {
   // shared letter-type.ts date rule (the S299 "sent Jul 31 vs Jul 30" lesson).
   /** Collector display name (metadata.collector.name) on collector letters; null otherwise. */
   counterpartyName: string | null;
+  /**
+   * S301 — the collector's first-contact date (metadata.collectorFirstContactDate),
+   * date-only, on collector letters; null otherwise. The FDCPA §1692g anchor.
+   * Surfaced so the rail's "When did they first contact you?" step can PREFILL
+   * the date already on file instead of showing an empty field — and so the
+   * projector stays the one derivation the rail reads (it already emits
+   * `hasFirstContactDate` into the collections_reported event from this value).
+   */
+  collectorFirstContactDate: string | null;
   /** Dispute-side "Mail it certified" attest (metadata.checklist.mailcert === true). */
   mailedCertified: boolean;
   /** Pack-D filed attest (metadata.checklist["packD:filed"]) — S299 phase 1b. */
@@ -354,6 +363,12 @@ function projectLetterStep(d: ProjectorDisputeRow): ProjectedLetterStep {
       typeof collector.name === "string" &&
       collector.name.length > 0
         ? collector.name
+        : null,
+    // S301 — same guard as counterpartyName: collector letters only, so a
+    // provider or insurer rung can never surface a collections date.
+    collectorFirstContactDate:
+      recipientKind === "collector" && typeof meta.collectorFirstContactDate === "string"
+        ? meta.collectorFirstContactDate
         : null,
     mailedCertified: checklist != null && checklist.mailcert === true,
     regulatorFiled: checklist != null && checklist["packD:filed"] === true,

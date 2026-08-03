@@ -44,7 +44,7 @@ export async function POST(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  let body: { stepId?: unknown; checked?: unknown; note?: unknown };
+  let body: { stepId?: unknown; checked?: unknown; skipped?: unknown; note?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -52,12 +52,19 @@ export async function POST(
   }
   const stepId = typeof body.stepId === "string" ? body.stepId : null;
   const checked = typeof body.checked === "boolean" ? body.checked : null;
+  const skipped = typeof body.skipped === "boolean" ? body.skipped : null;
   const note = typeof body.note === "string" ? body.note : null;
-  if (!stepId || !KEY_RE.test(stepId) || (checked == null && note == null)) {
+  if (checked === true && skipped === true) {
+    return NextResponse.json(
+      { error: "A step cannot be both checked and skipped" },
+      { status: 400 },
+    );
+  }
+  if (!stepId || !KEY_RE.test(stepId) || (checked == null && skipped == null && note == null)) {
     return NextResponse.json(
       {
         error:
-          "Expected { stepId: string (1-64 chars), checked?: boolean, note?: string } with at least one of checked/note",
+          "Expected { stepId: string (1-64 chars), checked?: boolean, skipped?: boolean, note?: string } with at least one of checked/skipped/note",
       },
       { status: 400 },
     );
@@ -100,11 +107,24 @@ export async function POST(
   const prior = guideSteps[stepId] ?? { checkedAt: null };
   const next: {
     checkedAt: string | null;
+    skippedAt?: string | null;
     note?: string;
     noteHistory?: Array<{ note: string; replacedAt: string }>;
   } = { ...prior };
-  if (checked === true) next.checkedAt = new Date().toISOString();
+  // S301 — THREE resolved states, kept mutually exclusive on write so no reader
+  // has to decide which wins: done (checkedAt), skipped (skippedAt), open
+  // (neither). A skip is the user declining the action, so it must never be
+  // stored as, or rendered as, an attestation.
+  if (checked === true) {
+    next.checkedAt = new Date().toISOString();
+    next.skippedAt = null;
+  }
   if (checked === false) next.checkedAt = null;
+  if (skipped === true) {
+    next.skippedAt = new Date().toISOString();
+    next.checkedAt = null;
+  }
+  if (skipped === false) next.skippedAt = null;
   if (note != null) {
     // S297 noteHistory (Andrew) — these logs are evidence; before replacing a
     // non-empty note with something different, bank the old value (last 5,
@@ -163,6 +183,14 @@ export async function POST(
         payload: { stepId, hasNote: typeof next.note === "string" && next.note.length > 0 },
       });
     } else if (checked === false) {
+      events.push({ claimId: claim.id as string, kind: "guide_step_unchecked", payload: { stepId } });
+    } else if (skipped === true) {
+      // S301 — its own kind. The ledger records that the user DECLINED this
+      // step; nothing downstream may read it as having been done.
+      events.push({ claimId: claim.id as string, kind: "guide_step_skipped", payload: { stepId } });
+    } else if (skipped === false) {
+      // Un-skipping returns the step to OPEN, not to done — same kind the
+      // un-attest path uses, since both mean "this is unresolved again".
       events.push({ claimId: claim.id as string, kind: "guide_step_unchecked", payload: { stepId } });
     }
     await emitCaseEvents(supabase, user.id, events);

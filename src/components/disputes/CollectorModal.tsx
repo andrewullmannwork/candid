@@ -14,22 +14,54 @@
 import { useState } from "react";
 
 export interface CollectorSubmit {
-  collector: { name: string; address: string | null; originalCreditor: string | null };
+  collector: {
+    name: string;
+    address: string | null;
+    originalCreditor: string | null;
+    /** S301 — the collector's own file number for this debt. */
+    accountNumber: string | null;
+  };
   collectorFirstContactDate: string | null;
 }
+
+/**
+ * S301 — the SAME modal serves creation and post-creation editing.
+ *
+ * "create" is the original escalation flow (CollectorModal → POST /escalate →
+ * a new debt_validation dispute). "edit" is the path that never existed: the
+ * collector was captured once, with only the NAME required, and could never be
+ * corrected afterwards — so a letter drafted without an address had no way to
+ * gain one (banked defect #2).
+ *
+ * Parameterized rather than forked so the two paths cannot drift in field set or
+ * validation. Only the framing copy, the submit label, and the prefill differ.
+ */
+export type CollectorModalMode = "create" | "edit";
 
 interface Props {
   open: boolean;
   submitting?: boolean;
+  mode?: CollectorModalMode;
+  /** Prefill for "edit" — the claim-scoped values already on file. */
+  initial?: Partial<CollectorSubmit["collector"]> & { firstContactDate?: string | null };
   onCancel: () => void;
   onSubmit: (input: CollectorSubmit) => void;
 }
 
-export function CollectorModal({ open, submitting, onCancel, onSubmit }: Props) {
-  const [name, setName] = useState("");
-  const [address, setAddress] = useState("");
-  const [originalCreditor, setOriginalCreditor] = useState("");
-  const [firstContact, setFirstContact] = useState("");
+export function CollectorModal({
+  open,
+  submitting,
+  mode = "create",
+  initial,
+  onCancel,
+  onSubmit,
+}: Props) {
+  const isEdit = mode === "edit";
+  const [name, setName] = useState(initial?.name ?? "");
+  const [address, setAddress] = useState(initial?.address ?? "");
+  const [originalCreditor, setOriginalCreditor] = useState(initial?.originalCreditor ?? "");
+  const [accountNumber, setAccountNumber] = useState(initial?.accountNumber ?? "");
+  const [firstContact, setFirstContact] = useState(initial?.firstContactDate ?? "");
   const [error, setError] = useState<string | null>(null);
 
   if (!open) return null;
@@ -45,6 +77,7 @@ export function CollectorModal({ open, submitting, onCancel, onSubmit }: Props) 
         name: name.trim(),
         address: address.trim() || null,
         originalCreditor: originalCreditor.trim() || null,
+        accountNumber: accountNumber.trim() || null,
       },
       collectorFirstContactDate: firstContact || null,
     });
@@ -60,13 +93,19 @@ export function CollectorModal({ open, submitting, onCancel, onSubmit }: Props) 
       <div className="w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-xl">
         <div className="border-b border-slate-100 px-6 py-4">
           <h2 id="collector-modal-title" className="text-base font-semibold text-slate-900">
-            Who contacted you about collections?
+            {/* Copy Andrew-approved S301. */}
+            {isEdit ? "The collection agency's details" : "Who contacted you about collections?"}
           </h2>
-          <p className="mt-1 text-xs text-slate-500">
-            We&apos;ll draft a debt-validation letter to the collection agency requesting proof the
-            debt is valid — and, if you&apos;re within 30 days of their first contact, asking them to
-            pause collection until they respond.
-          </p>
+          {/* Edit mode carries NO lead (Andrew, S301): "you only enter this once"
+              is implied by the form, and "this won't change a mailed letter"
+              describes something that is impossible by construction. */}
+          {!isEdit && (
+            <p className="mt-1 text-xs text-slate-500">
+              We&apos;ll draft a debt-validation letter to the collection agency requesting proof the
+              debt is valid — and, if you&apos;re within 30 days of their first contact, asking them
+              to pause collection until they respond.
+            </p>
+          )}
         </div>
 
         <div className="space-y-4 px-6 py-5">
@@ -94,6 +133,21 @@ export function CollectorModal({ open, submitting, onCancel, onSubmit }: Props) 
               rows={2}
               placeholder="Street, City, State ZIP"
               className="mt-1 block w-full resize-y rounded-md border border-slate-200 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+          </div>
+          <div>
+            {/* Copy Andrew-approved S301. */}
+            <label htmlFor="collector-account" className="block text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Account / reference number{" "}
+              <span className="font-normal normal-case text-slate-400">(optional)</span>
+            </label>
+            <input
+              id="collector-account"
+              type="text"
+              value={accountNumber}
+              onChange={(e) => setAccountNumber(e.target.value)}
+              placeholder="Their file number for this debt"
+              className="mt-1 block w-full rounded-md border border-slate-200 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           </div>
           <div className="grid grid-cols-2 gap-3">
@@ -146,7 +200,14 @@ export function CollectorModal({ open, submitting, onCancel, onSubmit }: Props) 
             disabled={submitting}
             className="rounded-md bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60"
           >
-            {submitting ? "Creating…" : "Create debt-validation letter"}
+            {/* Copy Andrew-approved S301. */}
+            {submitting
+              ? isEdit
+                ? "Saving…"
+                : "Creating…"
+              : isEdit
+                ? "Save details"
+                : "Create debt-validation letter"}
           </button>
         </div>
       </div>

@@ -28,6 +28,7 @@ import {
   ServiceAttestationFlow,
   type AttestationLine,
 } from "@/components/disputes/ServiceAttestationFlow";
+import { letterNeeds, type LetterNeedKey } from "@/lib/disputes/letter-type";
 
 /** One disputed service's plan-cost state (derived from evidence line planBenefit,
  *  or — S292 (#7) — from the claim page's own cost-share resolution `lineCostShare`). */
@@ -205,11 +206,28 @@ export interface CaseNeedsPanelProps {
     field: "denialNoticeDate" | "collectorFirstContactDate",
     value: string | null,
   ) => Promise<void>;
+  /**
+   * S301 `letter_requirements_v1`. OFF keeps the legacy row set exactly (every
+   * letter asked for a provider address + EOB; INSURER_TRACK below drove the
+   * denial row). ON drives the track-varying rows from `letterNeeds`.
+   */
+  letterRequirementsOn?: boolean;
+  /** S301 — from `planContext.collectorContact` (claims.metadata.collector). */
+  collectorAddressOnFile?: boolean;
+  accountNumberOnFile?: boolean;
+  /** Opens the collector-details editor (the parameterized CollectorModal). */
+  onAddCollectorDetails?: () => void;
 }
 
 type EditorKey = "amount" | "denial" | "collector";
 type Importance = "important" | "helpful";
 
+/**
+ * ⚠ LEGACY — the pre-S301 "insurer letter" set, and a THIRD definition of it.
+ * It includes `final_notice`, which `RECIPIENT_BY_LETTER_TYPE` calls a PROVIDER
+ * letter and the deadline engine's own INSURER_TRACK excludes. Only reachable
+ * with `letter_requirements_v1` OFF; `letterNeeds` is the single source when ON.
+ */
 const INSURER_TRACK = new Set(["insurance_appeal", "final_notice", "external_review"]);
 const todayIso = (): string => new Date().toISOString().slice(0, 10);
 const money = (n: number): string => `$${n.toFixed(2)}`;
@@ -537,6 +555,8 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
     claimFacts, attestationLines, attestedLineItemIds, accountName, attestingAsName, onAttest,
     onAddProviderAddress, onAddInsurerAddress, onUploadEob, onSaveAmountPaid,
     onChangePlan, onSaveDeadlineDate,
+    letterRequirementsOn = false,
+    collectorAddressOnFile = false, accountNumberOnFile = false, onAddCollectorDetails,
   } = props;
 
   const [openEditor, setOpenEditor] = useState<EditorKey | null>(null);
@@ -549,8 +569,33 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
   const [nameChoicesOpen, setNameChoicesOpen] = useState(false);
   const close = () => setOpenEditor(null);
 
-  const insurerTrack = INSURER_TRACK.has(letterType);
-  const collectorTrack = letterType === "debt_validation";
+  // ── What THIS letter asks for (S301) ──────────────────────────────────────
+  //
+  // Flag ON: the row set comes from `letterNeeds`, the same resolver the gap
+  // emitter and the readiness floor use — so the panel can no longer ask for
+  // something the letter doesn't print, or stay silent about something it does.
+  //
+  // What that fixes here: this panel pushed "Provider address" and "EOB detail"
+  // UNCONDITIONALLY, so a collections letter asked for the clinic's billing
+  // address (and its Add button opened the PROVIDER modal — banked defect #2)
+  // while never offering the collector's address at all. Its own INSURER_TRACK
+  // was a THIRD definition of "insurer letter" — it included `final_notice`,
+  // which the recipient map calls a provider letter and the deadline engine
+  // excludes — so the denial-date row rendered on two letter types where nothing
+  // consumes it.
+  //
+  // Flag OFF: the legacy sets below, byte-identical.
+  const needs = letterNeeds(letterType);
+  const asks = (key: LetterNeedKey): boolean => needs.needs.includes(key);
+  const insurerTrack = letterRequirementsOn ? asks("denial_date") : INSURER_TRACK.has(letterType);
+  const collectorTrack = letterRequirementsOn
+    ? asks("collector_first_contact_date")
+    : letterType === "debt_validation";
+  const wantsProviderAddress = letterRequirementsOn ? asks("provider_address") : true;
+  const wantsInsurerAddress = letterRequirementsOn ? asks("insurer_appeals_address") : hasInsurer;
+  const wantsEob = letterRequirementsOn ? asks("eob_detail") : true;
+  const wantsCollectorAddress = letterRequirementsOn && asks("collector_address");
+  const wantsAccountNumber = letterRequirementsOn && asks("account_number");
   const nameDone = !nameMismatch || nameResolved;
 
   // ── row descriptors (each carries done-ness + importance so we can order + group) ──
@@ -974,8 +1019,8 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
     ),
   });
 
-  // Provider address — always relevant (there's always a biller).
-  descs.push({
+  // Provider address — only when THIS letter mails to the provider (S301).
+  if (wantsProviderAddress) descs.push({
     key: "provider-addr",
     done: providerAddressOnFile,
     importance: "helpful",
@@ -992,8 +1037,10 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
     ),
   });
 
-  // Insurer appeals address — only when the claim has an insurer.
-  if (hasInsurer) {
+  // Insurer appeals address — only when THIS letter mails to the insurer (S301);
+  // legacy gate was merely "the claim has an insurer", which is true of provider
+  // and collector letters too.
+  if (wantsInsurerAddress && hasInsurer) {
     descs.push({
       key: "insurer-addr",
       done: insurerAddressOnFile,
@@ -1012,11 +1059,73 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
     });
   }
 
+  // ── Collections track (S301) — the two rows that never existed ────────────
+  //
+  // The collector's ADDRESS is what the debt-validation letter's recipient block
+  // actually prints, and the account number is what every FDCPA dispute is keyed
+  // on. Neither was offered anywhere: the collector was captured once inside
+  // CollectorModal at escalation (name required, everything else optional) and
+  // could never be edited afterwards.
+  //
+  // Both are CLAIM-scoped (`claims.metadata.collector`) exactly as the provider
+  // contact is, so they cascade — the user types the agency once for the bill and
+  // every later letter on it reads the same values.
+  if (wantsCollectorAddress) {
+    descs.push({
+      key: "collector-addr",
+      done: collectorAddressOnFile,
+      importance: "important",
+      node: collectorAddressOnFile ? (
+        <Row
+          icon={MapPinIcon}
+          label="Collector's address"
+          control={<DoneEdit label="On file" onEdit={() => onAddCollectorDetails?.()} />}
+        />
+      ) : (
+        <Row
+          icon={MapPinIcon}
+          label="Collector's address"
+          badge={ImportantBadge}
+          control={<AddButton label="Add" onClick={() => onAddCollectorDetails?.()} />}
+        >
+          Where your debt validation letter gets mailed — it&apos;s printed on the notice they sent
+          you.
+        </Row>
+      ),
+    });
+  }
+
+  if (wantsAccountNumber) {
+    descs.push({
+      key: "collector-account",
+      done: accountNumberOnFile,
+      importance: "helpful",
+      node: accountNumberOnFile ? (
+        <Row
+          icon={ReceiptIcon}
+          label="Account / reference number"
+          control={<DoneEdit label="On file" onEdit={() => onAddCollectorDetails?.()} />}
+        />
+      ) : (
+        <Row
+          icon={ReceiptIcon}
+          label="Account / reference number"
+          control={<AddButton label="Add" onClick={() => onAddCollectorDetails?.()} />}
+        >
+          The collector&apos;s file number for this debt — it&apos;s on their notice, usually near
+          the top.
+        </Row>
+      ),
+    });
+  }
+
   // EOB line detail — a SUPPLEMENT to the bill. The bill already gives us the billed amounts
   // and (with plan details) the cost-share for the core math; the EOB only adds the insurer
   // paid/allowed side that powers the optional balance-billing clause. So it's Helpful, not
   // Important — never nag for it as if the letter can't be built without it.
-  descs.push({
+  // S301: suppressed on the collections track — a debt-validation letter never
+  // argues from the insurer's paid/allowed side.
+  if (wantsEob) descs.push({
     key: "eob",
     done: eobPresent,
     importance: "helpful",

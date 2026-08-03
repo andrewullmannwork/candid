@@ -21,6 +21,30 @@
  * Legacy fallback: dispute_type → letter type, GET semantics + the fix.
  */
 import type { DisputeLetterType } from "@/lib/billing/types";
+import { deadlineAnchorField } from "./deadline-engine";
+
+/**
+ * Raw `dispute_outcomes.dispute_type` → resolved `DisputeLetterType`.
+ *
+ * ONE alias map, shared by `resolveLetterTypeFromDispute` (row → template) and
+ * `letterRecipientKind` (type → recipient), because the two had already drifted:
+ * the resolver mapped `external_appeal → external_review` (an INSURER letter)
+ * while `letterRecipientKind` knew only the resolved name, so a raw
+ * `external_appeal` fell through its lookup to the "provider" default. Callers
+ * that pass `dispute.dispute_type` straight in — the [disputeId] GET and the
+ * case-file route both do — were therefore scoring an insurer-directed external
+ * review against a PROVIDER address it never prints (S301).
+ */
+const LEGACY_TYPE_ALIASES: Record<string, DisputeLetterType> = {
+  internal_appeal: "insurance_appeal",
+  external_appeal: "external_review",
+  complaint: "balance_billing",
+};
+
+/** Resolve a raw dispute_type alias to its letter type; pass-through otherwise. */
+export function normalizeLetterType(type: string): string {
+  return LEGACY_TYPE_ALIASES[type] ?? type;
+}
 
 export function resolveLetterTypeFromDispute(dispute: {
   dispute_type: string;
@@ -31,17 +55,201 @@ export function resolveLetterTypeFromDispute(dispute: {
       ? (dispute.metadata as { letterType?: string }).letterType
       : undefined;
   if (metaType) return metaType as DisputeLetterType;
-  switch (dispute.dispute_type) {
-    case "internal_appeal":
-      return "insurance_appeal";
-    case "negotiation":
-      return "negotiation";
-    case "complaint":
-      return "balance_billing";
-    case "external_appeal":
-      return "external_review";
-    default:
-      return "overcharge";
+  const alias = LEGACY_TYPE_ALIASES[dispute.dispute_type];
+  if (alias) return alias;
+  return dispute.dispute_type === "negotiation" ? "negotiation" : "overcharge";
+}
+
+// ── Recipient kind (MOVED here from index.ts, S301) ─────────────────────────
+//
+// Pure move + re-export from the barrel: every existing `letterRecipientKind`
+// import site is unchanged. It lives here now because `letterNeeds` below is
+// derived from it, and `letter-type.ts` is a leaf — deriving inside the
+// `index.ts` barrel would drag templates/prior-contact/dispute-grounds into
+// every consumer of the needs resolver and make the module graph circular
+// (index → evidence-resolver → letter-type → index).
+//
+// EXHAUSTIVE over DisputeLetterType — the compiler forces every letter type to
+// declare its recipient here, so a new type cannot silently fall through to
+// "provider" (dispute-letters v2 S2 hardening).
+
+export type LetterRecipientKind = "insurer" | "provider" | "collector";
+
+const RECIPIENT_BY_LETTER_TYPE: Record<DisputeLetterType, LetterRecipientKind> = {
+  overcharge: "provider",
+  duplicate_charge: "provider",
+  balance_billing: "provider",
+  itemized_request: "provider",
+  negotiation: "provider",
+  insurance_appeal: "insurer",
+  final_notice: "provider",
+  external_review: "insurer",
+  debt_validation: "collector",
+};
+
+// Raw dispute_outcomes.dispute_type values (NOT DisputeLetterType) that resolve to the insurer —
+// the legacy rerender path passes these directly.
+const INSURER_DISPUTE_TYPES = new Set<string>([
+  "internal_appeal",
+  "cost_share_misapplication",
+  "coverage_contradiction",
+  "not_covered",
+]);
+
+export function letterRecipientKind(
+  type: string | null | undefined,
+): LetterRecipientKind {
+  if (!type) return "provider";
+  // Resolve legacy dispute_type aliases FIRST (S301) — callers pass whichever
+  // they have, and `external_appeal` used to miss the lookup below and default
+  // to "provider" on an insurer-directed letter.
+  const resolved = normalizeLetterType(type);
+  if (Object.prototype.hasOwnProperty.call(RECIPIENT_BY_LETTER_TYPE, resolved)) {
+    return RECIPIENT_BY_LETTER_TYPE[resolved as DisputeLetterType];
+  }
+  return INSURER_DISPUTE_TYPES.has(resolved) ? "insurer" : "provider";
+}
+
+// ── letterNeeds (S301) — what THIS letter actually asks the user for ────────
+//
+// DERIVED, never authored. The letter composer already declares which address
+// each letter prints (index.ts `recipient`: insurer → appealsAddress,
+// collector → collector.address, otherwise → provider.address) and templates.ts
+// carries one recipient-block builder per kind. This function is the machine
+// image of that decision, so it cannot disagree with the letter it describes —
+// a hand-maintained requirements table is the version someone forgets to
+// update when a tenth letter type lands.
+//
+// Fixes the one-root defect family (S299/S300 defects #2/#3/#4 + the two this
+// audit found): the gap emitter and the MVDL readiness floor both re-derived
+// the recipient with `letterType !== "insurance_appeal"`, so every non-appeal
+// letter — including insurer-directed external reviews and collector-directed
+// debt validations — was asked for a PROVIDER address it never prints, while
+// external reviews were never asked for the appeals address they do.
+//
+// ⚠ null letterType → NO address requirement. Today's binary guarded on
+// `letterType !== null`, and `letterRecipientKind(null)` defaults to
+// "provider" — so routing a null straight through the resolver would newly
+// demand a provider address on every letterType-less call. Handled before the
+// resolver, asserted in the fixture.
+
+export type RecipientAddressGapKind =
+  | "provider_address_missing"
+  | "insurer_address_missing"
+  | "collector_address_missing";
+
+export type LetterNeedKey =
+  | "provider_address"
+  | "insurer_appeals_address"
+  | "collector_address"
+  | "collector_first_contact_date"
+  | "account_number"
+  | "denial_date"
+  | "eob_detail";
+
+export interface LetterNeeds {
+  /** Who this letter mails to. Null only when no letter type is resolved yet. */
+  recipientKind: LetterRecipientKind | null;
+  /** The ONE address this letter prints — the MVDL floor item (§1b #3). */
+  recipientAddress: LetterNeedKey | null;
+  /** The gap kind that reports that address missing. Null → no address floor. */
+  recipientAddressGapKind: RecipientAddressGapKind | null;
+  /** Every track-VARYING row this letter shows, address included, in render order. */
+  needs: readonly LetterNeedKey[];
+}
+
+/**
+ * The gap kind that reports THIS recipient's address missing. One source, shared
+ * by `letterNeeds` (which drives what the panel asks for) and the MVDL readiness
+ * floor (which decides whether a missing address blocks sending) — so the address
+ * we ask for and the address we score are the same address, by construction.
+ */
+export function recipientAddressGapKindFor(
+  kind: LetterRecipientKind,
+): RecipientAddressGapKind {
+  switch (kind) {
+    case "insurer":
+      return "insurer_address_missing";
+    case "collector":
+      return "collector_address_missing";
+    case "provider":
+      return "provider_address_missing";
+    default: {
+      const _exhaustive: never = kind;
+      return _exhaustive;
+    }
+  }
+}
+
+const NO_NEEDS: LetterNeeds = {
+  recipientKind: null,
+  recipientAddress: null,
+  recipientAddressGapKind: null,
+  needs: [],
+};
+
+/**
+ * What this letter needs from the user, keyed on the recipient it mails to.
+ *
+ * Universal rows (patient name, services performed, amount paid) are NOT listed
+ * — they never vary by letter type, so the panel always renders them and this
+ * resolver stays about what actually differs.
+ *
+ * `denial_date` is `insurance_appeal` ONLY. Its sole functional consumer is the
+ * deadline engine's `erisa_appeal_180`, whose own INSURER_TRACK is
+ * `["insurance_appeal"]`; no template reads it (external_review's denial date is
+ * a DIFFERENT field — `appealExhausted.denialDate`, captured by the exhaustion
+ * attestation). Asking for it on final_notice / external_review, as the panel
+ * does today, is a dead ask nothing consumes.
+ */
+export function letterNeeds(letterType: string | null | undefined): LetterNeeds {
+  if (!letterType) return NO_NEEDS;
+  // Normalize before the denial_date test below — callers legitimately pass a
+  // raw `dispute_type`, and `internal_appeal` IS an insurance_appeal.
+  const resolved = normalizeLetterType(letterType);
+  const recipientKind = letterRecipientKind(resolved);
+
+  // The date ask is DERIVED from the deadline engine's anchor, not authored
+  // here: a letter needs a date exactly when the engine computes a window from
+  // it. That is what removes the dead denial-date ask on final_notice /
+  // external_review, and it means adding a type to a deadline track moves the
+  // ask with it instead of leaving two lists to drift.
+  const anchor = deadlineAnchorField(resolved);
+  const dateAsk: LetterNeedKey[] =
+    anchor === "denialNoticeDate"
+      ? ["denial_date"]
+      : anchor === "collectorFirstContactDate"
+        ? ["collector_first_contact_date"]
+        : [];
+
+  switch (recipientKind) {
+    case "insurer":
+      return {
+        recipientKind,
+        recipientAddress: "insurer_appeals_address",
+        recipientAddressGapKind: recipientAddressGapKindFor(recipientKind),
+        needs: ["insurer_appeals_address", ...dateAsk, "eob_detail"],
+      };
+    case "collector":
+      // No eob_detail: the EOB adds the insurer paid/allowed side, which a
+      // debt-validation letter never argues from.
+      return {
+        recipientKind,
+        recipientAddress: "collector_address",
+        recipientAddressGapKind: recipientAddressGapKindFor(recipientKind),
+        needs: ["collector_address", ...dateAsk, "account_number"],
+      };
+    case "provider":
+      return {
+        recipientKind,
+        recipientAddress: "provider_address",
+        recipientAddressGapKind: recipientAddressGapKindFor(recipientKind),
+        needs: ["provider_address", ...dateAsk, "eob_detail"],
+      };
+    default: {
+      const _exhaustive: never = recipientKind;
+      return _exhaustive;
+    }
   }
 }
 

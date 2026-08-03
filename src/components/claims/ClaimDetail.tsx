@@ -805,6 +805,73 @@ export function ClaimDetail({
     [getAuthToken, refetchClaim, onClaimUpdated],
   );
 
+  // S301 — the collections "Mail it certified" step IS mark-as-sent, in both
+  // directions (Andrew). Routes to the EXISTING outcome route rather than a
+  // parallel writer, so the immutable snapshot, the deadline clock, the version
+  // stack, and the letter_sent / letter_unsent events all fire exactly once on
+  // the path that already owns them.
+  //
+  // ⚠ Un-sending is a real state change with a sequencing guard: §0.9b allows it
+  // only while NO response is logged, so an unsend can never orphan a logged
+  // outcome. The route enforces it; a refusal surfaces in the rail's error strip
+  // instead of failing silently.
+  const handleRailMarkSent = useCallback(
+    async (disputeId: string, sent: boolean): Promise<void> => {
+      try {
+        const token = await getAuthToken();
+        if (!token) {
+          setRailActionError("Couldn't save that — please refresh and try again.");
+          return;
+        }
+        const res = await fetch(`/api/disputes/outcome`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify(
+            sent ? { disputeId, status: "filed", markSent: true } : { disputeId, undoSent: true },
+          ),
+        });
+        if (!res.ok) {
+          setRailActionError(
+            sent
+              ? "Couldn't mark this as sent — please try again."
+              : "Couldn't undo this — log or undo the response first.",
+          );
+          return;
+        }
+        await refetchClaim();
+        if (onClaimUpdated) void onClaimUpdated();
+      } catch {
+        setRailActionError("Couldn't save that — please try again.");
+      }
+    },
+    [getAuthToken, refetchClaim, onClaimUpdated],
+  );
+
+  // S301 — the FDCPA §1692g anchor, through the EXISTING deadline-inputs route
+  // (the same endpoint the dispute page's date rows use), so the engine keeps
+  // one input path and the rail does not learn about deadlines.
+  const handleRailFirstContactDate = useCallback(
+    async (disputeId: string, date: string): Promise<void> => {
+      try {
+        const token = await getAuthToken();
+        if (!token) return;
+        const res = await fetch(`/api/disputes/${disputeId}/deadline-inputs`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ collectorFirstContactDate: date }),
+        });
+        if (!res.ok) {
+          setRailActionError("Couldn't save that date — please try again.");
+          return;
+        }
+        await refetchClaim();
+      } catch {
+        setRailActionError("Couldn't save that date — please try again.");
+      }
+    },
+    [getAuthToken, refetchClaim],
+  );
+
   // ONE escalate path for every rail offer (phase 1b generalizes 1a's
   // collector flow): POST the EXISTING /escalate route, then navigate to the
   // new letter for review (dispute-side parity).
@@ -3428,6 +3495,17 @@ export function ClaimDetail({
             onUndoResult={handleRailUndoResult}
             onStartNextLetter={handleRailStartNextLetter}
             escalating={railEscalating}
+            // S301 — collections steps. guideSteps is the SAME claim-scoped
+            // store Pack A′ already writes through, so the attestations are
+            // server-stamped and stay with the bill across escalation.
+            guideSteps={guideStepsMeta}
+            collectorFirstContactDate={
+              railTimeline.letters.find((l) => l.letterType === "debt_validation")
+                ?.collectorFirstContactDate ?? null
+            }
+            onMarkSent={handleRailMarkSent}
+            onSaveFirstContactDate={handleRailFirstContactDate}
+            onRefetch={refetchClaim}
           />
         </>
       )}

@@ -78,6 +78,11 @@ const compose = (
   disputes: ProjectorDisputeRow[],
   primaryDisputeId: string | null,
   insurerNameByDispute: Record<string, string> = {},
+  guideSteps: Record<
+    string,
+    { checkedAt?: string | null; skippedAt?: string | null; note?: string }
+  > = {},
+  collectorFirstContactDate: string | null = null,
 ) => {
   const t = projectCaseTimeline({ claim: claimRow, disputes, events: [], now: NOW, amberDays: 7 });
   return {
@@ -89,6 +94,8 @@ const compose = (
       insurerNameByDispute,
       providerName: "Swedish Primary Care Ballard",
       now: NOW,
+      guideSteps,
+      collectorFirstContactDate,
     }),
   };
 };
@@ -124,11 +131,33 @@ const compose = (
   });
 
   // 1b: the denied appeal (stage `next`) also contributes a "Your next move"
-  // step, anchored at the logged outcome — 4 steps total.
-  check("ballard · 4 steps (wait + send + wait + next-move)", steps.length === 4, steps.length);
-  check("ballard · badges 5/6/7/8 chronological", steps.map((s) => s.badge).join(",") === "5,6,7,8", steps.map((s) => s.badge));
-  check("ballard · step 8 is the next-move", steps[3].kind === "next-move", steps[3].kind);
-  const [s5, s6, s7] = steps;
+  // step, anchored at the logged outcome.
+  //
+  // S301: the collections letter now also contributes its four guard-rail steps,
+  // so this block addresses steps BY KIND rather than by index. The positional
+  // form was asserting the arithmetic of a fixed rail; anything inserted broke
+  // six checks at once and told us nothing about what actually changed.
+  const letterSteps = steps.filter((s) => s.kind !== "guide-step");
+  const guideSteps = steps.filter((s) => s.kind === "guide-step");
+  check(
+    "ballard · 4 letter steps (wait + send + wait + next-move)",
+    letterSteps.length === 4,
+    letterSteps.length,
+  );
+  check("ballard · 4 collections steps ride the debt-validation letter", guideSteps.length === 4, guideSteps.length);
+  check(
+    "ballard · badges are contiguous from 5",
+    steps.map((s) => s.badge).join(",") === steps.map((_, i) => String(i + 5)).join(","),
+    steps.map((s) => s.badge),
+  );
+  check(
+    "ballard · the next-move is last",
+    steps[steps.length - 1].kind === "next-move",
+    steps[steps.length - 1].kind,
+  );
+  const s5 = letterSteps[0];
+  const s6 = letterSteps[1];
+  const s7 = letterSteps[2];
   check("ballard · appeal wait is a receipt (stage next)", s5.kind === "wait-receipt");
   check(
     "ballard · appeal wait title",
@@ -573,6 +602,131 @@ const compose = (
     "next-move · absent for open non-terminal outcomes",
     oSteps.every((s) => s.kind !== "next-move"),
     oSteps.map((s) => s.kind),
+  );
+}
+
+// ── Collections steps on the rail (S301) ───────────────────────────────────
+{
+  const dv = mkDispute({
+    dispute_type: "debt_validation",
+    status: "filed",
+    sent_at: iso(-3),
+    metadata: {
+      letterType: "debt_validation",
+      collector: { name: "Cascade Recovery" },
+      collectorFirstContactDate: dateOnly(-20),
+    },
+  });
+
+  // (a) The FOUR net-new steps — and only four. "Your debt validation letter is
+  // ready" is this letter's own send step and "What did the collector do?" is
+  // its waiting card; rebuilding either would put two doors on the same act.
+  const { steps } = compose([dv], null, {}, {}, dateOnly(-20));
+  const guides = steps.filter((s) => s.kind === "guide-step");
+  check("collections · exactly 4 net-new steps", guides.length === 4, guides.length);
+  check(
+    "collections · step ids",
+    JSON.stringify(guides.map((g) => (g as { stepId: string }).stepId)) ===
+      JSON.stringify(["packC:not-paid", "packC:first-contact", "packC:mailed", "packC:receipt"]),
+    guides.map((g) => (g as { stepId: string }).stepId),
+  );
+  check(
+    "collections · the letter's own send + wait steps still render (not duplicated)",
+    steps.filter((s) => s.kind === "send-receipt").length === 1 &&
+      steps.filter((s) => s.kind === "wait-active" || s.kind === "wait-receipt").length === 1,
+    steps.map((s) => s.kind),
+  );
+
+  // (b) Chronology: the "don't pay" / "when did they contact you" pair brackets
+  // BEFORE the send step; the certified-mail pair after it.
+  const kinds = steps.map((s) => s.kind);
+  const sendIdx = kinds.indexOf("send-receipt");
+  const idxOf = (id: string) =>
+    steps.findIndex((s) => s.kind === "guide-step" && (s as { stepId: string }).stepId === id);
+  check("collections · not-paid precedes the send step", idxOf("packC:not-paid") < sendIdx);
+  check("collections · first-contact precedes the send step", idxOf("packC:first-contact") < sendIdx);
+  check("collections · mailed follows the send step", idxOf("packC:mailed") > sendIdx);
+  check("collections · receipt follows the send step", idxOf("packC:receipt") > sendIdx);
+
+  // (c) packC:mailed derives from the LETTER's send record — not a second
+  // boolean. This is what dissolves the old "I mailed it" duplication and stops
+  // the pack asking the user to re-assert a send they already reported.
+  const mailed = guides.find((g) => (g as { stepId: string }).stepId === "packC:mailed") as {
+    state: string;
+    derivedFromSend: boolean;
+    skippable: boolean;
+  };
+  check("collections · mailed is done because the letter is SENT", mailed.state === "done", mailed.state);
+  check("collections · mailed derives from send", mailed.derivedFromSend === true);
+  check("collections · mailed is NOT skippable (it IS the send)", mailed.skippable === false);
+
+  // (d) The first-contact date PREFILLS from the projector, so the step never
+  // shows an empty field on data we already hold. (The projector had to learn
+  // the field: a cast would have yielded null forever and shown a blank input.)
+  const firstContact = guides.find(
+    (g) => (g as { stepId: string }).stepId === "packC:first-contact",
+  ) as { value: string | null };
+  check(
+    "collections · first-contact prefills from the projector",
+    firstContact.value === dateOnly(-20),
+    firstContact.value,
+  );
+
+  // (e) THREE states, and skipped is NOT a flavour of done. These attestations
+  // feed the prior-contact recital, so a declined step must never read as done.
+  const skipped = compose([dv], null, {}, { "packC:receipt": { skippedAt: iso(-1) } }, dateOnly(-20));
+  const receipt = skipped.steps.find(
+    (s) => s.kind === "guide-step" && (s as { stepId: string }).stepId === "packC:receipt",
+  ) as { state: string; doneAt: string | null };
+  check("collections · skipped state is 'skipped'", receipt.state === "skipped", receipt.state);
+  check("collections · skipped carries NO done stamp", receipt.doneAt === null, receipt.doneAt);
+
+  const done = compose(
+    [dv],
+    null,
+    {},
+    { "packC:not-paid": { checkedAt: iso(-2) } },
+    dateOnly(-20),
+  );
+  const notPaid = done.steps.find(
+    (s) => s.kind === "guide-step" && (s as { stepId: string }).stepId === "packC:not-paid",
+  ) as { state: string; doneAt: string | null };
+  check("collections · attested state is 'done'", notPaid.state === "done", notPaid.state);
+  check("collections · done carries a server stamp", notPaid.doneAt != null, notPaid.doneAt);
+
+  // (f) An open step is neither — no stamp, no skip mark.
+  const open = guides.find(
+    (g) => (g as { stepId: string }).stepId === "packC:not-paid",
+  ) as { state: string; doneAt: string | null };
+  check("collections · open state is 'open'", open.state === "open", open.state);
+  check("collections · open carries no stamp", open.doneAt === null);
+
+  // (g) Collections steps NEVER appear on a non-collections letter.
+  const appealOnly = mkDispute({
+    status: "filed",
+    sent_at: iso(-3),
+    metadata: { letterType: "insurance_appeal" },
+  });
+  const { steps: aSteps } = compose([appealOnly], null);
+  check(
+    "collections · absent on an insurer letter",
+    aSteps.every((s) => s.kind !== "guide-step"),
+    aSteps.map((s) => s.kind),
+  );
+
+  // (h) The CLIENT↔ROUTE vocabulary, both directions (the S300 lesson: the
+  // `acknowledge` write 400'd on every click and showed no symptom because the
+  // two sides disagreed on a string). The rail posts these exact keys; the
+  // claim-checklist route reads these exact keys.
+  const CLIENT_KEYS = ["stepId", "checked", "skipped", "note"] as const;
+  const ROUTE_KEYS = ["stepId", "checked", "skipped", "note"] as const;
+  check(
+    "collections · client and route share the checklist vocabulary",
+    JSON.stringify([...CLIENT_KEYS].sort()) === JSON.stringify([...ROUTE_KEYS].sort()),
+  );
+  check(
+    "collections · 'skipped' is in the vocabulary (not folded into 'checked')",
+    CLIENT_KEYS.includes("skipped") && ROUTE_KEYS.includes("skipped"),
   );
 }
 

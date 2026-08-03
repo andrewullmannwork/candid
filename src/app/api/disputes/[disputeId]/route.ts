@@ -824,6 +824,11 @@ export async function GET(
           missingForYear: planContext.missingForYear,
           fallbackPlan: planContext.fallbackPlan,
           providerContact: planContext.providerContact,
+          // S301 — the claim-scoped collector knowledge layer. This payload picks
+          // fields EXPLICITLY, so a new PlanContext field is invisible to the
+          // client until it is named here; CaseNeedsPanel's collections rows and
+          // the collector edit modal's prefill both read it.
+          collectorContact: planContext.collectorContact,
           // S110 Chunk C — surface archive auto-lookup result so PlanSearchModal
           // can highlight it as a best-match suggestion. S111 D1: this is a UI
           // hint only — never drives letter citations (those flow through
