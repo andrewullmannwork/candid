@@ -19,10 +19,14 @@
  */
 import {
   groupFollowupsByClaim,
+  planDeadlineReasserts,
   planFollowupQuieting,
   type ActiveFollowup,
   type PendingFollowupRow,
 } from "../../../../src/lib/disputes/followups";
+
+/** Injected clock — every date assertion below is relative to this. */
+const TODAY = "2026-08-03";
 
 let pass = 0;
 const fails: string[] = [];
@@ -35,7 +39,7 @@ function row(
   id: string,
   disputeId: string,
   claimId: string | null,
-  opts: { provider?: string | null; deadline?: string | null } = {},
+  opts: { provider?: string | null; deadline?: string | null; kind?: string } = {},
 ): ActiveFollowup {
   return {
     id,
@@ -45,7 +49,7 @@ function row(
     due_date: "2026-08-01",
     status: "pending",
     escalation_type: null,
-    metadata: {},
+    metadata: opts.kind ? { followup_kind: opts.kind } : {},
     created_at: "2026-07-01T00:00:00.000Z",
     updated_at: "2026-07-01T00:00:00.000Z",
     dispute: {
@@ -68,7 +72,7 @@ function row(
     row("f1", "d1", "c1", { deadline: "2026-08-20" }),
     row("f2", "d2", "c1", { deadline: "2026-08-12" }),
     row("f3", "d3", "c2", { provider: "Ballard Clinic", deadline: null }),
-  ]);
+  ], TODAY);
   check("group · one row per claim", groups.length === 2, groups.length);
   const c1 = groups.find((g) => g.claimId === "c1")!;
   check("group · counts DISTINCT letters", c1.letterCount === 2, c1.letterCount);
@@ -85,19 +89,19 @@ function row(
   const groups = groupFollowupsByClaim([
     row("f1", "d1", "c1"),
     row("f2", "d1", "c1"),
-  ]);
+  ], TODAY);
   check("group · two nudges on one letter → letterCount 1", groups[0].letterCount === 1, groups[0].letterCount);
   check("group · both ids still dismissible", groups[0].followupIds.length === 2);
 }
 
 // A followup whose dispute has no claim would render a button to nowhere.
 {
-  const groups = groupFollowupsByClaim([row("f1", "d1", null), row("f2", "d2", "c1")]);
+  const groups = groupFollowupsByClaim([row("f1", "d1", null), row("f2", "d2", "c1")], TODAY);
   check("group · claim-less rows are DROPPED, not null-bucketed", groups.length === 1 && groups[0].claimId === "c1", groups);
 }
 
 {
-  check("group · empty input → empty", groupFollowupsByClaim([]).length === 0);
+  check("group · empty input → empty", groupFollowupsByClaim([], TODAY).length === 0);
 }
 
 // Provider name backfills from a later row when the first lacks one.
@@ -105,8 +109,75 @@ function row(
   const groups = groupFollowupsByClaim([
     row("f1", "d1", "c1", { provider: null }),
     row("f2", "d2", "c1", { provider: "Ballard Clinic" }),
-  ]);
+  ], TODAY);
   check("group · provider name backfills from a later row", groups[0].providerName === "Ballard Clinic", groups[0].providerName);
+}
+
+// ── Age-out: a deadline nudge whose deadline has PASSED stops rendering ─────
+// (Andrew) — otherwise the banner asserts "next deadline Aug 12" on Aug 13,
+// which reads as live and is worse than saying nothing.
+{
+  const groups = groupFollowupsByClaim(
+    [row("f1", "d1", "c1", { deadline: "2026-08-01", kind: "deadline_interim" })],
+    TODAY,
+  );
+  check("age-out · past-deadline nudge drops the whole row", groups.length === 0, groups);
+}
+{
+  const groups = groupFollowupsByClaim(
+    [
+      row("f1", "d1", "c1", { deadline: "2026-08-01", kind: "deadline_interim" }),
+      row("f2", "d2", "c1", { deadline: null }),
+    ],
+    TODAY,
+  );
+  check("age-out · the claim survives on its remaining check-in nudge", groups.length === 1, groups);
+  check("age-out · and counts only the live letter", groups[0].letterCount === 1, groups[0].letterCount);
+  check("age-out · the stale id is NOT offered to the dismiss call", groups[0].followupIds.join(",") === "f2", groups[0].followupIds);
+}
+{
+  const groups = groupFollowupsByClaim(
+    [row("f1", "d1", "c1", { deadline: TODAY, kind: "deadline_final" })],
+    TODAY,
+  );
+  check("age-out · a deadline landing TODAY still renders (not yet past)", groups.length === 1, groups);
+}
+{
+  const groups = groupFollowupsByClaim(
+    [row("f1", "d1", "c1", { deadline: "2026-08-01" })],
+    TODAY,
+  );
+  check("age-out · a CHECK-IN nudge is never aged out by a stale deadline", groups.length === 1, groups);
+}
+
+// ── Re-assert: the ✕ snoozes a deadline nudge, never deletes it ─────────────
+// Andrew: "allow the x in all cases, but show the banner again 2 days and 1
+// day before the deadline passes."
+{
+  check(
+    "reassert · dismissed early → returns at deadline−2 and −1",
+    planDeadlineReasserts("2026-09-01", TODAY).join(",") === "2026-08-30,2026-08-31",
+    planDeadlineReasserts("2026-09-01", TODAY),
+  );
+  check(
+    "reassert · dismissed ON deadline−2 → only −1 remains (strictly future)",
+    planDeadlineReasserts("2026-08-05", TODAY).join(",") === "2026-08-04",
+    planDeadlineReasserts("2026-08-05", TODAY),
+  );
+  check(
+    "reassert · dismissed at deadline−1 → nothing; at that range it's a decision, not a deferral",
+    planDeadlineReasserts("2026-08-04", TODAY).length === 0,
+    planDeadlineReasserts("2026-08-04", TODAY),
+  );
+  check("reassert · deadline today → nothing", planDeadlineReasserts(TODAY, TODAY).length === 0);
+  check("reassert · deadline already past → nothing", planDeadlineReasserts("2026-07-01", TODAY).length === 0);
+  check("reassert · no deadline → nothing (check-in nudges dismiss for good)", planDeadlineReasserts(null, TODAY).length === 0);
+  check("reassert · malformed date → nothing, never a crash", planDeadlineReasserts("not-a-date", TODAY).length === 0);
+  check(
+    "reassert · month boundary math holds",
+    planDeadlineReasserts("2026-09-01", "2026-08-28").join(",") === "2026-08-30,2026-08-31",
+    planDeadlineReasserts("2026-09-01", "2026-08-28"),
+  );
 }
 
 // ── Quieting ────────────────────────────────────────────────────────────────

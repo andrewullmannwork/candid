@@ -119,13 +119,36 @@ export interface ClaimFollowupGroup {
   followupIds: string[];
 }
 
-export function groupFollowupsByClaim(rows: ActiveFollowup[]): ClaimFollowupGroup[] {
+/** True for any nudge anchored to a governing deadline (incl. S300 re-asserts). */
+export function isDeadlineAnchored(row: { metadata: Record<string, unknown> | null }): boolean {
+  const kind = row.metadata?.followup_kind;
+  return typeof kind === "string" && kind.startsWith("deadline_");
+}
+
+export function groupFollowupsByClaim(
+  rows: ActiveFollowup[],
+  todayIso: string,
+): ClaimFollowupGroup[] {
   const byClaim = new Map<string, { group: ClaimFollowupGroup; disputeIds: Set<string> }>();
   // Input order is due_date ASC (getActiveFollowups) — preserved, so the claim
   // with the most urgent nudge leads the banner.
   for (const row of rows) {
     const claimId = row.dispute.claim_id;
     if (typeof claimId !== "string" || claimId.length === 0) continue;
+    // S300 — AGE-OUT (Andrew): a deadline nudge whose deadline has PASSED stops
+    // rendering. Without this the banner keeps asserting "next deadline Aug 12"
+    // on Aug 13 — stale, and worse than silent, because it reads as live. The
+    // rail's lapsed state and the `deadline_lapsed` event own the case from
+    // there. Check-in nudges are unaffected: they track the wait, not a date.
+    const deadline = row.dispute.governing_deadline_date;
+    if (
+      isDeadlineAnchored(row) &&
+      typeof deadline === "string" &&
+      deadline.length > 0 &&
+      deadline < todayIso
+    ) {
+      continue;
+    }
     let entry = byClaim.get(claimId);
     if (!entry) {
       entry = {
@@ -145,7 +168,6 @@ export function groupFollowupsByClaim(rows: ActiveFollowup[]): ClaimFollowupGrou
     if (entry.group.providerName === null && row.dispute.provider_name) {
       entry.group.providerName = row.dispute.provider_name;
     }
-    const deadline = row.dispute.governing_deadline_date;
     if (typeof deadline === "string" && deadline.length > 0) {
       // Date-only strings compare correctly as strings (YYYY-MM-DD) — no clock,
       // no timezone, which is the point (the S299 letter-date rule).
@@ -310,6 +332,137 @@ async function createDeadlineFollowups(
   console.log(
     `[followups] Created ${rows.length} graduated deadline follow-up(s) for dispute ${disputeId} (deadline ${governingDeadlineDate})`,
   );
+}
+
+/**
+ * S300 — DISMISSAL IS A SNOOZE, not a delete, for deadline-anchored nudges
+ * (Andrew: "allow the x in all cases, but show the banner again 2 days and 1
+ * day before the deadline passes").
+ *
+ * The earlier design protected deadline rows from the ✕ entirely. Andrew's is
+ * better: a control that refuses to work is worse than annoying, and the real
+ * requirement was never "you may not dismiss this" — it was "don't let a legal
+ * deadline pass silently because you cleared a strip three weeks ago." So the
+ * ✕ always clears the row NOW, and the system re-asserts when it actually
+ * matters.
+ *
+ * PURE — returns the dates to re-assert on, strictly in the future, nearest
+ * deadline last. Dismiss at deadline−3 → both come back. Dismiss at
+ * deadline−1 → nothing comes back; at that range the dismissal is a decision,
+ * not a deferral. Deadline already past → nothing (the age-out in
+ * groupFollowupsByClaim covers that state).
+ */
+export const DEADLINE_REASSERT_DAYS_BEFORE = [2, 1] as const;
+
+export function planDeadlineReasserts(
+  governingDeadlineDate: string | null | undefined,
+  todayIso: string,
+): string[] {
+  if (!governingDeadlineDate || !/^\d{4}-\d{2}-\d{2}$/.test(governingDeadlineDate)) return [];
+  const deadlineMs = Date.parse(`${governingDeadlineDate}T00:00:00Z`);
+  const todayMs = Date.parse(`${todayIso}T00:00:00Z`);
+  if (Number.isNaN(deadlineMs) || Number.isNaN(todayMs)) return [];
+  const out: string[] = [];
+  for (const days of DEADLINE_REASSERT_DAYS_BEFORE) {
+    const at = deadlineMs - days * 86_400_000;
+    if (at <= todayMs) continue; // strictly future only — never re-assert into the past
+    out.push(new Date(at).toISOString().slice(0, 10));
+  }
+  return out.sort();
+}
+
+/**
+ * Dismiss a claim's due nudges (the banner's ✕) and schedule the re-asserts.
+ *
+ * Reuses `handleFollowupAction` per row rather than writing a second dismissal
+ * path — that function already owns ownership scoping and the status
+ * transition. The only addition is the re-assert scheduling, which is
+ * IDEMPOTENT: repeated ✕ on the same claim can never stack duplicate rows.
+ *
+ * Re-asserts are BANNER-ONLY (Andrew). They carry no email: the deadline
+ * engine already schedules its own approved cadence, and emitting mail because
+ * a user dismissed something would mean clearing the strip earns you MORE
+ * mail than leaving it. The cron skips them on `metadata.banner_only`.
+ */
+export async function dismissClaimFollowups(
+  supabase: SupabaseClient,
+  params: { userId: string; followupIds: string[]; today?: string },
+): Promise<{ dismissed: number; reasserts: number }> {
+  const { userId, followupIds } = params;
+  const today = params.today ?? new Date().toISOString().split("T")[0];
+
+  // Read BEFORE dismissing — we need each row's kind + its dispute's deadline.
+  const { data: rows, error } = await userScoped(supabase, userId)
+    .table("dispute_followups")
+    .select("id, dispute_id, metadata, dispute_outcomes!inner(id, governing_deadline_date)")
+    .in("id", followupIds);
+  if (error) {
+    console.error("[followups] dismissClaimFollowups read failed:", error);
+  }
+  const loaded = (rows ?? []) as Array<{
+    id: string;
+    dispute_id: string;
+    metadata: Record<string, unknown> | null;
+    dispute_outcomes: { id: string; governing_deadline_date: string | null };
+  }>;
+
+  let dismissed = 0;
+  for (const id of followupIds) {
+    const r = await handleFollowupAction(supabase, { followupId: id, userId, action: "dismiss" });
+    if (r.success) dismissed += 1;
+  }
+
+  // Schedule re-asserts per DISPUTE (not per row) — two nudges on one letter
+  // must not double-book the same dates.
+  const byDispute = new Map<string, string | null>();
+  for (const r of loaded) {
+    if (!isDeadlineAnchored(r)) continue;
+    byDispute.set(r.dispute_id, r.dispute_outcomes?.governing_deadline_date ?? null);
+  }
+
+  let reasserts = 0;
+  for (const [disputeId, deadline] of byDispute) {
+    const wanted = planDeadlineReasserts(deadline, today);
+    if (wanted.length === 0) continue;
+    const { data: existing, error: exErr } = await userScoped(supabase, userId)
+      .table("dispute_followups")
+      .select("due_date, metadata")
+      .eq("dispute_id", disputeId);
+    if (exErr) {
+      console.error("[followups] re-assert idempotency read failed; skipping:", exErr);
+      continue;
+    }
+    const already = new Set(
+      ((existing ?? []) as Array<{ due_date: string; metadata: Record<string, unknown> | null }>)
+        .filter((e) => e.metadata?.followup_kind === "deadline_reassert")
+        .map((e) => e.due_date),
+    );
+    const toInsert = wanted
+      .filter((d) => !already.has(d))
+      .map((d) => ({
+        dispute_id: disputeId,
+        // Reuse an existing enum value (no CHECK change) — the real semantic
+        // rides in metadata.followup_kind, the house idiom from S4.
+        followup_type: "reprompt_14d",
+        due_date: d,
+        status: "pending",
+        metadata: {
+          followup_kind: "deadline_reassert",
+          banner_only: true,
+          governing_deadline_date: deadline,
+        },
+      }));
+    if (toInsert.length === 0) continue;
+    const { error: insErr } = await userScoped(supabase, userId)
+      .table("dispute_followups")
+      .insert(toInsert);
+    if (insErr) {
+      console.error("[followups] re-assert insert failed:", insErr);
+      continue;
+    }
+    reasserts += toInsert.length;
+  }
+  return { dismissed, reasserts };
 }
 
 /**

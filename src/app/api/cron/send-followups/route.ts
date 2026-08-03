@@ -48,6 +48,14 @@ export async function GET(req: NextRequest) {
 
   for (const followup of followups) {
     try {
+      // S300 — banner-only re-asserts (scheduled when a user ✕'s a
+      // deadline-anchored nudge) never email. The deadline engine already owns
+      // the approved email cadence; mailing these would mean dismissing a
+      // banner earns you MORE mail than leaving it alone. Left `pending` on
+      // purpose so the banner keeps surfacing them.
+      if ((followup.metadata as Record<string, unknown> | null)?.banner_only === true) {
+        continue;
+      }
       // Fetch dispute details
       const { data: dispute } = await supabase
         .from("dispute_outcomes")

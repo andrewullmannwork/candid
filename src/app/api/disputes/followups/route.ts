@@ -20,6 +20,7 @@ import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { userScoped } from "@/lib/security/user-scoped";
 import {
+  dismissClaimFollowups,
   getActiveFollowups,
   groupFollowupsByClaim,
   handleFollowupAction,
@@ -54,7 +55,11 @@ export async function GET(req: NextRequest) {
   }
 
   const followups = await getActiveFollowups(supabase, user.id);
-  return NextResponse.json({ followups, claims: groupFollowupsByClaim(followups) });
+  const today = new Date().toISOString().split("T")[0];
+  return NextResponse.json({
+    followups,
+    claims: groupFollowupsByClaim(followups, today),
+  });
 }
 
 export async function POST(req: NextRequest) {
@@ -103,16 +108,13 @@ export async function POST(req: NextRequest) {
     if (ids.length === 0) {
       return NextResponse.json({ error: "followupIds must be non-empty" }, { status: 400 });
     }
-    let dismissed = 0;
-    for (const id of ids) {
-      const r = await handleFollowupAction(supabase, {
-        followupId: id,
-        userId: user.id,
-        action: "dismiss",
-      });
-      if (r.success) dismissed += 1;
-    }
-    return NextResponse.json({ success: dismissed > 0, dismissed });
+    // S300 — the ✕ always works, and for deadline-anchored nudges it SNOOZES
+    // rather than deletes: re-asserts are scheduled at deadline−2 and −1.
+    const { dismissed, reasserts } = await dismissClaimFollowups(supabase, {
+      userId: user.id,
+      followupIds: ids,
+    });
+    return NextResponse.json({ success: dismissed > 0, dismissed, reasserts });
   }
 
   if (!followupId) {
