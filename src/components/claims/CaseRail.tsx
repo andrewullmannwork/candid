@@ -406,7 +406,7 @@ export function CaseRail({
    *  Routes to the EXISTING mark-sent + unsend paths (one writer). */
   onMarkSent: (disputeId: string, sent: boolean) => Promise<void>;
   /** S301 — the FDCPA §1692g anchor, through the existing deadline-inputs route. */
-  onSaveFirstContactDate: (disputeId: string, date: string) => Promise<void>;
+  onSaveFirstContactDate: (disputeId: string, date: string | null) => Promise<void>;
   /** Refetch the claim projection after a collections step writes. */
   onRefetch: () => Promise<void>;
 }) {
@@ -421,6 +421,9 @@ export function CaseRail({
   const [guideBusy, setGuideBusy] = useState<Record<string, boolean>>({});
   const [guideError, setGuideError] = useState<Record<string, boolean>>({});
   const [guideDrafts, setGuideDrafts] = useState<Record<string, string>>({});
+  const [guideOverride, setGuideOverride] = useState<
+    Record<string, "open" | "done" | "skipped">
+  >({});
   // Pack-D filed attest (phase 1b) — optimistic with snap-back (S295 idiom);
   // server truth arrives with the next projection refetch. Note drafts are
   // controlled (GuidedPhoneSteps idiom) so the attest click can carry the
@@ -520,6 +523,20 @@ export function CaseRail({
     }
   };
 
+  // Optimistic override, snap-back on failure (the same S295 idiom filedOverride
+  // uses above). Without it every click waited on a FULL claim refetch — ~3s on
+  // this account — so the rail looked dead and Andrew clicked twice, which is
+  // exactly what the doubled ledger events recorded.
+  const applyOptimistic = (stepId: string, next: "open" | "done" | "skipped") =>
+    setGuideOverride((m) => ({ ...m, [stepId]: next }));
+  const clearOptimistic = (stepId: string) =>
+    setGuideOverride((m) => {
+      if (!(stepId in m)) return m;
+      const rest = { ...m };
+      delete rest[stepId];
+      return rest;
+    });
+
   const runGuideAction = async (
     s: Extract<RailStepModel, { kind: "guide-step" }>,
     value: string | null,
@@ -534,17 +551,30 @@ export function CaseRail({
         await onMarkSent(s.disputeId, s.state !== "done");
         return;
       }
-      if (s.action.kind === "date") {
+      if (s.doneSource === "date") {
+        // Undo on a date step CLEARS it (null); saving sets it. Both go through
+        // the existing deadline-inputs route — the engine keeps one input path.
+        if (s.state === "done") {
+          await onSaveFirstContactDate(s.disputeId, null);
+          return;
+        }
         if (!value) return;
         await onSaveFirstContactDate(s.disputeId, value);
         return;
       }
+      const nextDone = s.action.kind === "text" ? true : s.state !== "done";
+      applyOptimistic(s.stepId, nextDone ? "done" : "open");
       const ok =
         s.action.kind === "text"
           ? await runGuideStep({ stepId: s.stepId, checked: true, note: value ?? "" })
-          : await runGuideStep({ stepId: s.stepId, checked: s.state !== "done" });
-      if (ok) await onRefetch();
-      else setGuideError((m) => ({ ...m, [s.stepId]: true }));
+          : await runGuideStep({ stepId: s.stepId, checked: nextDone });
+      if (ok) {
+        await onRefetch();
+        clearOptimistic(s.stepId);
+      } else {
+        clearOptimistic(s.stepId);
+        setGuideError((m) => ({ ...m, [s.stepId]: true }));
+      }
     } finally {
       setGuideBusy((m) => ({ ...m, [s.stepId]: false }));
     }
@@ -557,9 +587,15 @@ export function CaseRail({
     setGuideBusy((m) => ({ ...m, [s.stepId]: true }));
     setGuideError((m) => ({ ...m, [s.stepId]: false }));
     try {
+      applyOptimistic(s.stepId, skipped ? "skipped" : "open");
       const ok = await runGuideStep({ stepId: s.stepId, skipped });
-      if (ok) await onRefetch();
-      else setGuideError((m) => ({ ...m, [s.stepId]: true }));
+      if (ok) {
+        await onRefetch();
+        clearOptimistic(s.stepId);
+      } else {
+        clearOptimistic(s.stepId);
+        setGuideError((m) => ({ ...m, [s.stepId]: true }));
+      }
     } finally {
       setGuideBusy((m) => ({ ...m, [s.stepId]: false }));
     }
@@ -740,6 +776,22 @@ export function CaseRail({
                             </svg>
                           )}
                         </button>
+                        {/* S301 (Andrew E2E) — the attest WAS already a toggle,
+                            but once filed it reads as a status pill, so nobody
+                            discovers that clicking it again un-files. Same
+                            explicit Undo the collections steps carry, so every
+                            attestation on this rail reverses the same way. */}
+                        {filedNow && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void toggleFiled(s.move.disputeId, false, attestNoteValue.trim())
+                            }
+                            className="text-[11.5px] font-medium text-gray-500 underline underline-offset-2 hover:text-gray-700"
+                          >
+                            {COLLECTIONS_CHROME.undoSkipLabel}
+                          </button>
+                        )}
                       </div>
                     </div>
                     <div className="mt-2.5 text-[11.5px] text-gray-400">{s.move.regulator.foot}</div>
@@ -800,11 +852,15 @@ export function CaseRail({
                 n={s.badge}
                 title={s.title}
                 last={last}
-                done={s.state === "done"}
-                skipped={s.state === "skipped"}
+                done={(guideOverride[s.stepId] ?? s.state) === "done"}
+                skipped={(guideOverride[s.stepId] ?? s.state) === "skipped"}
               >
                 <GuideStepCard
-                  step={s}
+                  step={
+                    guideOverride[s.stepId]
+                      ? { ...s, state: guideOverride[s.stepId] }
+                      : s
+                  }
                   busy={guideBusy[s.stepId] === true}
                   failed={guideError[s.stepId] === true}
                   draft={guideDrafts[s.stepId]}

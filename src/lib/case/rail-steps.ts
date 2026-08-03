@@ -189,6 +189,12 @@ export type RailStepModel =
        * rail must not treat it as a plain un-attest.
        */
       derivedFromSend: boolean;
+      /**
+       * WHERE this step's done-ness comes from, which is also what Undo has to
+       * reverse: an attestation (un-attest), the letter's send record (unsend),
+       * or a stored date (clear the date). Explicit so the card cannot guess.
+       */
+      doneSource: "attestation" | "send" | "date";
     };
 
 /**
@@ -388,13 +394,31 @@ function buildCollectionsSteps(
 
   for (const step of COLLECTIONS_STEPS) {
     const stored = steps[step.id] ?? {};
-    // packC:mailed has NO boolean of its own — mark-as-sent IS the attestation,
-    // so its state reads the letter. That is what keeps the rail from asking the
-    // user to re-assert something they already told us (and what made the old
-    // pack say "Your letter is ready" on a letter sent days earlier).
-    const derivedFromSend = step.id === "packC:mailed";
-    const doneIso = derivedFromSend ? (l.latestSendAt ?? null) : (stored.checkedAt ?? null);
-    const skipped = !derivedFromSend && stored.skippedAt != null;
+
+    // TWO of the four steps are DATA-derived: their done-ness is the fact
+    // itself, not a separate attestation.
+    //
+    //   packC:mailed        → the letter's own send record. Mark-as-sent IS the
+    //                         attestation, which is what stops the rail asking
+    //                         the user to re-assert a send they already reported.
+    //   packC:first-contact → the stored §1692g anchor date.
+    //
+    // The first cut keyed first-contact on `checkedAt`, which NOTHING writes —
+    // the date saves through the deadline-inputs route — so the step showed the
+    // date and stayed blue forever, and pressing Save appeared to do nothing
+    // (Andrew, S301 E2E round 2). A step whose answer is visible in its own
+    // field must never need a second, invisible flag to look answered.
+    const dataValue =
+      step.id === "packC:mailed"
+        ? (l.latestSendAt ?? null)
+        : step.id === "packC:first-contact"
+          ? l.collectorFirstContactDate
+          : null;
+    const doneSource: "attestation" | "send" | "date" =
+      step.id === "packC:mailed" ? "send" : step.id === "packC:first-contact" ? "date" : "attestation";
+    const derivedFromSend = doneSource === "send";
+    const doneIso = doneSource === "attestation" ? (stored.checkedAt ?? null) : dataValue;
+    const skipped = doneSource === "attestation" && stored.skippedAt != null;
     const state: "open" | "done" | "skipped" = doneIso
       ? "done"
       : skipped
@@ -422,6 +446,7 @@ function buildCollectionsSteps(
       skippable: step.skippable,
       value,
       derivedFromSend,
+      doneSource,
     };
 
     if (step.id === "packC:not-paid" || step.id === "packC:first-contact") before.push(model);

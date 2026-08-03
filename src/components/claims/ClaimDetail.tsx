@@ -851,7 +851,7 @@ export function ClaimDetail({
   // (the same endpoint the dispute page's date rows use), so the engine keeps
   // one input path and the rail does not learn about deadlines.
   const handleRailFirstContactDate = useCallback(
-    async (disputeId: string, date: string): Promise<void> => {
+    async (disputeId: string, date: string | null): Promise<void> => {
       try {
         const token = await getAuthToken();
         if (!token) return;

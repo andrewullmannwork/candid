@@ -668,17 +668,37 @@ const compose = (
   check("collections · mailed derives from send", mailed.derivedFromSend === true);
   check("collections · mailed is NOT skippable (it IS the send)", mailed.skippable === false);
 
-  // (d) The first-contact date PREFILLS from the projector, so the step never
-  // shows an empty field on data we already hold. (The projector had to learn
-  // the field: a cast would have yielded null forever and shown a blank input.)
+  // (d) The first-contact step is DATA-derived: the stored date IS the answer.
+  // It prefills AND reads done — keying it on an attestation nothing writes is
+  // what made it show the date while staying blue forever (S301 E2E round 2).
   const firstContact = guides.find(
     (g) => (g as { stepId: string }).stepId === "packC:first-contact",
-  ) as { value: string | null };
+  ) as { value: string | null; state: string; doneSource: string };
   check(
     "collections · first-contact prefills from the projector",
     firstContact.value === dateOnly(-20),
     firstContact.value,
   );
+  check(
+    "collections · a stored date makes the step DONE (no second flag)",
+    firstContact.state === "done",
+    firstContact.state,
+  );
+  check("collections · first-contact doneSource is the date", firstContact.doneSource === "date");
+
+  // …and with NO date stored it is open, so the step is visibly unanswered
+  // rather than silently vanishing the way the old derived row did.
+  const noDate = mkDispute({
+    dispute_type: "debt_validation",
+    status: "filed",
+    sent_at: iso(-3),
+    metadata: { letterType: "debt_validation", collector: { name: "Cascade Recovery" } },
+  });
+  const undated = compose([noDate], null, {}, {}).steps.find(
+    (x) => x.kind === "guide-step" && (x as { stepId: string }).stepId === "packC:first-contact",
+  ) as { state: string; value: string | null };
+  check("collections · no date → step is OPEN", undated.state === "open", undated.state);
+  check("collections · no date → empty field", undated.value === null, undated.value);
 
   // (e) THREE states, and skipped is NOT a flavour of done. These attestations
   // feed the prior-contact recital, so a declined step must never read as done.

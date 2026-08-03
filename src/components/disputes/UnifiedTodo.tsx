@@ -468,13 +468,18 @@ export function UnifiedTodo({
         mailingTo === "insurer"
           ? "Add your insurer's appeals address"
           : mailingTo === "collector"
-            ? // COPY PENDING ANDREW APPROVAL (S301)
-              "Add the collection agency's address"
+            ? // COPY PENDING ANDREW APPROVAL (S301) — names BOTH required fields,
+              // because this one row now collects the address AND the account
+              // number and a title saying only "address" understates it.
+              "Add the collection agency's details"
             : "Add the provider's mailing address",
       sub:
         mailingTo === "insurer"
           ? "The appeal has nowhere to be mailed without it."
-          : "The letter has nowhere to be mailed without it.",
+          : mailingTo === "collector"
+            ? // COPY PENDING ANDREW APPROVAL (S301)
+              "Their mailing address and the account number for this debt — both required."
+            : "The letter has nowhere to be mailed without it.",
       state: lockIfSent(
         (mailingTo === "insurer"
           ? insurerAddressOnFile
