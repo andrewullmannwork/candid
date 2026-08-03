@@ -736,6 +736,43 @@ const compose = (
     aSteps.map((s) => s.kind),
   );
 
+  // (g2) Unsend on the rail (S301). §0.9b mirrored exactly: available only while
+  // nothing is logged against the letter; otherwise the reason NAMES the action
+  // that unblocks it rather than the affordance vanishing.
+  {
+    const awaiting = compose([dv], null, {}, {}).steps.find((x) => x.kind === "send-receipt") as {
+      unsend: { available: boolean; blockedReason: string | null };
+    };
+    check("unsend · available while awaiting", awaiting.unsend.available === true);
+    check("unsend · no blocked reason when available", awaiting.unsend.blockedReason === null);
+
+    const answered = mkDispute({
+      dispute_type: "debt_validation",
+      status: "lost",
+      sent_at: iso(-3),
+      metadata: {
+        letterType: "debt_validation",
+        collector: { name: "Cascade Recovery" },
+        outcomeDetail: "denied_fully",
+        outcomeReportedAt: iso(-1),
+      },
+    });
+    const blocked = compose([answered], null, {}, {}).steps.find(
+      (x) => x.kind === "send-receipt",
+    ) as { unsend: { available: boolean; blockedReason: string | null } };
+    check("unsend · withheld once a response is logged", blocked.unsend.available === false);
+    check(
+      "unsend · blocked reason names the unblocking action",
+      blocked.unsend.blockedReason === CASE_RAIL.unsendBlocked(CASE_RAIL.quietUndoResult),
+      blocked.unsend.blockedReason,
+    );
+    check(
+      "unsend · blocked reason quotes the EXACT undo label the rail renders",
+      (blocked.unsend.blockedReason ?? "").includes(CASE_RAIL.quietUndoResult),
+      blocked.unsend.blockedReason,
+    );
+  }
+
   // (h) The CLIENT↔ROUTE vocabulary, both directions (the S300 lesson: the
   // `acknowledge` write 400'd on every click and showed no symptom because the
   // two sides disagreed on a string). The rail posts these exact keys; the

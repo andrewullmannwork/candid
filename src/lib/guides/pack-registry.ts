@@ -428,11 +428,26 @@ export type CollectionsStep = {
   body: string;
   action: CollectionsStepAction;
   /**
-   * Whether the user may dismiss this step without doing it. Only the two
-   * certified-mail steps are dismissible: not-paying, the first-contact date,
-   * and the outcome are facts the track needs, not preferences.
+   * Whether the user may dismiss this step without doing it. Only the
+   * tracking-number step is dismissible: not-paying, the first-contact date,
+   * and the send are facts the track needs, not preferences.
    */
   skippable: boolean;
+  /**
+   * WHERE this step's done-ness comes from — and therefore what Undo reverses.
+   *
+   *   attestation → its own stored `checkedAt` (Undo un-attests)
+   *   send        → the LETTER's send record (Undo routes through unsend)
+   *   date        → a stored date (Undo clears it)
+   *
+   * DECLARED here rather than matched by step id in the rail composer. The
+   * composer briefly carried five separate `step.id === "packC:…"` branches —
+   * the exact shape of drift this unit exists to remove, since a new step would
+   * have needed edits in two files to behave.
+   */
+  doneFrom: "attestation" | "send" | "date";
+  /** Which side of this letter's send step the row belongs on, chronologically. */
+  phase: "before-send" | "after-send";
 };
 
 /** Header. Names the agency when the claim knows it (S301 — it always has). */
@@ -449,6 +464,8 @@ export const COLLECTIONS_STEPS: CollectionsStep[] = [
     body: "From this moment, this dispute lives on paper — letters, certified mail, copies of everything. You're asking them to prove their case before any money moves.",
     action: { kind: "attest", label: "I haven't paid the collector" },
     skippable: false,
+    doneFrom: "attestation",
+    phase: "before-send",
   },
   {
     id: "packC:first-contact",
@@ -460,6 +477,10 @@ export const COLLECTIONS_STEPS: CollectionsStep[] = [
     body: "This starts the 30-day window to demand proof — FDCPA §1692g.",
     action: { kind: "date", label: "Date of their first contact", saveLabel: "Save date" },
     skippable: false,
+    // The stored date IS the answer — keying this on a separate attestation is
+    // what made the step show its date and stay blue forever (S301 E2E).
+    doneFrom: "date",
+    phase: "before-send",
   },
   {
     id: "packC:mailed",
@@ -472,6 +493,8 @@ export const COLLECTIONS_STEPS: CollectionsStep[] = [
     // own send record rather than a second boolean, which is what dissolves the
     // old Pack-C "I mailed it" / spine mail-certified duplication.
     skippable: false,
+    doneFrom: "send",
+    phase: "after-send",
   },
   {
     id: "packC:receipt",
@@ -484,6 +507,8 @@ export const COLLECTIONS_STEPS: CollectionsStep[] = [
       saveLabel: "Save",
     },
     skippable: true,
+    doneFrom: "attestation",
+    phase: "after-send",
   },
 ];
 
@@ -793,6 +818,17 @@ export const CASE_RAIL = {
   doorCollectionResumedAck: "Logged — this is on your case record.",
   ctaOpenLetter: "Open this letter",
   quietUndoResult: "Undo this result",
+  // S301 (Andrew) — unsend belongs on the rail too, not only on the letter page.
+  // COPY PENDING ANDREW APPROVAL.
+  quietUnsend: "I haven't actually sent this",
+  /**
+   * §0.9b withholds unsend once a response is logged, so an unsend can never
+   * orphan an outcome. Before this the affordance simply VANISHED and the letter
+   * read as a dead end (Andrew, S301 E2E). It now states the prerequisite and
+   * names the action that satisfies it — which is on the very next step.
+   */
+  unsendBlocked: (undoLabel: string) =>
+    `To unsend this, "${undoLabel}" on the response below first.`,
 
   // Reminder foot — dated waits only; hidden once the deadline passes.
   remindFoot: (dateLabel: string): string =>

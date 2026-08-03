@@ -150,6 +150,13 @@ export type RailStepModel =
       receipt: string;
       disputeId: string;
       openLetterLabel: string;
+      /**
+       * S301 — unsend, on the CASE surface. `available` mirrors §0.9b exactly
+       * (stage `awaiting` = nothing logged against it yet); when it is false the
+       * `blockedReason` names the prerequisite instead of the affordance simply
+       * disappearing, which is what made a denied letter read as a dead end.
+       */
+      unsend: { available: boolean; blockedReason: string | null };
     }
   | {
       kind: "send-draft";
@@ -408,14 +415,13 @@ function buildCollectionsSteps(
     // date and stayed blue forever, and pressing Save appeared to do nothing
     // (Andrew, S301 E2E round 2). A step whose answer is visible in its own
     // field must never need a second, invisible flag to look answered.
+    const doneSource = step.doneFrom;
     const dataValue =
-      step.id === "packC:mailed"
+      doneSource === "send"
         ? (l.latestSendAt ?? null)
-        : step.id === "packC:first-contact"
+        : doneSource === "date"
           ? l.collectorFirstContactDate
           : null;
-    const doneSource: "attestation" | "send" | "date" =
-      step.id === "packC:mailed" ? "send" : step.id === "packC:first-contact" ? "date" : "attestation";
     const derivedFromSend = doneSource === "send";
     const doneIso = doneSource === "attestation" ? (stored.checkedAt ?? null) : dataValue;
     const skipped = doneSource === "attestation" && stored.skippedAt != null;
@@ -426,7 +432,7 @@ function buildCollectionsSteps(
         : "open";
 
     const value =
-      step.id === "packC:first-contact"
+      doneSource === "date"
         ? l.collectorFirstContactDate
         : step.action.kind === "text"
           ? (stored.note ?? null)
@@ -449,7 +455,7 @@ function buildCollectionsSteps(
       doneSource,
     };
 
-    if (step.id === "packC:not-paid" || step.id === "packC:first-contact") before.push(model);
+    if (step.phase === "before-send") before.push(model);
     else after.push(model);
   }
 
@@ -511,6 +517,13 @@ export function composeRailSteps(input: ComposeRailInput): RailStepModel[] {
                 : CASE_RAIL.sendReceiptGeneric(letterLabel(l.letterType), dateLabel, l.mailedCertified),
             disputeId: l.disputeId,
             openLetterLabel: CASE_RAIL.ctaOpenLetter,
+            unsend:
+              l.stage === "awaiting"
+                ? { available: true, blockedReason: null }
+                : {
+                    available: false,
+                    blockedReason: CASE_RAIL.unsendBlocked(CASE_RAIL.quietUndoResult),
+                  },
           },
         });
       }

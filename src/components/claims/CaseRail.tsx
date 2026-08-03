@@ -424,6 +424,7 @@ export function CaseRail({
   const [guideOverride, setGuideOverride] = useState<
     Record<string, "open" | "done" | "skipped">
   >({});
+  const [unsendBusy, setUnsendBusy] = useState<Record<string, boolean>>({});
   // Pack-D filed attest (phase 1b) — optimistic with snap-back (S295 idiom);
   // server truth arrives with the next projection refetch. Note drafts are
   // controlled (GuidedPhoneSteps idiom) so the attest click can carry the
@@ -537,6 +538,20 @@ export function CaseRail({
       return rest;
     });
 
+  // Unsend from the rail — the EXISTING mark-sent route in its undo direction,
+  // so the snapshot retention, clock retraction, and letter_unsent event all
+  // happen on the one path that owns them. Structural (it changes which steps
+  // exist), so this shows a PENDING state rather than faking the new shape:
+  // inventing it client-side would be a second derivation of the rail.
+  const handleUnsend = async (disputeId: string) => {
+    setUnsendBusy((m) => ({ ...m, [disputeId]: true }));
+    try {
+      await onMarkSent(disputeId, false);
+    } finally {
+      setUnsendBusy((m) => ({ ...m, [disputeId]: false }));
+    }
+  };
+
   const runGuideAction = async (
     s: Extract<RailStepModel, { kind: "guide-step" }>,
     value: string | null,
@@ -649,7 +664,10 @@ export function CaseRail({
                         disabled={undoBusy[s.disputeId] ?? false}
                         className="border-none bg-transparent p-0 text-[12px] text-gray-400 underline underline-offset-2 transition-colors hover:text-gray-600 disabled:cursor-not-allowed disabled:opacity-60"
                       >
-                        {CASE_RAIL.quietUndoResult}
+                        {/* Label flips while in flight — disabled+dimmed alone
+                            still reads as "nothing happened" on a slow refetch
+                            (S301 E2E). Same treatment as unsend below. */}
+                        {undoBusy[s.disputeId] ? "Working…" : CASE_RAIL.quietUndoResult}
                       </button>
                       {(undoError[s.disputeId] ?? false) && (
                         <span className="text-[11.5px] text-red-600">
@@ -819,13 +837,34 @@ export function CaseRail({
               >
                 {(openSteps[s.key] ?? false) && (
                   <div className="rounded-xl border border-gray-200 bg-white px-4 py-3.5">
-                    <button
-                      type="button"
-                      onClick={() => goToLetter(s.disputeId)}
-                      className="inline-flex items-center rounded-lg border border-gray-200 bg-white px-4 py-2 text-[13.5px] font-semibold text-gray-700 transition-colors hover:bg-gray-50"
-                    >
-                      {s.openLetterLabel}
-                    </button>
+                    <div className="flex flex-wrap items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => goToLetter(s.disputeId)}
+                        className="inline-flex items-center rounded-lg border border-gray-200 bg-white px-4 py-2 text-[13.5px] font-semibold text-gray-700 transition-colors hover:bg-gray-50"
+                      >
+                        {s.openLetterLabel}
+                      </button>
+                      {/* S301 — unsend on the CASE surface. Same route, same
+                          §0.9b guard as the letter page; the rail just makes it
+                          reachable where the user already is. */}
+                      {s.unsend.available && (
+                        <button
+                          type="button"
+                          onClick={() => void handleUnsend(s.disputeId)}
+                          disabled={unsendBusy[s.disputeId] === true}
+                          className="border-none bg-transparent p-0 text-[12px] text-gray-400 underline underline-offset-2 transition-colors hover:text-gray-600 disabled:opacity-60"
+                        >
+                          {unsendBusy[s.disputeId] ? "Working…" : CASE_RAIL.quietUnsend}
+                        </button>
+                      )}
+                    </div>
+                    {/* Blocked → say WHY and name the action that unblocks it,
+                        rather than letting the affordance vanish (Andrew, S301:
+                        a denied letter read as a dead end). */}
+                    {!s.unsend.available && s.unsend.blockedReason && (
+                      <p className="mt-2 text-[11.5px] text-gray-400">{s.unsend.blockedReason}</p>
+                    )}
                   </div>
                 )}
               </RailStep>
