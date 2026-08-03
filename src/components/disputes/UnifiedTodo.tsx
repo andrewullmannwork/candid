@@ -42,6 +42,10 @@ import { cn } from "@/lib/utils/cn";
 import { PatientIdentityChoices } from "@/components/disputes/PatientIdentityChoices";
 import { computeCaseStage, stageActions } from "@/lib/disputes/case-stage";
 import { GuidedPackCSection, GuidedPackDSection } from "@/components/disputes/GuidedSpineSteps";
+import {
+  SEND_GATE_COPY,
+  type ReadinessBlocker,
+} from "@/lib/disputes/dispute-readiness";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -97,6 +101,33 @@ export interface UnifiedTodoProps {
   /** "$775.00" — used in "Finish this list to get your $X moving." */
   amountLabel: string | null;
   sent: boolean;
+  /**
+   * S302 (tracker Item AB) — the server's readiness floor (`strength.readiness`),
+   * now the ONE progress signal on this page.
+   *
+   * Before this the page carried two: this card's "4/7" required-step count at
+   * the top, and CaseNeedsPanel's four-rung tier nested inside the claim-details
+   * expansion, where nobody scrolls. They measured different things and could
+   * disagree. Andrew's call: merge into one, floor-derived, with the step count
+   * as its detail rather than the headline — the floor is the more truthful of
+   * the two, because it knows what actually blocks sending.
+   *
+   * Null when the strength payload is absent → the header falls back to the
+   * step-count pill, byte-identical to today.
+   */
+  readiness?: {
+    state: "attention" | "ready_to_send" | "airtight";
+    requiredMet: number;
+    requiredTotal: number;
+  } | null;
+  /**
+   * S302 — the floor items still missing, from the SHARED `sendBlockers`
+   * (dispute-readiness.ts). Non-empty locks Download / Mail it certified /
+   * Mark it as sent, and the same list is what the outcome route refuses the
+   * transition on, so the button state and the server verdict agree by
+   * construction. Empty (or flag OFF) = today's behaviour exactly.
+   */
+  sendBlockers?: ReadinessBlocker[];
   /** S299 phase 2a — one-letter mode: suppress the case-ladder furniture
    *  (earlier/later segments, viewing-past banner); the claim rail owns case
    *  navigation now. The letter-work rows are untouched. */
@@ -363,6 +394,8 @@ const TERMINAL = new Set([
 export function UnifiedTodo({
   amountLabel,
   sent,
+  readiness = null,
+  sendBlockers = [],
   letterOnly = false,
   sentDateLabel,
   responseDueLabel,
@@ -559,15 +592,24 @@ export function UnifiedTodo({
   ];
 
   // SEND IT
+  //
+  // S302 — locked until the readiness floor is met (Andrew: "make sure the
+  // letter can\u2019t be sent or used until the required fields are added").
+  // `locked` is the row state the spine already has for after-sent guidance, so
+  // this needs no new visual vocabulary. The server refuses the same transition
+  // on the same list, so a stale tab cannot slip past the screen.
+  const gateBlocked = !sent && sendBlockers.length > 0;
+  const lockIfGated = (s: RowState): RowState => (gateBlocked ? "locked" : s);
   const sendRows: RowDef[] = [
     {
       id: "download",
       title: "Download & sign the letter",
       sub: "Print it, sign in ink, keep a copy.",
-      state: sent || effChecks.download ? "done" : "todo",
+      state: lockIfGated(sent || effChecks.download ? "done" : "todo"),
       required: true,
       cta: "Download",
       onDo: () => {
+        if (gateBlocked) return;
         onDownload();
         setCheck("download", true);
       },
@@ -577,20 +619,26 @@ export function UnifiedTodo({
       id: "mailcert",
       title: "Mail it certified",
       sub: "USPS Form 3811 (return receipt) — your proof of delivery.",
-      state: sent || effChecks.mailcert ? "done" : "todo",
+      state: lockIfGated(sent || effChecks.mailcert ? "done" : "todo"),
       required: true,
       cta: "Done — I mailed it",
-      onDo: () => toggleCheck("mailcert"),
+      onDo: () => {
+        if (gateBlocked) return;
+        toggleCheck("mailcert");
+      },
       checkable: true,
     },
     {
       id: "marksent",
       title: "Mark it as sent",
       sub: "Starts the clock on their response and schedules your follow-up reminders.",
-      state: sent ? "done" : "todo",
+      state: lockIfGated(sent ? "done" : "todo"),
       required: true,
       cta: "Mark as sent",
-      onDo: () => setAsking(true),
+      onDo: () => {
+        if (gateBlocked) return;
+        setAsking(true);
+      },
       confirm: true,
     },
   ];
@@ -730,6 +778,18 @@ export function UnifiedTodo({
   const isPrevExpanded = (l: CaseLetterSummary) =>
     prevExpanded[l.id] ?? (viewedLetter != null && l.ordinal === viewedLetter.ordinal - 1);
 
+  // S302 — the ONE readiness signal. Labels are the server's three states; the
+  // client's four-rung `computeTier` is deleted (it counted a different row set
+  // and could disagree with the score that actually prints in the Case File).
+  const readinessMeta =
+    readiness == null
+      ? null
+      : readiness.state === "attention"
+        ? { label: "Not ready to send", pill: "border-amber-200 bg-amber-50 text-amber-800" }
+        : readiness.state === "airtight"
+          ? { label: "Airtight", pill: "border-emerald-200 bg-emerald-50 text-emerald-700" }
+          : { label: "Ready to send", pill: "border-blue-200 bg-blue-50 text-blue-700" };
+
   const all = [...prepRows, ...sendRows, ...(eventMode ? [] : staticAfterRows)];
   const required = all.filter((r) => r.required);
   const reqDone = required.filter((r) => r.state === "done").length;
@@ -776,14 +836,26 @@ export function UnifiedTodo({
                       ? ` · response due by ${responseDueLabel}`
                       : ""
                 }`
-              : amountLabel
-                ? `Finish this list to get your ${amountLabel} moving.`
-                : "Finish this list to get your appeal moving."}
+              : `${readinessMeta ? `${reqDone} of ${required.length} steps done · f` : "F"}inish this list to get your ${amountLabel ?? "appeal"} moving.`}
           </p>
         </div>
-        <span className="flex-shrink-0 rounded-full bg-blue-50 px-2.5 py-1 text-[12px] font-bold tabular-nums text-blue-700 ring-1 ring-inset ring-blue-200">
-          {reqDone}/{required.length}
-        </span>
+        {/* S302 / Item AB — the readiness floor, promoted to the one place the
+            eye lands. Falls back to the step-count pill when the strength
+            payload is absent, so nothing regresses without it. */}
+        {readinessMeta ? (
+          <span
+            className={
+              "flex-shrink-0 whitespace-nowrap rounded-full border px-2.5 py-1 text-[12px] font-bold " +
+              readinessMeta.pill
+            }
+          >
+            {readinessMeta.label}
+          </span>
+        ) : (
+          <span className="flex-shrink-0 rounded-full bg-blue-50 px-2.5 py-1 text-[12px] font-bold tabular-nums text-blue-700 ring-1 ring-inset ring-blue-200">
+            {reqDone}/{required.length}
+          </span>
+        )}
       </div>
 
       {/* Draft-stage filing-deadline guard — absorbed from the retired
@@ -920,6 +992,27 @@ export function UnifiedTodo({
           <div className="mb-1 mt-3 text-[10px] font-bold uppercase tracking-[0.1em] text-gray-400">
             {g.label}
           </div>
+          {/* S302 — WHY the send steps are locked, named item by item with its
+              remedy. "Not ready to send" without a remedy is the dead end this
+              gate exists to end; each line points at the row above that fixes
+              it. Renders only on the SEND group, only while blocked. */}
+          {g.id === "send" && gateBlocked && (
+            <div className="mb-2 mt-1 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5">
+              <div className="text-[12.5px] font-bold text-amber-800">
+                {SEND_GATE_COPY.heading(sendBlockers.length)}
+              </div>
+              <ul className="mt-1 space-y-0.5">
+                {sendBlockers.map((b) => {
+                  const c = SEND_GATE_COPY.blocker(b, mailingTo);
+                  return (
+                    <li key={b} className="text-[12px] leading-relaxed text-amber-700">
+                      · <span className="font-semibold">{c.what}</span> — {c.fix}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
           {g.rows.map((row) => {
             if (row.required) n += 1;
             const num = row.required ? n : null;

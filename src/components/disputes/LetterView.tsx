@@ -43,8 +43,12 @@ export interface LetterViewProps {
   collector: { name?: string; address?: string | null } | null;
   /** The case's provider (caseTimeline.providerName) — breadcrumb + fallback. */
   providerName: string | null;
-  /** "4b" for the primary letter; null hides the step suffix. */
-  stepBadge: string | null;
+  // S302 — `stepBadge` REMOVED. It hardcoded "step 4b" for the primary letter,
+  // and after phase 3 no letter is 4b: the rail numbers every letter's send step
+  // in sequence, and that number depends on the CLAIM page's own step budget,
+  // which this page cannot know. That is precisely why S300 keyed deep links on
+  // the dispute id rather than the step number — a number here would go stale
+  // the first time the rail restructured.
   claimId: string;
   sentAtIso: string;
   certified: boolean;
@@ -124,7 +128,6 @@ export function LetterView(p: LetterViewProps) {
           </div>
           <div className="mt-0.5 text-[12.5px] text-gray-500">
             {p.providerName ? `Part of your ${p.providerName} case` : "Part of your case"}
-            {p.stepBadge ? ` · step ${p.stepBadge}` : ""}
           </div>
         </div>
         <span className="inline-flex items-center rounded-full bg-emerald-50 px-2.5 py-[3px] text-[12px] font-semibold text-emerald-700 ring-1 ring-inset ring-emerald-200">

@@ -27,6 +27,10 @@ import { OutcomeReportingModal } from "@/components/disputes/OutcomeReportingMod
 import { CollectorModal, type CollectorSubmit } from "@/components/disputes/CollectorModal";
 import { ExhaustionAttestModal } from "@/components/disputes/ExhaustionAttestModal";
 import { railHasExtension, railCaseResolution, fmtRailDate } from "@/lib/case/rail-steps";
+import {
+  SEND_GATE_COPY,
+  type ReadinessBlocker,
+} from "@/lib/disputes/dispute-readiness";
 import type { ProjectedLetterStep } from "@/lib/case/timeline-projector";
 import { letterRecipientKind } from "@/lib/disputes";
 import {
@@ -844,6 +848,25 @@ export function ClaimDetail({
           body: JSON.stringify(sent ? markSentPayload(disputeId) : unsendPayload(disputeId)),
         });
         if (!res.ok) {
+          // S302 — the send gate answers 409 with the FLOOR items that are
+          // missing. Saying "please try again" to that would be the S301
+          // mistake exactly: an error message pointing away from the cause,
+          // on an action that will never succeed by retrying. Name what's
+          // missing and where to fix it.
+          if (res.status === 409) {
+            const body = (await res.json().catch(() => null)) as {
+              blockers?: ReadinessBlocker[];
+            } | null;
+            const missing = (body?.blockers ?? [])
+              .map((b) => SEND_GATE_COPY.blocker(b, "both").what.toLowerCase())
+              .join(", ");
+            setRailActionError(
+              missing
+                ? `${SEND_GATE_COPY.error} Still missing: ${missing}. Open the letter to add it.`
+                : `${SEND_GATE_COPY.error} Open the letter to see what's missing.`,
+            );
+            return false;
+          }
           // S301 — the old message here BLAMED the §0.9b guard, which disguised
           // a malformed request as correct behavior. Unsend now clears the
           // outcome in the same patch, so there is no prerequisite to name.

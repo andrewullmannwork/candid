@@ -24,6 +24,10 @@
  * Run:  npx tsx scripts/calibration/fixtures/dispute-grounds/letter-needs.ts
  */
 import {
+  sendBlockers,
+  SEND_GATE_COPY,
+} from "../../../../src/lib/disputes/dispute-readiness";
+import {
   letterNeeds,
   letterRecipientKind,
   normalizeLetterType,
@@ -267,6 +271,81 @@ for (const row of MATRIX) {
     carried.prompt !== catalog.prompt &&
       carried.confirmLabel !== catalog.confirmLabel &&
       carried.changeLabel !== catalog.changeLabel,
+  );
+}
+
+
+// ── S302 · the send gate — one definition, screen and server ────────────────
+{
+  const floor = (over: Partial<Record<
+    "dataTrustPass" | "backedClaim" | "recipientAddress" | "patientIdentity",
+    boolean
+  >> = {}) =>
+    ({
+      readiness: {
+        state: "attention" as const,
+        mvdlMet: false,
+        required: {
+          dataTrustPass: true,
+          backedClaim: true,
+          recipientAddress: true,
+          patientIdentity: true,
+          ...over,
+        },
+        requiredMet: 4,
+        requiredTotal: 4,
+        recipientKind: "insurer" as const,
+        optionalOpen: [],
+      },
+    }) as unknown as Parameters<typeof sendBlockers>[0];
+
+  check("gate · a met floor blocks nothing", sendBlockers(floor(), true).length === 0);
+  check(
+    "gate · every unmet floor item is reported, in floor order",
+    sendBlockers(
+      floor({ dataTrustPass: false, backedClaim: false, recipientAddress: false, patientIdentity: false }),
+      true,
+    ).join(",") === "data_trust,backed_claim,recipient_address,patient_identity",
+    sendBlockers(floor({ dataTrustPass: false, backedClaim: false, recipientAddress: false, patientIdentity: false }), true),
+  );
+  check(
+    "gate · a single unmet item reports alone",
+    sendBlockers(floor({ recipientAddress: false }), true).join(",") === "recipient_address",
+  );
+  // The flag lockstep. With letter_requirements_v1 OFF the floor still uses the
+  // LEGACY recipient mapping, under which a collector letter fails for a
+  // provider address it never prints — enforcing that would lock a user out of
+  // sending a correct letter, so the gate must not fire at all.
+  check(
+    "gate · OFF blocks nothing, whatever the floor says",
+    sendBlockers(floor({ recipientAddress: false, patientIdentity: false }), false).length === 0,
+  );
+  // A monitoring failure must never become a wall between a user and their
+  // own letter.
+  check("gate · a null strength fails OPEN", sendBlockers(null, true).length === 0);
+
+  check(
+    "gate copy · heading pluralises",
+    SEND_GATE_COPY.heading(1) === "One thing is still missing before this letter can go out" &&
+      SEND_GATE_COPY.heading(2) === "2 things are still missing before this letter can go out",
+    [SEND_GATE_COPY.heading(1), SEND_GATE_COPY.heading(2)],
+  );
+  check(
+    "gate copy · the address blocker names the address THIS letter prints",
+    SEND_GATE_COPY.blocker("recipient_address", "insurer").what === "Your insurer's appeals address" &&
+      SEND_GATE_COPY.blocker("recipient_address", "collector").what === "The collection agency's details" &&
+      SEND_GATE_COPY.blocker("recipient_address", "provider").what === "The provider's mailing address",
+    [
+      SEND_GATE_COPY.blocker("recipient_address", "insurer").what,
+      SEND_GATE_COPY.blocker("recipient_address", "collector").what,
+      SEND_GATE_COPY.blocker("recipient_address", "provider").what,
+    ],
+  );
+  check(
+    "gate copy · every blocker carries a remedy, never just a complaint",
+    (["data_trust", "backed_claim", "recipient_address", "patient_identity"] as const).every(
+      (k) => SEND_GATE_COPY.blocker(k, "insurer").fix.length > 0,
+    ),
   );
 }
 

@@ -45,6 +45,7 @@ import {
   type PlanCostService,
 } from "@/components/disputes/CaseNeedsPanel";
 import { UnifiedTodo, type CaseLetterSummary } from "@/components/disputes/UnifiedTodo";
+import { sendBlockers as computeSendBlockers } from "@/lib/disputes/dispute-readiness";
 import { CaseSummary } from "@/components/disputes/CaseSummary";
 import { AddPlanDetailsModal } from "@/components/claims/AddPlanDetailsModal";
 import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
@@ -2130,7 +2131,6 @@ function DisputesContent() {
       planLabel={planLabel}
       showInsuranceRow={zone1ShowInsuranceRow}
       canChangePlan={planPinningEnabled}
-      readiness={strength?.readiness ?? null}
       coverageVerifyGaps={coverageVerifyGaps}
       onCoverageVerify={handleCoverageVerify}
       rerunAuditEnabled={false}
@@ -2387,6 +2387,14 @@ function DisputesContent() {
           : null
       }
       sent={alreadySent}
+      // S302 (tracker Item AB) — ONE readiness signal, at the top of the
+      // spine. Same `strength.readiness` the panel used to consume: the
+      // server's MVDL floor, which is what actually scores the letter.
+      readiness={strength?.readiness ?? null}
+      // S302 — the SAME list the outcome route refuses the mark-sent
+      // transition on, from the same shared helper. The screen and the
+      // server cannot disagree about what is missing.
+      sendBlockers={computeSendBlockers(strength, letterRequirementsOn)}
       letterOnly={letterViewOn}
       sentDateLabel={sentDateLabel}
       responseDueLabel={responseDueLabel}
@@ -2580,8 +2588,6 @@ function DisputesContent() {
   if (letterViewOn && alreadySent && letter && caseTimeline) {
     const entry =
       caseTimeline.letters.find((l) => l.disputeId === disputeId) ?? null;
-    const primaryId =
-      caseTimeline.letters.find((l) => l.stage !== "none")?.disputeId ?? null;
     return (
       <div className="mx-auto max-w-4xl px-4 py-6">
         <LetterView
@@ -2591,7 +2597,6 @@ function DisputesContent() {
           }
           collector={letterCollector}
           providerName={caseTimeline.providerName}
-          stepBadge={disputeId != null && disputeId === primaryId ? "4b" : null}
           claimId={letter.auditReportId}
           sentAtIso={disputeSentAt ?? letter.createdAt}
           certified={entry?.mailedCertified ?? false}
