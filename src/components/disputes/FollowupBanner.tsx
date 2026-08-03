@@ -30,6 +30,19 @@ import { parseLetterDate } from "@/lib/disputes/letter-type";
  * step: §0.9c gives per-step landing to EMAILS, which are per-letter events.
  * A banner row covers several letters at once, so it has no single step to
  * point at.
+ *
+ * WHERE IT RENDERS: `/dashboard` ONLY (Andrew, S300). `/claim` already shows
+ * the same state visually in its own idiom — per-bill amber on the list cards,
+ * per-letter waiting cards in the rail — so a pointer row there duplicated,
+ * more weakly, what the page renders natively. (It also could never have
+ * rendered on the claim DETAIL view: that branch returns early, "render that
+ * view only", D-§1.D.1-E.) A `suppressClaimId` prop existed briefly for the
+ * open-bill case; with the claim-page mount gone it could not fire in any
+ * state, so it was removed rather than left as a switch wired to nothing.
+ *
+ * ⚠ This is a stopgap shape. A roll-up of "what needs you" wants a real
+ * needs-attention surface, not an amber strip that grows a row per claim —
+ * tracker Item AA.
  */
 
 interface ClaimFollowupGroup {
@@ -44,7 +57,7 @@ interface ClaimFollowupGroup {
  *  is not a nudge. Never silent: the remainder is stated, with a way through. */
 const MAX_ROWS = 3;
 
-export function FollowupBanner({ suppressClaimId }: { suppressClaimId?: string | null } = {}) {
+export function FollowupBanner() {
   const { user } = useAuth();
   const [claims, setClaims] = useState<ClaimFollowupGroup[]>([]);
   const [submitting, setSubmitting] = useState<string | null>(null);
@@ -91,13 +104,10 @@ export function FollowupBanner({ suppressClaimId }: { suppressClaimId?: string |
     [submitting, user],
   );
 
-  // On /claim the open bill's own row would be a button to where the user
-  // already is — and its waiting cards are on screen. Suppress it.
-  const visible = claims.filter((c) => c.claimId !== suppressClaimId);
-  if (visible.length === 0) return null;
+  if (claims.length === 0) return null;
 
-  const rows = visible.slice(0, MAX_ROWS);
-  const overflow = visible.length - rows.length;
+  const rows = claims.slice(0, MAX_ROWS);
+  const overflow = claims.length - rows.length;
 
   return (
     <div className="mb-4 space-y-2">

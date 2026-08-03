@@ -7,7 +7,6 @@ import { useEffect, useRef, useState } from "react";
 import { BillCard } from "@/components/claims/BillCard";
 import { VisitGroupCard } from "@/components/claims/VisitGroupCard";
 import { ClaimDetail } from "@/components/claims/ClaimDetail";
-import { FollowupBanner } from "@/components/disputes/FollowupBanner";
 import { DisputeMetrics } from "@/components/disputes/DisputeMetrics";
 import { EscalationCard } from "@/components/disputes/EscalationCard";
 import { RecoveryHero, type NextStepView } from "@/components/claims/RecoveryHero";
@@ -143,9 +142,10 @@ export default function CandidClaimPage() {
       // (its earlier steps are collapsed receipts above it).
       const target = matches.length > 0 ? matches[matches.length - 1] : null;
       if (target) {
+        // Scroll only — no highlight (Andrew, S300 E2E round 1). The step's own
+        // chrome already identifies it; a ring on arrival is decoration the
+        // rail doesn't otherwise use.
         target.scrollIntoView({ behavior: "smooth", block: "center" });
-        target.classList.add("ring-2", "ring-amber-400", "rounded-2xl");
-        window.setTimeout(() => target.classList.remove("ring-2", "ring-amber-400", "rounded-2xl"), 2400);
         return;
       }
       if (++attempts < 20) window.setTimeout(tick, 250);
@@ -341,11 +341,15 @@ export default function CandidClaimPage() {
         sub="Every bill audited line by line. Every overcharge flagged. Every dollar tracked."
       />
 
-      {/* FollowupBanner above hero — D-§1.D.1-F + Round 2 Item 1 Option A.
-          S300 phase 2b: per-claim rows; the open bill's own row is suppressed
-          (its waiting cards are already on screen in the rail). */}
-      <FollowupBanner suppressClaimId={urlClaimId} />
-
+      {/* FollowupBanner REMOVED here at S300 phase 2b (Andrew). The banner is a
+          DASHBOARD surface now: `/claim` already shows the same state visually
+          in its own idiom — per-bill amber on the list cards (S297 BillCard
+          lifecycle) and per-letter waiting cards in the rail on the detail
+          view — so a pointer row here duplicated, in a weaker form, what the
+          page renders natively. It also could not have worked on the detail
+          view at all: that branch returns early above (line ~295, "render that
+          view only", D-§1.D.1-E). Longer term the roll-up wants a real
+          needs-attention surface rather than a banner — tracker Item AA. */}
       {/* Empty state replaces hero + tabs entirely (Round 2 Item 2 render rule) */}
       {!hasBills && (
         <>
