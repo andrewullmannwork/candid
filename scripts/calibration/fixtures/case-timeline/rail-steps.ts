@@ -32,6 +32,12 @@ import {
   type RailStepModel,
 } from "../../../../src/lib/case/rail-steps";
 import { CASE_RAIL } from "../../../../src/lib/guides/pack-registry";
+import {
+  OUTCOME_ROUTE_KEYS,
+  markSentPayload,
+  undoResultPayload,
+  unsendPayload,
+} from "../../../../src/lib/disputes/outcome-actions";
 
 let pass = 0;
 const fails: string[] = [];
@@ -777,6 +783,44 @@ const compose = (
   // `acknowledge` write 400'd on every click and showed no symptom because the
   // two sides disagreed on a string). The rail posts these exact keys; the
   // claim-checklist route reads these exact keys.
+  // The outcome-route vocabulary, both directions (S301). The rail's unsend
+  // shipped as `{ disputeId, undoSent: true }` — keys the route has NEVER read —
+  // so it 400'd on every click while the caller's error copy blamed the §0.9b
+  // guard. A malformed request wearing a plausible error message is worse than a
+  // silent failure: it explains itself wrongly. Now every caller builds its body
+  // from outcome-actions, and this asserts those bodies against the route's own
+  // accepted-key list in BOTH directions.
+  {
+    const bodies = [
+      markSentPayload("d1"),
+      unsendPayload("d1"),
+      undoResultPayload("d1"),
+    ];
+    const accepted = new Set<string>(OUTCOME_ROUTE_KEYS);
+    for (const b of bodies) {
+      for (const k of Object.keys(b)) {
+        check(`outcome payload key "${k}" is one the route reads`, accepted.has(k), k);
+      }
+      check("outcome payload always carries status (the route 400s without it)", "status" in b);
+      check("outcome payload always carries disputeId", "disputeId" in b);
+    }
+    // Unsend must clear the outcome IN THE SAME request — one atomic row patch,
+    // so a letter can never end up unsent with an orphaned response logged.
+    const un = unsendPayload("d1");
+    check("unsend clears the send", un.clearSentAt === true);
+    check("unsend clears the logged outcome in the SAME request", un.clearOutcomeDetail === true);
+    // Undo-result must NOT unsend — the letter stays sent, its clock running.
+    const ur = undoResultPayload("d1");
+    check("undo-result leaves the letter sent", ur.clearSentAt === undefined);
+    check("undo-result clears only the outcome", ur.clearOutcomeDetail === true);
+    // Mark-sent carries no clear flags (the route's snapshot guard keys on that).
+    const ms = markSentPayload("d1");
+    check(
+      "mark-sent carries no clear flags",
+      ms.clearSentAt === undefined && ms.clearOutcomeDetail === undefined,
+    );
+  }
+
   const CLIENT_KEYS = ["stepId", "checked", "skipped", "note"] as const;
   const ROUTE_KEYS = ["stepId", "checked", "skipped", "note"] as const;
   check(

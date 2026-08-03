@@ -11,6 +11,7 @@ import { InlineSubscribePanel } from "@/components/billing/InlineSubscribePanel"
 import { downloadCaseFile } from "@/lib/casefile";
 import { disputeUrlForResult } from "@/lib/disputes/url";
 import { letterRecipientKind } from "@/lib/disputes";
+import { unsendPayload } from "@/lib/disputes/outcome-actions";
 import { LETTER_TYPE_LABELS, parseLetterDate } from "@/lib/disputes/letter-type";
 import { LetterView } from "@/components/disputes/LetterView";
 import { fmtRailDate } from "@/lib/case/rail-steps";
@@ -1113,7 +1114,7 @@ function DisputesContent() {
       const res = await fetch(`/api/disputes/outcome`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ disputeId, status: "dispute_letter_drafted", clearSentAt: true, clearOutcomeDetail: true }),
+        body: JSON.stringify(unsendPayload(disputeId)),
       });
       if (!res.ok) throw new Error("undo failed");
       void fetchDispute(disputeId);

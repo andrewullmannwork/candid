@@ -29,6 +29,11 @@ import { ExhaustionAttestModal } from "@/components/disputes/ExhaustionAttestMod
 import { railHasExtension, fmtRailDate } from "@/lib/case/rail-steps";
 import type { ProjectedLetterStep } from "@/lib/case/timeline-projector";
 import { letterRecipientKind } from "@/lib/disputes";
+import {
+  markSentPayload,
+  undoResultPayload,
+  unsendPayload,
+} from "@/lib/disputes/outcome-actions";
 import { CASE_RAIL, GUIDE_4B, GUIDE_CHROME, PHONE_OUTCOME, type GuideFillContext, type GuideFinding } from "@/lib/guides/pack-registry";
 
 interface CodeIdentityState {
@@ -792,7 +797,7 @@ export function ClaimDetail({
         const res = await fetch(`/api/disputes/outcome`, {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ disputeId, status: "filed", clearOutcomeDetail: true }),
+          body: JSON.stringify(undoResultPayload(disputeId)),
         });
         if (!res.ok) return false;
         await refetchClaim();
@@ -826,9 +831,12 @@ export function ClaimDetail({
         const res = await fetch(`/api/disputes/outcome`, {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify(
-            sent ? { disputeId, status: "filed", markSent: true } : { disputeId, undoSent: true },
-          ),
+          // ONE payload source (outcome-actions). The invented `markSent` /
+          // `undoSent` keys this used to send were never route params — the
+          // route requires `status` and reads clearSentAt/clearOutcomeDetail —
+          // so unsend 400'd every time while the catch below blamed the §0.9b
+          // guard.
+          body: JSON.stringify(sent ? markSentPayload(disputeId) : unsendPayload(disputeId)),
         });
         if (!res.ok) {
           setRailActionError(
