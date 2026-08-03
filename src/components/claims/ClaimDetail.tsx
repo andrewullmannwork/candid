@@ -348,6 +348,9 @@ function friendlyFindingType(type: string): string {
 
 // Lifecycle labels for disputes. Legacy statuses (filed, in_progress, settled,
 // withdrawn, *_on_escalation) still occur in the DB and are mapped here.
+/** S301 (Andrew) — a mailed letter says so, instead of reporting as a draft. */
+const DISPUTE_STATUS_SENT_LABEL = "Letter Sent";
+
 const DISPUTE_STATUS_LABEL: Record<string, string> = {
   flagged: "Flagged",
   filed: "Dispute Letter Drafted",
@@ -1619,6 +1622,9 @@ export function ClaimDetail({
                 provider={providerName}
                 recovery={billTotals.potentialRecovery}
                 hasCostShare={!!data.costShareBill}
+                sent={
+                  railTimeline?.letters.find((l) => l.disputeId === d.id)?.latestSendAt != null
+                }
               />
             ))}
           </div>
@@ -4212,11 +4218,22 @@ function DisputeRow({
   provider,
   recovery,
   hasCostShare,
+  sent,
 }: {
   dispute: { id: string; dispute_type: string; status: string; amount_disputed: number; amount_recovered: number; isStale?: boolean; chargeCount?: number };
   provider: string;
   recovery: number;
   hasCostShare: boolean;
+  /**
+   * S301 — has this letter actually been MAILED, from the projection's
+   * `latestSendAt`. The badge below cannot answer that from `status`: mark-as-sent
+   * writes `filed`, and DISPUTE_STATUS_LABEL maps BOTH `filed` and
+   * `dispute_letter_drafted` to "Dispute Letter Drafted" — so a sent letter
+   * reported itself as a draft. `sent_at` is deliberately stripped from the claim
+   * payload, so this reads the projection ClaimDetail already holds rather than
+   * widening the payload or inventing a second proxy.
+   */
+  sent: boolean;
 }) {
   // Cost-Share v2 (§17.4) — the card surfaces the "May need update" state + the
   // linked-charge count from props (the claim GET now folds `isStale` +
@@ -4225,7 +4242,11 @@ function DisputeRow({
   // The heavy bill / letter / court detail lives on the /disputes letter page
   // ("Open dispute letter"), which also carries Refresh / Keep-as-is.
   const typeLabel = disputeTypeLabel(dispute.dispute_type);
-  const statusLabel = DISPUTE_STATUS_LABEL[dispute.status] || dispute.status;
+  // Sent is a FACT; the status is a proxy that cannot distinguish drafted from
+  // mailed. Null projection (rail flag OFF) → today's label, byte-identical.
+  const statusLabel = sent
+    ? DISPUTE_STATUS_SENT_LABEL
+    : DISPUTE_STATUS_LABEL[dispute.status] || dispute.status;
   const statusBadgeClass = DISPUTE_STATUS_BADGE[dispute.status] || "text-gray-700 bg-gray-100";
   const isStale = !!dispute.isStale;
   const chargeCount = dispute.chargeCount ?? null;
