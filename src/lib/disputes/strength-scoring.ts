@@ -469,8 +469,12 @@ export interface ComputeStrengthOptions {
    * floor to the ONE address this recipient prints — which is what makes a
    * debt-validation letter stop being marked "Not ready to send" for a missing
    * provider address it never mails to.
+   *
+   * ⚠ REQUIRED. As an optional field it shipped with ZERO call sites passing it,
+   * so the floor silently kept the legacy mapping and the readiness tier never
+   * moved (Andrew, S301 E2E). Every caller must now state its flag state.
    */
-  letterRequirementsOn?: boolean;
+  letterRequirementsOn: boolean;
 }
 
 /**

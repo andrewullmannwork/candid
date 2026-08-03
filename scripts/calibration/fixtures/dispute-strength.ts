@@ -246,11 +246,13 @@ console.log("\n[4] Evidence bands — money-weighted aggregate + thresholds");
   // the band mapping is threshold-driven (G6 tunable), not hardcoded.
   const partial = computeDisputeStrength(ev, {
     config: { weights: DEFAULT_STRENGTH_WEIGHTS, thresholds: { partiallySupported: 0.5, wellSupported: 2.0 } },
+    letterRequirementsOn: false,
   });
   eq("score 1.0, well-cutoff 2.0 → partially_supported", partial.evidenceStrength.band, "partially_supported");
 
   const needs = computeDisputeStrength(ev, {
     config: { weights: DEFAULT_STRENGTH_WEIGHTS, thresholds: { partiallySupported: 1.5, wellSupported: 2.0 } },
+    letterRequirementsOn: false,
   });
   eq("score 1.0, partial-cutoff 1.5 → needs_support", needs.evidenceStrength.band, "needs_support");
 
@@ -301,18 +303,18 @@ console.log("\n[7] Readiness (MVDL §1b) — attention / ready_to_send / airtigh
 
   // All required met (data-trust pass, backed claim, address present, identity
   // resolved) + no optional gaps → airtight.
-  const airtight = computeDisputeStrength(makeEvidence([backedLine], { legalBasis: [STATUTE], gaps: [] }), { patientIdentityResolved: true });
+  const airtight = computeDisputeStrength(makeEvidence([backedLine], { legalBasis: [STATUTE], gaps: [] }), { patientIdentityResolved: true, letterRequirementsOn: false });
   eq("MVDL met + no optional gaps → airtight", airtight.readiness.state, "airtight");
   eq("airtight: mvdlMet true", airtight.readiness.mvdlMet, true);
   eq("airtight: requiredMet 4/4", `${airtight.readiness.requiredMet}/${airtight.readiness.requiredTotal}`, "4/4");
 
   // MVDL met but an optional "make it stronger" gap open → ready_to_send.
-  const ready = computeDisputeStrength(makeEvidence([backedLine], { legalBasis: [STATUTE], gaps: [gap("cite_grade_incomplete")] }), { patientIdentityResolved: true });
+  const ready = computeDisputeStrength(makeEvidence([backedLine], { legalBasis: [STATUTE], gaps: [gap("cite_grade_incomplete")] }), { patientIdentityResolved: true, letterRequirementsOn: false });
   eq("MVDL met + optional gap → ready_to_send", ready.readiness.state, "ready_to_send");
   check("ready_to_send lists the optional gap", ready.readiness.optionalOpen.includes("cite_grade_incomplete"));
 
   // Missing recipient address → required floor not met → attention.
-  const noAddr = computeDisputeStrength(makeEvidence([backedLine], { legalBasis: [STATUTE], gaps: [gap("provider_address_missing")] }), { patientIdentityResolved: true });
+  const noAddr = computeDisputeStrength(makeEvidence([backedLine], { legalBasis: [STATUTE], gaps: [gap("provider_address_missing")] }), { patientIdentityResolved: true, letterRequirementsOn: false });
   eq("missing address → attention", noAddr.readiness.state, "attention");
   eq("missing address → recipientAddress false", noAddr.readiness.required.recipientAddress, false);
 
@@ -325,7 +327,7 @@ console.log("\n[7] Readiness (MVDL §1b) — attention / ready_to_send / airtigh
   eq("statute-backed counts as backedClaim", noIdentity.readiness.required.backedClaim, true);
 
   // Hard-stop fails the data-trust required item.
-  const hs = computeDisputeStrength(makeEvidence([backedLine], { legalBasis: [STATUTE], dataTrust: { headerReconciliationFailed: true, signViolation: false } }), { patientIdentityResolved: true });
+  const hs = computeDisputeStrength(makeEvidence([backedLine], { legalBasis: [STATUTE], dataTrust: { headerReconciliationFailed: true, signViolation: false } }), { patientIdentityResolved: true, letterRequirementsOn: false });
   eq("hard_stop → dataTrustPass required false", hs.readiness.required.dataTrustPass, false);
   eq("hard_stop → readiness attention", hs.readiness.state, "attention");
 }

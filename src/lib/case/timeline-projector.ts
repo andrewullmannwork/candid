@@ -120,6 +120,22 @@ export interface ProjectedLetterStep {
   /** Collector display name (metadata.collector.name) on collector letters; null otherwise. */
   counterpartyName: string | null;
   /**
+   * S301 — collections guard-rail step state for THIS letter, read from the
+   * claim-scoped `claims.metadata.guideSteps`. Collector letters only; `{}`
+   * otherwise.
+   *
+   * Lives on the projection rather than being threaded to the rail as a
+   * separate prop, for the same reason `mailedCertified` and `regulatorFiled`
+   * already do: the rail then has ONE input. The first cut passed it beside the
+   * projection instead, CaseRail forgot to forward it, and every collections
+   * step sat permanently "open" while the writes landed perfectly. A prop that
+   * does not exist cannot be dropped.
+   */
+  collectionsSteps: Record<
+    string,
+    { checkedAt: string | null; skippedAt: string | null; note: string | null }
+  >;
+  /**
    * S301 — the collector's first-contact date (metadata.collectorFirstContactDate),
    * date-only, on collector letters; null otherwise. The FDCPA §1692g anchor.
    * Surfaced so the rail's "When did they first contact you?" step can PREFILL
@@ -324,7 +340,10 @@ export function deriveResponseDueDate(d: ProjectorDisputeRow): string | null {
   return new Date(t + 30 * 86_400_000).toISOString().slice(0, 10);
 }
 
-function projectLetterStep(d: ProjectorDisputeRow): ProjectedLetterStep {
+function projectLetterStep(
+  d: ProjectorDisputeRow,
+  claimGuideSteps: Record<string, { checkedAt?: string | null; skippedAt?: string | null; note?: string }>,
+): ProjectedLetterStep {
   const meta = d.metadata ?? {};
   const letterType = resolveLetterType(d);
   const recipientKind = letterRecipientKind(letterType);
@@ -365,7 +384,22 @@ function projectLetterStep(d: ProjectorDisputeRow): ProjectedLetterStep {
         ? collector.name
         : null,
     // S301 — same guard as counterpartyName: collector letters only, so a
-    // provider or insurer rung can never surface a collections date.
+    // provider or insurer rung can never surface collections state.
+    collectionsSteps:
+      recipientKind === "collector"
+        ? Object.fromEntries(
+            Object.entries(claimGuideSteps)
+              .filter(([k]) => k.startsWith("packC:"))
+              .map(([k, v]) => [
+                k,
+                {
+                  checkedAt: typeof v?.checkedAt === "string" ? v.checkedAt : null,
+                  skippedAt: typeof v?.skippedAt === "string" ? v.skippedAt : null,
+                  note: typeof v?.note === "string" ? v.note : null,
+                },
+              ]),
+          )
+        : {},
     collectorFirstContactDate:
       recipientKind === "collector" && typeof meta.collectorFirstContactDate === "string"
         ? meta.collectorFirstContactDate
@@ -424,8 +458,14 @@ export function projectCaseTimeline(input: ProjectTimelineInput): ProjectedCaseT
   );
 
   // Letters — rows are the current-state authority; history fills counts.
+  // Claim-scoped guided-step state rides in so the collections steps arrive ON
+  // the projection (see ProjectedLetterStep.collectionsSteps).
+  const claimGuideSteps =
+    ((input.claim.metadata ?? {}).guideSteps as
+      | Record<string, { checkedAt?: string | null; skippedAt?: string | null; note?: string }>
+      | undefined) ?? {};
   const letters = claimDisputes
-    .map(projectLetterStep)
+    .map((d) => projectLetterStep(d, claimGuideSteps))
     .sort(
       (a, b) =>
         normalizeTs(a.startAt) - normalizeTs(b.startAt) ||

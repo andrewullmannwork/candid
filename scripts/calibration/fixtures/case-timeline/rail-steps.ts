@@ -78,13 +78,23 @@ const compose = (
   disputes: ProjectorDisputeRow[],
   primaryDisputeId: string | null,
   insurerNameByDispute: Record<string, string> = {},
+  // S301 — collections step state rides the PROJECTION, so it is injected via
+  // the CLAIM row (claims.metadata.guideSteps), exactly as production does.
+  // The fixture therefore exercises the same path the app takes; passing it
+  // beside the projection is what let the real wiring break while this stayed
+  // green.
   guideSteps: Record<
     string,
     { checkedAt?: string | null; skippedAt?: string | null; note?: string }
   > = {},
-  collectorFirstContactDate: string | null = null,
 ) => {
-  const t = projectCaseTimeline({ claim: claimRow, disputes, events: [], now: NOW, amberDays: 7 });
+  const t = projectCaseTimeline({
+    claim: { ...claimRow, metadata: { ...(claimRow.metadata ?? {}), guideSteps } },
+    disputes,
+    events: [],
+    now: NOW,
+    amberDays: 7,
+  });
   return {
     t,
     steps: composeRailSteps({
@@ -94,8 +104,6 @@ const compose = (
       insurerNameByDispute,
       providerName: "Swedish Primary Care Ballard",
       now: NOW,
-      guideSteps,
-      collectorFirstContactDate,
     }),
   };
 };
@@ -621,7 +629,7 @@ const compose = (
   // (a) The FOUR net-new steps — and only four. "Your debt validation letter is
   // ready" is this letter's own send step and "What did the collector do?" is
   // its waiting card; rebuilding either would put two doors on the same act.
-  const { steps } = compose([dv], null, {}, {}, dateOnly(-20));
+  const { steps } = compose([dv], null, {}, {});
   const guides = steps.filter((s) => s.kind === "guide-step");
   check("collections · exactly 4 net-new steps", guides.length === 4, guides.length);
   check(
@@ -674,20 +682,14 @@ const compose = (
 
   // (e) THREE states, and skipped is NOT a flavour of done. These attestations
   // feed the prior-contact recital, so a declined step must never read as done.
-  const skipped = compose([dv], null, {}, { "packC:receipt": { skippedAt: iso(-1) } }, dateOnly(-20));
+  const skipped = compose([dv], null, {}, { "packC:receipt": { skippedAt: iso(-1) } });
   const receipt = skipped.steps.find(
     (s) => s.kind === "guide-step" && (s as { stepId: string }).stepId === "packC:receipt",
   ) as { state: string; doneAt: string | null };
   check("collections · skipped state is 'skipped'", receipt.state === "skipped", receipt.state);
   check("collections · skipped carries NO done stamp", receipt.doneAt === null, receipt.doneAt);
 
-  const done = compose(
-    [dv],
-    null,
-    {},
-    { "packC:not-paid": { checkedAt: iso(-2) } },
-    dateOnly(-20),
-  );
+  const done = compose([dv], null, {}, { "packC:not-paid": { checkedAt: iso(-2) } });
   const notPaid = done.steps.find(
     (s) => s.kind === "guide-step" && (s as { stepId: string }).stepId === "packC:not-paid",
   ) as { state: string; doneAt: string | null };

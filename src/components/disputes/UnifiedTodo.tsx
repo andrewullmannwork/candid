@@ -444,14 +444,17 @@ export function UnifiedTodo({
   // GET IT READY — the REQUIRED mailing-address row targets whoever this
   // letter actually mails to; the other address stays editable inside the
   // claim-details expansion.
-  const insurerMailing = recipientKind === "insurer";
   // Which address THIS letter prints. Under the flag it is the real three-way
   // answer; OFF it collapses to the legacy insurer-or-provider binary.
   const mailingTo: "insurer" | "provider" | "collector" = letterRequirementsOn
     ? recipientKind
-    : insurerMailing
+    : recipientKind === "insurer"
       ? "insurer"
       : "provider";
+  // DERIVED, not a second source: the after-sent guidance copy still splits
+  // insurer-vs-other, and two independent booleans for one question is the
+  // drift this whole unit exists to remove.
+  const insurerMailing = mailingTo === "insurer";
   const prepRows: RowDef[] = [
     {
       id: "address",

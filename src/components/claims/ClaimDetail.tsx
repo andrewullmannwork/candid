@@ -3495,14 +3495,10 @@ export function ClaimDetail({
             onUndoResult={handleRailUndoResult}
             onStartNextLetter={handleRailStartNextLetter}
             escalating={railEscalating}
-            // S301 — collections steps. guideSteps is the SAME claim-scoped
-            // store Pack A′ already writes through, so the attestations are
-            // server-stamped and stay with the bill across escalation.
-            guideSteps={guideStepsMeta}
-            collectorFirstContactDate={
-              railTimeline.letters.find((l) => l.letterType === "debt_validation")
-                ?.collectorFirstContactDate ?? null
-            }
+            // S301 — collections step state + the §1692g anchor ride the
+            // PROJECTION (ProjectedLetterStep.collectionsSteps /
+            // .collectorFirstContactDate), so the rail takes one input and there
+            // is no prop here to forget.
             onMarkSent={handleRailMarkSent}
             onSaveFirstContactDate={handleRailFirstContactDate}
             onRefetch={refetchClaim}

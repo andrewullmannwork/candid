@@ -382,8 +382,6 @@ export function CaseRail({
   onUndoResult,
   onStartNextLetter,
   escalating,
-  guideSteps,
-  collectorFirstContactDate,
   onMarkSent,
   onSaveFirstContactDate,
   onRefetch,
@@ -438,8 +436,6 @@ export function CaseRail({
     firstNumber,
     insurerNameByDispute,
     providerName,
-    guideSteps,
-    collectorFirstContactDate,
     // Client clock — calendars are the user's timezone (letter-type.ts rule).
     now: new Date(),
   });

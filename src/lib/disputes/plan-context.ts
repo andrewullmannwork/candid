@@ -931,6 +931,44 @@ function extractCollectorContact(metadata: unknown): CollectorContact | null {
   };
 }
 
+/**
+ * The collector we currently know for this bill — knowledge layer first, the
+ * letter's own as-mailed record as fallback.
+ *
+ * PURE + exported so it is fixture-reachable. The first cut inlined this as an
+ * IIFE inside the dispute GET's response literal, which put real resolution
+ * logic somewhere no test could see and every future reader would miss.
+ *
+ * The fallback exists because the claim-scoped knowledge layer is NEW: cases
+ * created before it carry the agency only on the dispute row (escalate wrote it
+ * there), so a claim-only read showed an EMPTY name for a collector we plainly
+ * knew. Resolving here, once, is also what keeps the needs panel and the edit
+ * modal from disagreeing about what is on file.
+ */
+export function resolveCollectorContact(
+  claimKnowledge: CollectorContact | null,
+  disputeMetadata: Record<string, unknown> | null,
+): CollectorContact | null {
+  if (claimKnowledge?.name || claimKnowledge?.address) return claimKnowledge;
+  const onDispute = disputeMetadata?.collector as
+    | { name?: string; address?: string | null; originalCreditor?: string | null }
+    | undefined;
+  const accountNumber =
+    typeof disputeMetadata?.accountNumber === "string" ? disputeMetadata.accountNumber : null;
+  if (!onDispute?.name && !onDispute?.address && !accountNumber) return claimKnowledge;
+  return {
+    name: onDispute?.name ?? null,
+    address: onDispute?.address ?? null,
+    originalCreditor: onDispute?.originalCreditor ?? null,
+    accountNumber,
+    // "unknown": this came off the letter's as-mailed record, so we cannot
+    // claim the user typed it here (S291 — never assert a provenance we lack).
+    source: "unknown",
+    addressFields: null,
+    confirmedAt: null,
+  };
+}
+
 function extractProviderContact(metadata: unknown): ProviderContact | null {
   if (!metadata || typeof metadata !== "object") return null;
   const provider = (metadata as { provider?: unknown }).provider;

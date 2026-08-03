@@ -16,7 +16,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { userScoped, selectOwnedChildren } from "@/lib/security/user-scoped";
-import { resolvePlanContext, type InsurerAddressOverride } from "@/lib/disputes/plan-context";
+import {
+  resolvePlanContext,
+  resolveCollectorContact,
+  type InsurerAddressOverride,
+} from "@/lib/disputes/plan-context";
 import { resolveEvidence } from "@/lib/disputes/evidence-resolver";
 import {
   readUserPatientPaidOverride,
@@ -839,27 +843,10 @@ export async function GET(
           // in the edit modal for a collector we plainly knew — Andrew hit exactly
           // that on Ballard. Resolved server-side, once, so the panel and the
           // modal cannot disagree about what is on file.
-          collectorContact: (() => {
-            const known = planContext.collectorContact;
-            if (known?.name || known?.address) return known;
-            const onDispute = (dispute.metadata as Record<string, unknown> | null)
-              ?.collector as
-              | { name?: string; address?: string | null; originalCreditor?: string | null }
-              | undefined;
-            if (!onDispute?.name && !onDispute?.address) return known;
-            return {
-              name: onDispute.name ?? null,
-              address: onDispute.address ?? null,
-              originalCreditor: onDispute.originalCreditor ?? null,
-              accountNumber:
-                ((dispute.metadata as Record<string, unknown> | null)?.accountNumber as
-                  | string
-                  | undefined) ?? null,
-              source: "unknown" as const,
-              addressFields: null,
-              confirmedAt: null,
-            };
-          })(),
+          collectorContact: resolveCollectorContact(
+            planContext.collectorContact,
+            dispute.metadata as Record<string, unknown> | null,
+          ),
           // S110 Chunk C — surface archive auto-lookup result so PlanSearchModal
           // can highlight it as a best-match suggestion. S111 D1: this is a UI
           // hint only — never drives letter citations (those flow through
