@@ -899,7 +899,30 @@ function DisputesContent() {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+    // S300 phase 2b — `letter_downloaded` on the record, completing emitter
+    // coverage 18/18. The download itself is client-side (a Blob), so the
+    // ledger needs a ping. Fire-and-forget by construction: the file is
+    // ALREADY handed to the user above, and a failed ping loses a history
+    // line, never the download. Case-file PDF downloads are a different
+    // artifact and deliberately do not emit this kind.
+    void pingLetterDownloaded();
   };
+
+  /** One-line ping for the download event — never blocks or surfaces errors. */
+  async function pingLetterDownloaded() {
+    try {
+      const claimId = letter?.auditReportId;
+      if (!user || !claimId || !disputeId) return;
+      const idToken = await user.firebaseUser.getIdToken();
+      await fetch(`/api/claims/${claimId}/case-events`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+        body: JSON.stringify({ kind: "letter_downloaded", disputeId }),
+      });
+    } catch {
+      // Fail-soft — the ledger is history, never the user's file.
+    }
+  }
 
   // Stretch 2 — enriched PDF export via the Pro-gated evidence-package route.
   // Falls back to the legacy text file on any failure so the user always gets a
@@ -1172,10 +1195,10 @@ function DisputesContent() {
     if (sns.nextLetterType === "external_review") {
       setExhaustionModalOpen(true);
     } else if (sns.nextLetterType === "final_notice") {
-      void handleEscalate("final_notice", {
-        priorContactDates: disputeFiledDate ? [disputeFiledDate] : undefined,
-        certifiedMail: true,
-      });
+      // S300 (Item N) — the prior-contact recital is derived SERVER-side from
+      // the case ledger; the client no longer supplies dates the letter will
+      // assert as fact.
+      void handleEscalate("final_notice", { certifiedMail: true });
     }
   };
 

@@ -25,7 +25,33 @@ import { userScoped } from "@/lib/security/user-scoped";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { emitCaseEvent, type CaseEventKind } from "@/lib/case/case-events";
 
-const RAIL_WRITABLE_KINDS: readonly CaseEventKind[] = ["collection_resumed_reported"];
+/**
+ * Client-writable event kinds. Deliberately tiny and per-kind gated — new
+ * entries are a reviewed code change here, never a pass-through of client
+ * input.
+ *
+ * `collection_resumed_reported` is a RAIL door: it requires the rail surface
+ * AND the spine, because a rail-ON/spine-OFF misconfiguration would return 200
+ * and write nothing.
+ *
+ * `letter_downloaded` (S300 phase 2b, completing emitter coverage 18/18) is a
+ * LETTER-page action and gates on the SPINE ONLY. Every other emitter in the
+ * product is spine-gated; rail-gating this one would mean that at promote —
+ * when PROD runs `case_timeline_v1` ON and `case_rail_v1` OFF so the spine can
+ * accumulate history before the UI ships — every download in that window went
+ * unrecorded. Downloads are the drafted-never-sent stall signal; losing that
+ * window would quietly cost the flywheel the data the promote sequence exists
+ * to collect.
+ */
+const RAIL_WRITABLE_KINDS: readonly CaseEventKind[] = [
+  "collection_resumed_reported",
+  "letter_downloaded",
+];
+
+/** Kinds that additionally require the rail SURFACE flag (see above). */
+const RAIL_SURFACE_KINDS: ReadonlySet<CaseEventKind> = new Set([
+  "collection_resumed_reported",
+]);
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -47,10 +73,9 @@ export async function POST(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    if (
-      !(await isFeatureEnabled("case_rail_v1")) ||
-      !(await isFeatureEnabled("case_timeline_v1"))
-    ) {
+    // The spine gates EVERY write here; the rail surface gates only the rail's
+    // own door (see RAIL_SURFACE_KINDS). Kind is validated below, before use.
+    if (!(await isFeatureEnabled("case_timeline_v1"))) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 
@@ -74,6 +99,12 @@ export async function POST(
     const disputeId = typeof body?.disputeId === "string" ? body.disputeId : null;
     if (!kind || !(RAIL_WRITABLE_KINDS as readonly string[]).includes(kind)) {
       return NextResponse.json({ error: "Unsupported event kind" }, { status: 400 });
+    }
+    if (
+      RAIL_SURFACE_KINDS.has(kind as CaseEventKind) &&
+      !(await isFeatureEnabled("case_rail_v1"))
+    ) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
     if (!disputeId) {
       return NextResponse.json({ error: "disputeId is required" }, { status: 400 });

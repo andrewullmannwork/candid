@@ -17,6 +17,8 @@ import {
 } from "@/lib/disputes/strength-scoring";
 import { persistDisputeLetter } from "@/lib/disputes/persist";
 import { emitCaseEvent } from "@/lib/case/case-events";
+import { loadCaseProjection } from "@/lib/case/load-case-timeline";
+import { buildPriorContactRecital, RECITAL_IN_OPENING } from "@/lib/disputes/prior-contact";
 import { evaluateDeadline, readDeadlineConfig, type DeadlineGuard } from "@/lib/disputes/deadline-engine";
 import { createServerClient } from "@/lib/supabase/server";
 import { reparseField } from "@/lib/plan/reparse-field";
@@ -45,12 +47,14 @@ export async function POST(req: NextRequest) {
           { status: 401 }
         );
       }
-      const { findingIds, letterType, insurancePlanId, priorContactDates, certifiedMail, appealExhausted, collector, collectorFirstContactDate, denialNoticeDate } = body as {
+      const { findingIds, letterType, insurancePlanId, certifiedMail, appealExhausted, collector, collectorFirstContactDate, denialNoticeDate } = body as {
         findingIds: string[];
         letterType?: DisputeLetterType;
         insurancePlanId?: string;
         // dispute-letters v2 S2 — escalation / collections gate inputs (FE-supplied in S5/S6).
-        priorContactDates?: string[];
+        // S300 (Item N): `priorContactDates` is no longer read here — the
+        // recital is derived server-side from the case ledger. Extra body
+        // fields are ignored, so older clients keep working.
         certifiedMail?: boolean;
         appealExhausted?: { attested: boolean; denialDate?: string | null };
         collector?: { name: string; address?: string | null; originalCreditor?: string | null };
@@ -401,9 +405,12 @@ export async function POST(req: NextRequest) {
         })();
       }
 
-      // Guided Steps v1 (S297) — attested phone-call recital source: the
-      // claim's OWN guideSteps, read server-side (owner-scoped), never
-      // client-supplied. Absent/unattested → empty → byte-identical letter.
+      // S300 (Item N) — the ONE prior-contact recital, derived SERVER-side.
+      // Calls come from the claim's own guideSteps (owner-scoped, never
+      // client-supplied); prior SENDS come from the case projection. The
+      // request body's legacy `priorContactDates` is deliberately IGNORED on
+      // this path: a letter's factual assertions about who was contacted must
+      // not be whatever the browser passed in.
       const { data: guidedClaimRow } = await userScoped(supabase, authedUser.id)
         .table("claims")
         .select("metadata")
@@ -414,6 +421,21 @@ export async function POST(req: NextRequest) {
           | Record<string, { checkedAt?: string | null; note?: string }>
           | undefined) ?? null,
       );
+      const resolvedLetterType = letterType ?? "overcharge";
+      const generateProjection = await loadCaseProjection(
+        supabase,
+        authedUser.id,
+        auditReport.id,
+      );
+      const priorContactRecital = buildPriorContactRecital({
+        variant: RECITAL_IN_OPENING.has(resolvedLetterType) ? "opening" : "signoff",
+        history: generateProjection?.projected.history ?? null,
+        letters: generateProjection?.projected.letters ?? null,
+        callLog: guidedCallLog,
+        recipientKind: letterRecipientKind(resolvedLetterType),
+        letterType: resolvedLetterType,
+        includeOtherTrack: true,
+      });
 
       const letter = generateDisputeLetter(auditReport, findingIds, letterType, {
         planEvidence,
@@ -424,12 +446,11 @@ export async function POST(req: NextRequest) {
         disputeGroundsOn,
         disputeGroundBasis,
         noPlanCoverageRequestOn,
-        priorContactDates,
         certifiedMail,
         appealExhausted,
         collector,
         debtWithinWindow,
-        guidedCallLog,
+        priorContactRecital,
       });
 
       // Defense-in-depth: generateDisputeLetter returns null when the data-trust

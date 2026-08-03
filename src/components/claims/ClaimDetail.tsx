@@ -26,7 +26,6 @@ import { CaseRail, RailStep } from "@/components/claims/CaseRail";
 import { OutcomeReportingModal } from "@/components/disputes/OutcomeReportingModal";
 import { CollectorModal, type CollectorSubmit } from "@/components/disputes/CollectorModal";
 import { ExhaustionAttestModal } from "@/components/disputes/ExhaustionAttestModal";
-import { toLocalDateOnly } from "@/lib/disputes/letter-type";
 import { railHasExtension, fmtRailDate } from "@/lib/case/rail-steps";
 import type { ProjectedLetterStep } from "@/lib/case/timeline-projector";
 import { letterRecipientKind } from "@/lib/disputes";
@@ -1399,13 +1398,11 @@ export function ClaimDetail({
       return;
     }
     if (targetLetterType === "final_notice") {
-      const letter = railTimeline?.letters.find((l) => l.disputeId === disputeId);
-      void railEscalate(disputeId, "final_notice", {
-        priorContactDates: letter?.latestSendAt
-          ? [toLocalDateOnly(letter.latestSendAt)]
-          : undefined,
-        certifiedMail: true,
-      });
+      // S300 (Item N) — was: one client-derived date (this letter's latest
+      // send). The recital is now derived server-side from the case ledger, so
+      // the Final Notice recites EVERY genuine prior contact, not just the
+      // last one, and the browser can't shape what the letter asserts.
+      void railEscalate(disputeId, "final_notice", { certifiedMail: true });
     }
   };
 

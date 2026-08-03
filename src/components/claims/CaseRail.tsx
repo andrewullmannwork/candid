@@ -32,6 +32,7 @@ import { ShowFullStepButton } from "@/components/claims/GuidedPhoneSteps";
 import { CASE_RAIL } from "@/lib/guides/pack-registry";
 import {
   composeRailSteps,
+  railStepDisputeId,
   type ComposeRailInput,
   type RailStepModel,
   type RailWaitCard,
@@ -53,6 +54,7 @@ export function RailStep({
   right,
   last,
   headerOnly,
+  dataLetter,
   children,
 }: {
   /** Badge content — numeric for the classic rail, "4a"/"4b" for the S297 split. */
@@ -69,10 +71,20 @@ export function RailStep({
   right?: React.ReactNode;
   last?: boolean;
   headerOnly?: boolean;
+  /**
+   * S300 phase 2b — the deep-link anchor. Keyed on the LETTER (dispute id),
+   * never on the step number: a follow-up email sits in an inbox for weeks,
+   * and phase 3 renumbers this rail. Dispute ids are permanent, so old email
+   * links keep landing correctly after the rail is restructured.
+   */
+  dataLetter?: string | null;
   children?: React.ReactNode;
 }) {
   return (
-    <section className={!last && !headerOnly ? "relative pb-[30px]" : "relative"}>
+    <section
+      data-case-letter={dataLetter ?? undefined}
+      className={!last && !headerOnly ? "relative pb-[30px]" : "relative"}
+    >
       {!last && !headerOnly && (
         <span
           className="absolute bottom-1 left-[14px] top-[34px] hidden w-[1.5px] bg-gray-200 sm:block"
@@ -336,7 +348,7 @@ export function CaseRail({
         switch (s.kind) {
           case "wait-active":
             return (
-              <RailStep key={s.key} n={s.badge} title={s.title} sub={s.sub ?? undefined} last={last}>
+              <RailStep key={s.key} dataLetter={railStepDisputeId(s)} n={s.badge} title={s.title} sub={s.sub ?? undefined} last={last}>
                 <WaitCardBody
                   card={s.card}
                   whnOpen={whnOpen[s.key] ?? s.card.whn?.defaultOpen ?? false}
@@ -356,6 +368,7 @@ export function CaseRail({
             return (
               <RailStep
                 key={s.key}
+                dataLetter={railStepDisputeId(s)}
                 n={s.badge}
                 done
                 title={s.title}
@@ -394,7 +407,7 @@ export function CaseRail({
             const attestNoteValue =
               attestNoteDrafts[s.move.disputeId] ?? s.move.regulator.attest.note ?? "";
             return (
-              <RailStep key={s.key} n={s.badge} title={s.title} sub={s.sub ?? undefined} last={last}>
+              <RailStep key={s.key} dataLetter={railStepDisputeId(s)} n={s.badge} title={s.title} sub={s.sub ?? undefined} last={last}>
                 <div className="space-y-2.5">
                   {s.move.letterOffer && (
                     <div className="rounded-xl border border-gray-200 bg-white px-4 py-3.5">
@@ -515,6 +528,7 @@ export function CaseRail({
             return (
               <RailStep
                 key={s.key}
+                dataLetter={railStepDisputeId(s)}
                 n={s.badge}
                 done
                 title={s.title}
@@ -542,7 +556,7 @@ export function CaseRail({
             );
           case "send-draft":
             return (
-              <RailStep key={s.key} n={s.badge} title={s.title} last={last}>
+              <RailStep key={s.key} dataLetter={railStepDisputeId(s)} n={s.badge} title={s.title} last={last}>
                 <div className="rounded-xl border border-gray-200 bg-white px-4 py-3.5">
                   <button
                     type="button"

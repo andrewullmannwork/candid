@@ -17,15 +17,29 @@ import { userScoped } from "@/lib/security/user-scoped";
 import { isFeatureEnabled, readFeatureFlagConfig } from "@/lib/config/product-flags";
 import {
   projectCaseTimeline,
+  type ProjectedCaseTimeline,
   type ProjectorDisputeRow,
   type ProjectorEventRow,
 } from "@/lib/case/timeline-projector";
+
+/**
+ * The full projection + the display names resolved alongside it. SERVER-side
+ * consumers (S300: the prior-contact recital) read this; the client payload
+ * below is a narrowing of it. One load, two shapes — the alternative was a
+ * second query for history, which is exactly the drift this loader exists to
+ * prevent.
+ */
+export interface CaseProjection {
+  projected: ProjectedCaseTimeline;
+  insurerNameByDispute: Record<string, string>;
+  providerName: string | null;
+}
 
 /** The full ProjectorDisputeRow column set (+ the pinned plan for names). */
 export const CASE_TIMELINE_DISPUTE_COLUMNS =
   "id, claim_id, dispute_type, status, created_at, filed_date, resolution_date, sent_at, governing_deadline_date, deadline_type, metadata, insurance_plan_id";
 
-export async function loadCaseTimelinePayload(
+export async function loadCaseProjection(
   supabase: SupabaseClient,
   userId: string,
   claimId: string,
@@ -35,7 +49,7 @@ export async function loadCaseTimelinePayload(
     /** Pass when the caller already fetched the dispute rows (full column set). */
     disputeRows?: Array<Record<string, unknown>>;
   } = {},
-): Promise<Record<string, unknown> | null> {
+): Promise<CaseProjection | null> {
   try {
     if (!(await isFeatureEnabled("case_rail_v1"))) return null;
 
@@ -129,16 +143,37 @@ export async function loadCaseTimelinePayload(
       (((claimRow.metadata ?? {}).provider as Record<string, unknown> | undefined)
         ?.name as string | undefined) ?? null;
 
-    return {
-      letters: projected.letters,
-      waitingCount: projected.waitingCount,
-      soonestResponseDue: projected.soonestResponseDue,
-      sentLetterMeta: projected.sentLetterMeta,
-      insurerNameByDispute,
-      providerName,
-    };
+    return { projected, insurerNameByDispute, providerName };
   } catch (err) {
     console.error("[case-timeline] projection failed; omitted:", err);
     return null;
   }
+}
+
+/**
+ * The CLIENT payload — a narrowing of {@link loadCaseProjection}. `history` is
+ * deliberately NOT sent: no client surface renders it today, and shipping the
+ * full event list on every claim GET would grow the response for nobody.
+ * Server consumers that need it call loadCaseProjection directly.
+ */
+export async function loadCaseTimelinePayload(
+  supabase: SupabaseClient,
+  userId: string,
+  claimId: string,
+  opts: {
+    claimRow?: { id: string; created_at: string; metadata: Record<string, unknown> | null };
+    disputeRows?: Array<Record<string, unknown>>;
+  } = {},
+): Promise<Record<string, unknown> | null> {
+  const loaded = await loadCaseProjection(supabase, userId, claimId, opts);
+  if (!loaded) return null;
+  const { projected, insurerNameByDispute, providerName } = loaded;
+  return {
+    letters: projected.letters,
+    waitingCount: projected.waitingCount,
+    soonestResponseDue: projected.soonestResponseDue,
+    sentLetterMeta: projected.sentLetterMeta,
+    insurerNameByDispute,
+    providerName,
+  };
 }

@@ -7,9 +7,9 @@ import type {
   DisputeLetterType,
   FindingType,
 } from "../billing/types";
-import { LETTER_TEMPLATES, renderGuidedCallRecital } from "./templates";
+import { LETTER_TEMPLATES } from "./templates";
 import type { PlanBenefitEvidence } from "./templates";
-import type { GuidedCallLogEntry } from "@/lib/guides/pack-registry";
+import { RECITAL_IN_OPENING } from "./prior-contact";
 import type { PlanContext } from "./plan-context";
 import type { DisputeEvidence } from "./evidence-resolver";
 import { resolveLetterRecovery } from "./dispute-grounds";
@@ -125,15 +125,19 @@ export interface GenerateDisputeLetterOptions {
    * User-supplied via the request body at launch (the FE collects them in S5/S6). Fail-closed:
    * absent → the gated clause is OMITTED (renderGated), never a placeholder.
    */
-  priorContactDates?: string[];
   certifiedMail?: boolean;
   appealExhausted?: { attested: boolean; denialDate?: string | null };
   collector?: { name: string; address?: string | null; originalCreditor?: string | null };
   debtWithinWindow?: boolean;
-  /** Guided Steps v1 (S297) — attested phone-call entries (server-derived from
-   *  claims.metadata.guideSteps, never client-supplied). Absent/empty → the
-   *  recital is omitted (byte-identical letter). */
-  guidedCallLog?: GuidedCallLogEntry[];
+  /**
+   * S300 (tracker Item N) — the prior-contact recital, ALREADY BUILT by
+   * `buildPriorContactRecital` in the calling route (it needs the case
+   * timeline, which this pure composer must not reach for). Replaces both the
+   * client-supplied `priorContactDates` (one browser-passed date) and the
+   * separate `guidedCallLog` recital: ONE block, one placement decision below.
+   * Absent/empty → omitted, byte-identical letter.
+   */
+  priorContactRecital?: string;
 }
 
 export function generateDisputeLetter(
@@ -154,7 +158,7 @@ export function generateDisputeLetter(
     ? { planEvidence: optionsOrPlanEvidence }
     : (optionsOrPlanEvidence ?? {});
   const { planEvidence, planContext, evidence, gateUnverified, enforceDataTrustGate, disputeGroundsOn, disputeGroundBasis, noPlanCoverageRequestOn,
-    priorContactDates, certifiedMail, appealExhausted, collector, debtWithinWindow, guidedCallLog } =
+    certifiedMail, appealExhausted, collector, debtWithinWindow, priorContactRecital } =
     options;
 
   // Resolve the letter type up front (was below, before the template lookup) so the recovery fold
@@ -165,6 +169,10 @@ export function generateDisputeLetter(
   const resolvedType =
     letterType || FINDING_TO_LETTER[findings[0].type] || "overcharge";
   const recipientKind = letterRecipientKind(resolvedType);
+  // S300 — Position B: the Final Notice renders its recital in the body
+  // opening; every other letter takes it before the sign-off. ONE decision,
+  // read twice below, so double-rendering is impossible by construction.
+  const recitalInOpening = RECITAL_IN_OPENING.has(resolvedType);
 
   // §18 incr-4 — the per-line deductible-aware letter dollars (== the card recovery), used by
   // the request block to source refund/write-off from the engine, not the deductible-blind
@@ -210,19 +218,22 @@ export function generateDisputeLetter(
     letterRecovery,
     recovery,
     noPlanCoverageRequestOn: noPlanCoverageRequestOn ?? false,
-    priorContactDates,
+    // S300 — ONE placement decision (below) governs both branches, so a letter
+    // can never receive the recital twice.
+    priorContactRecital: recitalInOpening ? priorContactRecital : undefined,
     certifiedMail,
     appealExhausted,
     collector,
     debtWithinWindow,
   });
 
-  // Guided Steps v1 (S297) — attested-call recital, injected before the
-  // sign-off (every composed body carries exactly one "Sincerely,"). Empty
-  // recital → untouched body. Mirrored in rerenderDisputeLetter.
-  const guidedRecital = renderGuidedCallRecital(guidedCallLog, recipientKind, resolvedType);
-  if (guidedRecital) {
-    body = body.replace("\n\nSincerely,", `${guidedRecital}\n\nSincerely,`);
+  // S300 (Item N) — the prior-contact recital for every letter whose template
+  // does NOT render it in the opening: injected before the sign-off (every
+  // composed body carries exactly one "Sincerely,"), which is where the S297
+  // call recital lived. Empty recital → untouched body. Mirrored in
+  // rerenderDisputeLetter — keep the two in lockstep.
+  if (!recitalInOpening && priorContactRecital) {
+    body = body.replace("\n\nSincerely,", `\n\n${priorContactRecital}\n\nSincerely,`);
   }
 
   // Recipient: insurance appeals use insurer + appeals address when available;

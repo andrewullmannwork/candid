@@ -44,7 +44,31 @@ import {
   type GuideFinding,
   type ScriptSegment,
 } from "../../../../src/lib/guides/pack-registry";
-import { renderGuidedCallRecital } from "../../../../src/lib/disputes/templates";
+import { buildPriorContactRecital } from "../../../../src/lib/disputes/prior-contact";
+import type { GuidedCallLogEntry } from "../../../../src/lib/guides/pack-registry";
+
+/**
+ * S300 — the S297 call recital was absorbed into the ONE prior-contact builder
+ * (tracker Item N). Its `signoff` variant IS the old function: calls only, no
+ * framing, same recipient-matching and letter-type exclusions. These
+ * assertions are kept verbatim through this shim so the consolidation is
+ * proven behavior-preserving rather than asserted to be. The `opening`
+ * variant (calls + sends + other-track) is covered by the prior-contact
+ * fixture.
+ */
+const renderGuidedCallRecital = (
+  entries: GuidedCallLogEntry[] | null | undefined,
+  recipient: "insurer" | "provider" | "collector",
+  letterType: string,
+): string =>
+  buildPriorContactRecital({
+    variant: "signoff",
+    history: null,
+    letters: null,
+    callLog: entries,
+    recipientKind: recipient,
+    letterType,
+  });
 
 let pass = 0;
 const fails: string[] = [];
