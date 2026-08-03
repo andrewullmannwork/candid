@@ -82,17 +82,26 @@ export function FollowupBanner() {
     loadFollowups();
   }, [user]);
 
+  const post = useCallback(
+    async (group: ClaimFollowupGroup, action: "dismiss" | "acknowledge") => {
+      const token = await user!.firebaseUser.getIdToken();
+      return fetch("/api/disputes/followups", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ followupIds: group.followupIds, action }),
+        // Survives the page unload on the acknowledge path.
+        keepalive: true,
+      });
+    },
+    [user],
+  );
+
   const dismissClaim = useCallback(
     async (group: ClaimFollowupGroup) => {
       if (submitting) return;
       setSubmitting(group.claimId);
       try {
-        const token = await user!.firebaseUser.getIdToken();
-        const res = await fetch("/api/disputes/followups", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ followupIds: group.followupIds, action: "dismiss" }),
-        });
+        const res = await post(group, "dismiss");
         if (res.ok) {
           setClaims((prev) => prev.filter((c) => c.claimId !== group.claimId));
         }
@@ -101,7 +110,33 @@ export function FollowupBanner() {
       }
       setSubmitting(null);
     },
-    [submitting, user],
+    [submitting, post],
+  );
+
+  /**
+   * "Open your claim" = ACKNOWLEDGE (Andrew, S300): the row clears so returning
+   * to the dashboard doesn't re-show what you just acted on, but the check-in
+   * chain advances a rung — only a logged outcome retires the ask for good.
+   *
+   * The write is issued BEFORE navigating, then navigation happens whether it
+   * resolved or failed, with a 1s ceiling so a slow request can never trap the
+   * user on the dashboard. Losing the write costs one duplicate nudge; losing
+   * the navigation costs the click.
+   */
+  const openClaim = useCallback(
+    (group: ClaimFollowupGroup, href: string) => {
+      let navigated = false;
+      const go = () => {
+        if (navigated) return;
+        navigated = true;
+        window.location.assign(href);
+      };
+      window.setTimeout(go, 1000);
+      void post(group, "acknowledge")
+        .catch(() => {})
+        .finally(go);
+    },
+    [post],
   );
 
   if (claims.length === 0) return null;
@@ -117,6 +152,7 @@ export function FollowupBanner() {
           group={group}
           disabled={submitting !== null}
           onDismiss={() => dismissClaim(group)}
+          onOpen={openClaim}
         />
       ))}
       {overflow > 0 && (
@@ -137,10 +173,12 @@ function FollowupRow({
   group,
   disabled,
   onDismiss,
+  onOpen,
 }: {
   group: ClaimFollowupGroup;
   disabled: boolean;
   onDismiss: () => void;
+  onOpen: (group: ClaimFollowupGroup, href: string) => void;
 }) {
   const title = group.providerName ?? "Your bill";
   const waiting =
@@ -188,8 +226,15 @@ function FollowupRow({
             </button>
           </div>
 
+          {/* A real <a> (middle-click / open-in-new-tab keep working); the
+              acknowledge write rides the default click only. */}
           <a
             href={`/claim?claim=${group.claimId}`}
+            onClick={(e) => {
+              if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+              e.preventDefault();
+              onOpen(group, `/claim?claim=${group.claimId}`);
+            }}
             className="mt-3 inline-flex items-center gap-1 rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-amber-700"
           >
             Open your claim

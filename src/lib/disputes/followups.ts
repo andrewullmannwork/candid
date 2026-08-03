@@ -372,36 +372,60 @@ export function planDeadlineReasserts(
 }
 
 /**
- * Dismiss a claim's due nudges (the banner's ✕) and schedule the re-asserts.
+ * Retire a claim's due nudges from the banner. TWO GESTURES, two meanings
+ * (Andrew, S300):
+ *
+ *  - `dismiss`     — the ✕. "Stop telling me." The check-in chain ends here.
+ *  - `acknowledge` — "Open your claim". "I'm on it." The row clears NOW, but
+ *                    the check-in chain ADVANCES one rung, so we come back if
+ *                    nothing happens. Andrew: *"Open your claim clears the
+ *                    banner but only clears the reprompt if the action is
+ *                    done."* Outcome capture is the flywheel's oxygen — if
+ *                    merely opening the claim silenced the ask forever, a user
+ *                    who looks and does nothing is never asked again and the
+ *                    outcome is lost.
+ *
+ * Deadline-anchored nudges behave IDENTICALLY under both: they re-assert at
+ * deadline−2 and −1 regardless of which gesture retired them. Neither gesture
+ * can talk a user out of a legal deadline.
  *
  * Reuses `handleFollowupAction` per row rather than writing a second dismissal
  * path — that function already owns ownership scoping and the status
- * transition. The only addition is the re-assert scheduling, which is
- * IDEMPOTENT: repeated ✕ on the same claim can never stack duplicate rows.
+ * transition. Scheduling is IDEMPOTENT: repeated clicks can never stack rows.
  *
  * Re-asserts are BANNER-ONLY (Andrew). They carry no email: the deadline
  * engine already schedules its own approved cadence, and emitting mail because
  * a user dismissed something would mean clearing the strip earns you MORE
  * mail than leaving it. The cron skips them on `metadata.banner_only`.
  */
-export async function dismissClaimFollowups(
+export type ClaimFollowupGesture = "dismiss" | "acknowledge";
+
+export async function resolveClaimFollowups(
   supabase: SupabaseClient,
-  params: { userId: string; followupIds: string[]; today?: string },
-): Promise<{ dismissed: number; reasserts: number }> {
-  const { userId, followupIds } = params;
+  params: {
+    userId: string;
+    followupIds: string[];
+    gesture: ClaimFollowupGesture;
+    today?: string;
+  },
+): Promise<{ dismissed: number; reasserts: number; rescheduled: number }> {
+  const { userId, followupIds, gesture } = params;
   const today = params.today ?? new Date().toISOString().split("T")[0];
 
   // Read BEFORE dismissing — we need each row's kind + its dispute's deadline.
   const { data: rows, error } = await userScoped(supabase, userId)
     .table("dispute_followups")
-    .select("id, dispute_id, metadata, dispute_outcomes!inner(id, governing_deadline_date)")
+    .select(
+      "id, dispute_id, followup_type, metadata, dispute_outcomes!inner(id, governing_deadline_date)",
+    )
     .in("id", followupIds);
   if (error) {
-    console.error("[followups] dismissClaimFollowups read failed:", error);
+    console.error("[followups] resolveClaimFollowups read failed:", error);
   }
   const loaded = (rows ?? []) as Array<{
     id: string;
     dispute_id: string;
+    followup_type: FollowupType;
     metadata: Record<string, unknown> | null;
     dispute_outcomes: { id: string; governing_deadline_date: string | null };
   }>;
@@ -462,7 +486,57 @@ export async function dismissClaimFollowups(
     }
     reasserts += toInsert.length;
   }
-  return { dismissed, reasserts };
+
+  // ACKNOWLEDGE ("Open your claim") — the banner clears now, but the check-in
+  // chain advances one rung so the ask returns if the action never happens.
+  // Only a logged outcome ends it for good (quietOutcomeFollowups / the
+  // terminal sweep in persist.ts). The ✕ takes the other branch and stops here.
+  let rescheduled = 0;
+  if (gesture === "acknowledge") {
+    const checkInByDispute = new Map<string, FollowupType[]>();
+    for (const r of loaded) {
+      if (isDeadlineAnchored(r)) continue;
+      checkInByDispute.set(r.dispute_id, [
+        ...(checkInByDispute.get(r.dispute_id) ?? []),
+        r.followup_type,
+      ]);
+    }
+    const { repeatDays } = await readCadence(supabase);
+    const nextDue = addDays(repeatDays);
+    for (const [disputeId, types] of checkInByDispute) {
+      const nextType = nextCheckInRung(types);
+      if (!nextType) continue; // cadence exhausted — the ask has run its course
+      // Idempotent against a double-click: one pending rung per dispute.
+      const { data: pending, error: pErr } = await userScoped(supabase, userId)
+        .table("dispute_followups")
+        .select("id, metadata")
+        .eq("dispute_id", disputeId)
+        .eq("status", "pending");
+      if (pErr) {
+        console.error("[followups] acknowledge idempotency read failed; skipping:", pErr);
+        continue;
+      }
+      const hasLiveCheckIn = ((pending ?? []) as Array<{
+        metadata: Record<string, unknown> | null;
+      }>).some((p) => !isDeadlineAnchored(p));
+      if (hasLiveCheckIn) continue;
+      const { error: insErr } = await userScoped(supabase, userId)
+        .table("dispute_followups")
+        .insert({
+          dispute_id: disputeId,
+          followup_type: nextType,
+          due_date: nextDue,
+          status: "pending",
+        });
+      if (insErr) {
+        console.error("[followups] acknowledge reschedule failed:", insErr);
+        continue;
+      }
+      rescheduled += 1;
+    }
+  }
+
+  return { dismissed, reasserts, rescheduled };
 }
 
 /**
@@ -602,17 +676,28 @@ export function planFollowupQuieting(
   // rows alone; the cron re-nudges on their own cadence.
   if (outcomeDetail === "no_response") return { dismissIds: [], nextType: null };
 
-  // Re-anchor from the FURTHEST-ALONG row being dismissed, so an answered
-  // reprompt escalates to final rather than looping back to another reprompt.
-  const furthest = checkIn
-    .map((r) => r.followup_type)
+  return {
+    dismissIds: checkIn.map((r) => r.id),
+    nextType: nextCheckInRung(checkIn.map((r) => r.followup_type)),
+  };
+}
+
+/**
+ * The next rung of the check-in cadence, derived from the FURTHEST-ALONG row
+ * being retired — so an answered reprompt escalates to `final` rather than
+ * looping back to another reprompt. Null at the end of the cadence.
+ *
+ * ONE derivation, shared by the two paths that retire a check-in nudge without
+ * an answer: a logged-but-open outcome (planFollowupQuieting) and a
+ * click-through acknowledgement (resolveClaimFollowups). A second copy would
+ * be the drift class this session has already killed twice.
+ */
+export function nextCheckInRung(types: FollowupType[]): FollowupType | null {
+  const furthest = types
     .filter((t) => CHECK_IN_ORDER.includes(t))
     .sort((a, b) => CHECK_IN_ORDER.indexOf(a) - CHECK_IN_ORDER.indexOf(b))
     .pop();
-  return {
-    dismissIds: checkIn.map((r) => r.id),
-    nextType: furthest ? (OPEN_OUTCOME_NEXT_TYPE[furthest] ?? null) : null,
-  };
+  return furthest ? (OPEN_OUTCOME_NEXT_TYPE[furthest] ?? null) : null;
 }
 
 export async function quietOutcomeFollowups(

@@ -19,6 +19,7 @@
  */
 import {
   groupFollowupsByClaim,
+  nextCheckInRung,
   planDeadlineReasserts,
   planFollowupQuieting,
   type ActiveFollowup,
@@ -234,6 +235,22 @@ const pend = (id: string, type: PendingFollowupRow["followup_type"], kind?: stri
 
 {
   check("quiet · nothing pending → no-op", planFollowupQuieting([], "needs_info").dismissIds.length === 0);
+}
+
+// ── The two gestures: ✕ ends the chain, click-through advances it ───────────
+// Andrew: "Open your claim clears the banner but only clears the reprompt if
+// the action is done." nextCheckInRung is the ONE derivation both the
+// acknowledge path and the logged-but-open outcome path use.
+{
+  check("gesture · acknowledge after initial → reprompt", nextCheckInRung(["initial_30d"]) === "reprompt_14d");
+  check("gesture · acknowledge after reprompt → final", nextCheckInRung(["reprompt_14d"]) === "final");
+  check("gesture · acknowledge at final → cadence ends, no infinite loop", nextCheckInRung(["final"]) === null);
+  check("gesture · furthest-along wins in a mixed set", nextCheckInRung(["initial_30d", "reprompt_14d"]) === "final");
+  check("gesture · no check-in rows → nothing to advance", nextCheckInRung([]) === null);
+  check(
+    "gesture · deadline-only types never produce a check-in rung",
+    nextCheckInRung(["post_escalation_60d"]) === null,
+  );
 }
 
 console.log(`\nfollowup grouping + quieting fixture: ${pass} passed, ${fails.length} failed`);

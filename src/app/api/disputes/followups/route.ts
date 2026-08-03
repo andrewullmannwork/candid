@@ -20,7 +20,7 @@ import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { userScoped } from "@/lib/security/user-scoped";
 import {
-  dismissClaimFollowups,
+  resolveClaimFollowups,
   getActiveFollowups,
   groupFollowupsByClaim,
   handleFollowupAction,
@@ -98,9 +98,9 @@ export async function POST(req: NextRequest) {
   // status transition. Only `dismiss` may fan out — an outcome is per-letter
   // by construction and belongs in the rail's modal.
   if (Array.isArray(followupIds)) {
-    if (action !== "dismiss") {
+    if (action !== "dismiss" && action !== "acknowledge") {
       return NextResponse.json(
-        { error: "followupIds is only valid with action=dismiss" },
+        { error: "followupIds is only valid with action=dismiss|acknowledge" },
         { status: 400 },
       );
     }
@@ -108,13 +108,16 @@ export async function POST(req: NextRequest) {
     if (ids.length === 0) {
       return NextResponse.json({ error: "followupIds must be non-empty" }, { status: 400 });
     }
-    // S300 — the ✕ always works, and for deadline-anchored nudges it SNOOZES
-    // rather than deletes: re-asserts are scheduled at deadline−2 and −1.
-    const { dismissed, reasserts } = await dismissClaimFollowups(supabase, {
+    // S300 — two gestures. `dismiss` (the ✕) ends the check-in chain;
+    // `acknowledge` ("Open your claim") clears the row but advances it one
+    // rung, so only a logged outcome truly retires the ask. Both re-assert
+    // deadline-anchored nudges at deadline−2 and −1.
+    const { dismissed, reasserts, rescheduled } = await resolveClaimFollowups(supabase, {
       userId: user.id,
       followupIds: ids,
+      gesture: action,
     });
-    return NextResponse.json({ success: dismissed > 0, dismissed, reasserts });
+    return NextResponse.json({ success: dismissed > 0, dismissed, reasserts, rescheduled });
   }
 
   if (!followupId) {
