@@ -1104,8 +1104,8 @@ function DisputesContent() {
   };
 
   // Zone-3 (S266) — undo (clicked in error). Optimistic + background reconcile.
-  const handleUndoSent = async () => {
-    if (!user || !disputeId || !alreadySent) return;
+  const handleUndoSent = async (): Promise<boolean> => {
+    if (!user || !disputeId || !alreadySent) return false;
     const prevStatus = disputeStatus;
     mutationGenRef.current += 1;
     setDisputeStatus("dispute_letter_drafted");
@@ -1119,10 +1119,12 @@ function DisputesContent() {
       });
       if (!res.ok) throw new Error("undo failed");
       void fetchDispute(disputeId);
+      return true;
     } catch {
       setDisputeStatus(prevStatus);
       setMarkSentToast("Couldn't undo — please try again.");
       setTimeout(() => setMarkSentToast(null), 6000);
+      return false;
     }
   };
 
@@ -2611,7 +2613,7 @@ function DisputesContent() {
             entry?.outcome?.loggedAt ? fmtRailDate(entry.outcome.loggedAt) : null
           }
           onDownload={handleDownload}
-          onUnlock={() => void handleUndoSent()}
+          onUnlock={() => handleUndoSent()}
         />
       </div>
     );

@@ -443,8 +443,6 @@ export function CaseRail({
   const [guideOverride, setGuideOverride] = useState<
     Record<string, "open" | "done" | "skipped">
   >({});
-  const [unsendBusy, setUnsendBusy] = useState<Record<string, boolean>>({});
-  const [unsendError, setUnsendError] = useState<Record<string, boolean>>({});
   // Pack-D filed attest (phase 1b) — optimistic with snap-back (S295 idiom);
   // server truth arrives with the next projection refetch. Note drafts are
   // controlled (GuidedPhoneSteps idiom) so the attest click can carry the
@@ -569,17 +567,6 @@ export function CaseRail({
   // happen on the one path that owns them. Structural (it changes which steps
   // exist), so this shows a PENDING state rather than faking the new shape:
   // inventing it client-side would be a second derivation of the rail.
-  const handleUnsend = async (disputeId: string) => {
-    setUnsendBusy((m) => ({ ...m, [disputeId]: true }));
-    setUnsendError((m) => ({ ...m, [disputeId]: false }));
-    try {
-      const ok = await onMarkSent(disputeId, false);
-      if (!ok) setUnsendError((m) => ({ ...m, [disputeId]: true }));
-    } finally {
-      setUnsendBusy((m) => ({ ...m, [disputeId]: false }));
-    }
-  };
-
   const runGuideAction = async (
     s: Extract<RailStepModel, { kind: "guide-step" }>,
     value: string | null,
@@ -884,9 +871,7 @@ export function CaseRail({
                       <UnsendControl
                         loggedOutcomeLabel={s.unsend.loggedOutcomeLabel}
                         loggedOutcomeDateLabel={s.unsend.loggedOutcomeDateLabel}
-                        busy={unsendBusy[s.disputeId] === true}
-                        failed={unsendError[s.disputeId] === true}
-                        onUnsend={() => void handleUnsend(s.disputeId)}
+                        onUnsend={() => onMarkSent(s.disputeId, false)}
                       />
                     </div>
                   </div>

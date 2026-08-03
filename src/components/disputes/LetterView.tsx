@@ -73,10 +73,9 @@ export interface LetterViewProps {
    */
   loggedOutcomeLabel: string | null;
   loggedOutcomeDateLabel: string | null;
-  unsending?: boolean;
-  unsendFailed?: boolean;
   onDownload: () => void;
-  onUnlock: () => void;
+  /** Performs the unsend; resolves false on failure. */
+  onUnlock: () => Promise<boolean>;
 }
 
 function letterLabel(letterType: string): string {
@@ -261,8 +260,6 @@ export function LetterView(p: LetterViewProps) {
           <UnsendControl
             loggedOutcomeLabel={p.loggedOutcomeLabel}
             loggedOutcomeDateLabel={p.loggedOutcomeDateLabel}
-            busy={p.unsending === true}
-            failed={p.unsendFailed === true}
             withEditLabel
             onUnsend={p.onUnlock}
           />

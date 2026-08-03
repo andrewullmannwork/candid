@@ -553,8 +553,6 @@ export function ClaimDetail({
   const [railExhaustionFromDisputeId, setRailExhaustionFromDisputeId] = useState<string | null>(null);
   const [railEscalating, setRailEscalating] = useState(false);
   const [railActionError, setRailActionError] = useState<string | null>(null);
-  const [primaryUnsendBusy, setPrimaryUnsendBusy] = useState(false);
-  const [primaryUnsendFailed, setPrimaryUnsendFailed] = useState(false);
   // "Show full step" client state for the done-collapsed rail steps 1-2
   // (collapsed by default when done; expansion is throwaway, not persisted).
   const [assumpFullOpen, setAssumpFullOpen] = useState(false);
@@ -3478,15 +3476,7 @@ export function ClaimDetail({
                         ? fmtRailDate(railPrimaryLetter.outcome.loggedAt)
                         : null
                     }
-                    busy={primaryUnsendBusy}
-                    failed={primaryUnsendFailed}
-                    onUnsend={() => {
-                      setPrimaryUnsendBusy(true);
-                      setPrimaryUnsendFailed(false);
-                      void handleRailMarkSent(railPrimaryLetter.disputeId, false)
-                        .then((ok) => setPrimaryUnsendFailed(!ok))
-                        .finally(() => setPrimaryUnsendBusy(false));
-                    }}
+                    onUnsend={() => handleRailMarkSent(railPrimaryLetter.disputeId, false)}
                   />
                 </div>
               )}

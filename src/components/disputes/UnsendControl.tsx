@@ -25,27 +25,43 @@ import { UNSEND_COPY } from "@/lib/disputes/outcome-actions";
 export function UnsendControl({
   loggedOutcomeLabel,
   loggedOutcomeDateLabel,
-  busy,
-  failed,
   withEditLabel,
   onUnsend,
 }: {
   /** Non-null when a response is logged — drives the confirm. */
   loggedOutcomeLabel: string | null;
   loggedOutcomeDateLabel: string | null;
-  busy: boolean;
-  failed: boolean;
   /** Letter page: the affordance also reopens the letter for editing. */
   withEditLabel?: boolean;
-  onUnsend: () => void;
+  /** Performs the unsend; resolves false on failure. */
+  onUnsend: () => Promise<boolean>;
 }) {
   const [confirming, setConfirming] = useState(false);
+  // The control owns its OWN in-flight + failure state (S301 audit). Passing
+  // them in meant three separate mechanisms for one operation — keyed maps in
+  // CaseRail, booleans in ClaimDetail, and props on LetterView that were never
+  // wired at all, so a failed unsend there showed nothing. A fourth surface now
+  // gets both for free.
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
   const hasOutcome = loggedOutcomeLabel != null;
+
+  const run = async () => {
+    setBusy(true);
+    setFailed(false);
+    try {
+      const ok = await onUnsend();
+      if (!ok) setFailed(true);
+      else setConfirming(false);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const trigger = (
     <button
       type="button"
-      onClick={() => (hasOutcome ? setConfirming(true) : onUnsend())}
+      onClick={() => (hasOutcome ? setConfirming(true) : void run())}
       disabled={busy}
       className="self-start border-none bg-transparent p-0 text-[12px] text-gray-400 underline underline-offset-2 transition-colors hover:text-gray-600 disabled:opacity-60"
     >
@@ -77,10 +93,7 @@ export function UnsendControl({
       <div className="mt-2.5 flex flex-wrap items-center gap-3">
         <button
           type="button"
-          onClick={() => {
-            setConfirming(false);
-            onUnsend();
-          }}
+          onClick={() => void run()}
           disabled={busy}
           className="inline-flex items-center rounded-lg bg-blue-600 px-3.5 py-[7px] text-[12.5px] font-semibold text-white transition-colors hover:bg-blue-700 disabled:opacity-60"
         >
