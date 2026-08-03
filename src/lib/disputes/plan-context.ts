@@ -41,6 +41,17 @@ export interface InsurerContext {
   appealsLastConfirmedAt: string | null;
   appealsVerificationCount: number;
   needsConfirmation: boolean;
+  /**
+   * S301 — TRUE only when this address was carried in from another of the user's
+   * same-insurer disputes by the reuse overlay below. It answers "why are we
+   * asking?", which `appealsSource` cannot: a catalog address promoted from a
+   * community proposal is ALSO `user_correction`, so source + needsConfirmation
+   * together are ambiguous between "stale catalog entry" and "you typed this on
+   * another bill". The confirm copy differs between those two, and claiming the
+   * user supplied something they didn't is exactly the provenance error S291
+   * banned — so the distinction is recorded rather than inferred.
+   */
+  appealsCarriedFromPriorDispute: boolean;
 }
 
 /**
@@ -138,6 +149,37 @@ export interface ProviderContact {
   confirmedAt: string | null;
 }
 
+/**
+ * S301 — the collection agency chasing this bill, as CURRENTLY KNOWN.
+ *
+ * Deliberately the same shape and the same claim-scoped home as ProviderContact
+ * (`claims.metadata.collector`), because it answers the same kind of question and
+ * has to cascade the same way: the user types the agency's address once for the
+ * bill, and every later letter on that bill reads it instead of re-asking.
+ *
+ * ⚠ This is the KNOWLEDGE layer, not the record. What a given letter was actually
+ * addressed to when it was mailed lives on the dispute (`metadata.collector`) and
+ * in its version stack (`metadata.sentVersions[].collector`) and is immutable
+ * (S74.5 / S299 recipient-as-mailed). Editing here changes what the NEXT letter
+ * uses; it never rewrites one already sent.
+ */
+export interface CollectorContact {
+  name: string | null;
+  address: string | null;
+  originalCreditor: string | null;
+  /** The collector's own file number for this debt — printed on their notice. */
+  accountNumber: string | null;
+  source: "user_supplied" | "user_correction" | "unknown";
+  addressFields: {
+    addressLine1: string | null;
+    addressLine2: string | null;
+    city: string | null;
+    state: string | null;
+    postalCode: string | null;
+  } | null;
+  confirmedAt: string | null;
+}
+
 export interface PlanContext {
   plan: ResolvedPlan | null;
   insurer: InsurerContext | null;
@@ -150,6 +192,12 @@ export interface PlanContext {
    * of non-appeal dispute letters.
    */
   providerContact: ProviderContact | null;
+  /**
+   * S301 — resolved from the linked claim's `claims.metadata.collector`, exactly
+   * as providerContact is. Rides the SAME plumbing so no caller needs new
+   * threading: everything that already receives a planContext receives this.
+   */
+  collectorContact: CollectorContact | null;
   /**
    * S109 PR #2 — user's state from profiles.state, used by the dispute letter
    * escalation paragraph to name the state Department of Insurance the user
@@ -239,6 +287,7 @@ export async function resolvePlanContext(
   const { userId, claimId } = params;
   let { planYear, dateOfService } = params;
   let providerContact: ProviderContact | null = null;
+  let collectorContact: CollectorContact | null = null;
   // dispute_plan_pinning_v1 — the claim's DOS-correct plan (set server-side at
   // claim creation), used as the draft-time default pin when no explicit
   // dispute pin is passed (see effectivePin below). Server-sourced, so it is
@@ -257,6 +306,7 @@ export async function resolvePlanContext(
       if (planYear == null) planYear = claim.plan_year ?? null;
       if (!dateOfService) dateOfService = claim.date_of_service ?? null;
       providerContact = extractProviderContact(claim.metadata);
+      collectorContact = extractCollectorContact(claim.metadata);
       claimPinnedPlanId = (claim.insurance_plan_id as string | null) ?? null;
     }
   }
@@ -460,6 +510,7 @@ export async function resolvePlanContext(
       appealsLastConfirmedAt: null,
       appealsVerificationCount: 0,
       needsConfirmation: true,
+      appealsCarriedFromPriorDispute: false,
     };
   }
 
@@ -487,6 +538,9 @@ export async function resolvePlanContext(
           appealsSource: "user_correction",
           appealsLastConfirmedAt: ov.confirmedAt ?? insurer.appealsLastConfirmedAt,
           needsConfirmation: false,
+          // THIS dispute's own override — the user supplied it here, so there is
+          // nothing to carry forward and nothing to re-confirm.
+          appealsCarriedFromPriorDispute: false,
         }
       : {
           id: ov.insurerId ?? "",
@@ -497,6 +551,7 @@ export async function resolvePlanContext(
           appealsLastConfirmedAt: ov.confirmedAt ?? null,
           appealsVerificationCount: 0,
           needsConfirmation: false,
+          appealsCarriedFromPriorDispute: false,
         };
     appealsFromUserOverride = true;
   }
@@ -544,6 +599,10 @@ export async function resolvePlanContext(
           appealsSource: "user_correction",
           appealsLastConfirmedAt: reuse.confirmedAt ?? insurer.appealsLastConfirmedAt,
           needsConfirmation: true,
+          // S301 — the ONLY site that sets this. Lets the confirm copy say where
+          // the value came from instead of showing a bare "last verified" date
+          // that would read as a Candid verification the user never made.
+          appealsCarriedFromPriorDispute: true,
         };
       }
     } catch (err) {
@@ -590,6 +649,7 @@ export async function resolvePlanContext(
     missingForYear,
     fallbackPlan: toResolved(fallbackPlan),
     providerContact,
+    collectorContact,
     userState,
     planSource,
     archiveCanonicalPlan,
@@ -813,6 +873,102 @@ async function lookupArchiveCanonical(
  * Returns null when `metadata.provider` is absent or has no usable fields — the
  * caller surfaces a Pillar-3 EvidenceGap prompting the user to fill it in.
  */
+/**
+ * Pull a CollectorContact out of `claims.metadata.collector` JSONB — the
+ * knowledge layer written by the collector-contact endpoint. Mirrors
+ * extractProviderContact exactly (same null-safety, same structured-address
+ * handling) so the two contact reads cannot drift in behavior.
+ *
+ * Returns null when absent or empty; the caller surfaces `collector_address_missing`.
+ */
+function extractCollectorContact(metadata: unknown): CollectorContact | null {
+  if (!metadata || typeof metadata !== "object") return null;
+  const collector = (metadata as { collector?: unknown }).collector;
+  if (!collector || typeof collector !== "object") return null;
+  const c = collector as Record<string, unknown>;
+  const strField = (v: unknown): string | null =>
+    typeof v === "string" && v.trim() ? v.trim() : null;
+
+  const name = strField(c.name);
+  const address = strField(c.address);
+  const originalCreditor = strField(c.originalCreditor);
+  const accountNumber = strField(c.accountNumber);
+
+  const af =
+    c.addressFields && typeof c.addressFields === "object"
+      ? (c.addressFields as Record<string, unknown>)
+      : null;
+  const addressFields = af
+    ? {
+        addressLine1: strField(af.addressLine1),
+        addressLine2: strField(af.addressLine2),
+        city: strField(af.city),
+        state: strField(af.state),
+        postalCode: strField(af.postalCode),
+      }
+    : null;
+
+  if (!name && !address && !originalCreditor && !accountNumber && !addressFields) {
+    return null;
+  }
+
+  const rawSource = typeof c.source === "string" ? c.source : null;
+  const source: CollectorContact["source"] =
+    rawSource === "user_correction"
+      ? "user_correction"
+      : rawSource === "user_supplied"
+        ? "user_supplied"
+        : "unknown";
+
+  return {
+    name,
+    address,
+    originalCreditor,
+    accountNumber,
+    source,
+    addressFields,
+    confirmedAt: strField(c.confirmedAt),
+  };
+}
+
+/**
+ * The collector we currently know for this bill — knowledge layer first, the
+ * letter's own as-mailed record as fallback.
+ *
+ * PURE + exported so it is fixture-reachable. The first cut inlined this as an
+ * IIFE inside the dispute GET's response literal, which put real resolution
+ * logic somewhere no test could see and every future reader would miss.
+ *
+ * The fallback exists because the claim-scoped knowledge layer is NEW: cases
+ * created before it carry the agency only on the dispute row (escalate wrote it
+ * there), so a claim-only read showed an EMPTY name for a collector we plainly
+ * knew. Resolving here, once, is also what keeps the needs panel and the edit
+ * modal from disagreeing about what is on file.
+ */
+export function resolveCollectorContact(
+  claimKnowledge: CollectorContact | null,
+  disputeMetadata: Record<string, unknown> | null,
+): CollectorContact | null {
+  if (claimKnowledge?.name || claimKnowledge?.address) return claimKnowledge;
+  const onDispute = disputeMetadata?.collector as
+    | { name?: string; address?: string | null; originalCreditor?: string | null }
+    | undefined;
+  const accountNumber =
+    typeof disputeMetadata?.accountNumber === "string" ? disputeMetadata.accountNumber : null;
+  if (!onDispute?.name && !onDispute?.address && !accountNumber) return claimKnowledge;
+  return {
+    name: onDispute?.name ?? null,
+    address: onDispute?.address ?? null,
+    originalCreditor: onDispute?.originalCreditor ?? null,
+    accountNumber,
+    // "unknown": this came off the letter's as-mailed record, so we cannot
+    // claim the user typed it here (S291 — never assert a provenance we lack).
+    source: "unknown",
+    addressFields: null,
+    confirmedAt: null,
+  };
+}
+
 function extractProviderContact(metadata: unknown): ProviderContact | null {
   if (!metadata || typeof metadata !== "object") return null;
   const provider = (metadata as { provider?: unknown }).provider;
@@ -972,6 +1128,9 @@ export async function resolveInsurer(
       verificationCount: row.appeals_verification_count ?? 0,
       hasAddress,
     }),
+    // Straight from insurer_catalog — shared, admin-mediated data. The reuse
+    // overlay is the only thing that flips this true.
+    appealsCarriedFromPriorDispute: false,
   };
 }
 

@@ -44,12 +44,14 @@ import {
 } from "@/lib/disputes/letter-type";
 import {
   CASE_RAIL,
+  COLLECTIONS_STEPS,
   COMPLAINT_DOORS,
   PACK_D_STEPS,
   PACK_D_SUGGESTED_CHIP,
   PACK_D_TITLE,
   isTerminalRung,
   suggestDoors,
+  type CollectionsStepAction,
 } from "@/lib/guides/pack-registry";
 
 export interface RailWaitCard {
@@ -148,6 +150,21 @@ export type RailStepModel =
       receipt: string;
       disputeId: string;
       openLetterLabel: string;
+      /**
+       * S301 — unsend, on the CASE surface. ALWAYS offered (Andrew): blocking it
+       * behind "undo the result first" made a denied letter read as a dead end,
+       * and the server clears both in ONE atomic patch anyway, so there is no
+       * partial state to protect against.
+       *
+       * When a response is logged, the card confirms first — carrying the FACTS
+       * (what was logged, when) so the copy can name them. §0.9b's invariant is
+       * preserved by the route, not by hiding the button: an unsend can still
+       * never leave an orphaned response, because the same patch clears it.
+       */
+      unsend: {
+        loggedOutcomeLabel: string | null;
+        loggedOutcomeDateLabel: string | null;
+      };
     }
   | {
       kind: "send-draft";
@@ -156,6 +173,43 @@ export type RailStepModel =
       title: string;
       disputeId: string;
       openLetterLabel: string;
+    }
+  /**
+   * S301 — a collections guard-rail step, relocated onto the rail.
+   *
+   * Every step is an ACTION (button, or input plus a confirming button); there
+   * are no checkboxes. THREE states, and "skipped" is deliberately not a flavour
+   * of done: these attestations feed the prior-contact recital and the flywheel,
+   * so a declined step must never be readable as a performed one (S297 §3.2).
+   */
+  | {
+      kind: "guide-step";
+      key: string;
+      badge: string;
+      title: string;
+      body: string;
+      disputeId: string;
+      /** claims.metadata.guideSteps key. */
+      stepId: string;
+      action: CollectionsStepAction;
+      state: "open" | "done" | "skipped";
+      /** Display date for the done state ("Aug 3") — null while open/skipped. */
+      doneAt: string | null;
+      skippable: boolean;
+      /** Existing value for a date/text action (prefill). */
+      value: string | null;
+      /**
+       * True for the step whose done-ness is the LETTER's send record rather
+       * than its own stored boolean — un-doing it routes through unsend, so the
+       * rail must not treat it as a plain un-attest.
+       */
+      derivedFromSend: boolean;
+      /**
+       * WHERE this step's done-ness comes from, which is also what Undo has to
+       * reverse: an attestation (un-attest), the letter's send record (unsend),
+       * or a stored date (clear the date). Explicit so the card cannot guess.
+       */
+      doneSource: "attestation" | "send" | "date";
     };
 
 /**
@@ -176,6 +230,7 @@ export function railStepDisputeId(step: RailStepModel): string {
     case "wait-receipt":
     case "send-receipt":
     case "send-draft":
+    case "guide-step":
       return step.disputeId;
     default: {
       const _exhaustive: never = step;
@@ -331,6 +386,90 @@ function buildWaitCard(
   };
 }
 
+/**
+ * The four net-new collections steps for a debt_validation letter, split by
+ * where they belong in the chronology.
+ *
+ * Only FOUR, because two of the six the user sees already exist on the rail:
+ * "Your debt validation letter is ready" is this letter's own send step, and
+ * "What did the collector do?" is its waiting card — which is already
+ * collections-specific (the undated §1692g wait, the "Collection must pause"
+ * chip, the approved what-happens-next rows). Rebuilding either would put two
+ * doors on the same act, which is the duplication this relocation removes.
+ */
+function buildCollectionsSteps(
+  l: ProjectedLetterStep,
+): { before: RailStepModel[]; after: RailStepModel[] } {
+  // Both inputs ride the PROJECTION (l.collectionsSteps / l.collectorFirstContactDate)
+  // rather than arriving as separate rail props — the rail has one input, and a
+  // prop that does not exist cannot be forgotten on the way through.
+  const steps = l.collectionsSteps;
+  const before: RailStepModel[] = [];
+  const after: RailStepModel[] = [];
+
+  for (const step of COLLECTIONS_STEPS) {
+    const stored = steps[step.id] ?? {};
+
+    // TWO of the four steps are DATA-derived: their done-ness is the fact
+    // itself, not a separate attestation.
+    //
+    //   packC:mailed        → the letter's own send record. Mark-as-sent IS the
+    //                         attestation, which is what stops the rail asking
+    //                         the user to re-assert a send they already reported.
+    //   packC:first-contact → the stored §1692g anchor date.
+    //
+    // The first cut keyed first-contact on `checkedAt`, which NOTHING writes —
+    // the date saves through the deadline-inputs route — so the step showed the
+    // date and stayed blue forever, and pressing Save appeared to do nothing
+    // (Andrew, S301 E2E round 2). A step whose answer is visible in its own
+    // field must never need a second, invisible flag to look answered.
+    const doneSource = step.doneFrom;
+    const dataValue =
+      doneSource === "send"
+        ? (l.latestSendAt ?? null)
+        : doneSource === "date"
+          ? l.collectorFirstContactDate
+          : null;
+    const derivedFromSend = doneSource === "send";
+    const doneIso = doneSource === "attestation" ? (stored.checkedAt ?? null) : dataValue;
+    const skipped = doneSource === "attestation" && stored.skippedAt != null;
+    const state: "open" | "done" | "skipped" = doneIso
+      ? "done"
+      : skipped
+        ? "skipped"
+        : "open";
+
+    const value =
+      doneSource === "date"
+        ? l.collectorFirstContactDate
+        : step.action.kind === "text"
+          ? (stored.note ?? null)
+          : null;
+
+    const model: RailStepModel = {
+      kind: "guide-step",
+      key: `guide:${l.disputeId}:${step.id}`,
+      badge: "",
+      title: step.title,
+      body: step.body,
+      disputeId: l.disputeId,
+      stepId: step.id,
+      action: step.action,
+      state,
+      doneAt: doneIso ? fmtRailDate(doneIso) : null,
+      skippable: step.skippable,
+      value,
+      derivedFromSend,
+      doneSource,
+    };
+
+    if (step.phase === "before-send") before.push(model);
+    else after.push(model);
+  }
+
+  return { before, after };
+}
+
 export function composeRailSteps(input: ComposeRailInput): RailStepModel[] {
   const { letters, primaryDisputeId, firstNumber, now } = input;
   const activeWaitCount = letters.filter((l) => l.stage === "awaiting").length;
@@ -343,6 +482,19 @@ export function composeRailSteps(input: ComposeRailInput): RailStepModel[] {
   };
 
   for (const l of letters) {
+    // S301 — collections guard-rail steps BRACKET this letter's send step:
+    // "don't pay" + "when did they contact you" are about the moment collections
+    // started (anchored at the letter's birth, pushed before the send step), and
+    // the certified-mail pair is about the send itself (anchored at the send).
+    // Equal anchors fall back to push order, so the sequence reads correctly
+    // whether or not the letter has been sent yet.
+    const collections =
+      l.letterType === "debt_validation" ? buildCollectionsSteps(l) : null;
+    if (collections) {
+      for (const m of collections.before) {
+        anchored.push({ anchor: ts(l.startAt), order: order++, model: m });
+      }
+    }
     if (contributesSendStep(l, primaryDisputeId)) {
       if (l.latestSendAt == null) {
         anchored.push({
@@ -373,8 +525,20 @@ export function composeRailSteps(input: ComposeRailInput): RailStepModel[] {
                 : CASE_RAIL.sendReceiptGeneric(letterLabel(l.letterType), dateLabel, l.mailedCertified),
             disputeId: l.disputeId,
             openLetterLabel: CASE_RAIL.ctaOpenLetter,
+            unsend: {
+              loggedOutcomeLabel: l.outcome ? OUTCOME_LABELS[l.outcome.detail] : null,
+              loggedOutcomeDateLabel: l.outcome?.loggedAt
+                ? fmtRailDate(l.outcome.loggedAt)
+                : null,
+            },
           },
         });
+      }
+    }
+    if (collections) {
+      const sendAnchor = ts(l.latestSendAt ?? l.startAt);
+      for (const m of collections.after) {
+        anchored.push({ anchor: sendAnchor, order: order++, model: m });
       }
     }
     if (contributesWaitStep(l)) {

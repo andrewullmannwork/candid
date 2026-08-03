@@ -105,6 +105,19 @@ jobs:
         # and deadline-anchored rows are never touched by an outcome.
         run: npx tsx scripts/calibration/fixtures/dispute-grounds/followup-quieting.ts
 
+      - name: Letter needs — each letter asks only for what it prints (S301)
+        # The full nine-type matrix: which address each letter mails to, which
+        # track-varying rows it shows, and that the address it ASKS for is the
+        # same gap the readiness floor SCORES. Locks the one-root defect family:
+        # collector letters no longer asked for a provider address (#2/#3/#5),
+        # external reviews asked for the appeals address they mail to (#4), and
+        # the legacy `external_appeal` dispute_type no longer resolves to
+        # "provider" through the shared recipient resolver. Also asserts the
+        # carried-forward appeals-address confirm copy in BOTH provenances —
+        # a value the user typed on another bill must never render as a Candid
+        # verification with a date belonging to a different claim.
+        run: npx tsx scripts/calibration/fixtures/dispute-grounds/letter-needs.ts
+
       - name: Canonical link is a pair (S292 / mig 218)
         # Fails the build if any code writes insurance_plans.canonical_plan_id
         # without canonical_match_confidence. An unscored link reads as UNKNOWN to

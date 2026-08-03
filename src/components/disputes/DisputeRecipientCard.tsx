@@ -20,6 +20,8 @@ interface InsurerShape {
   appealsPhone: string | null;
   appealsLastConfirmedAt: string | null;
   needsConfirmation: boolean;
+  /** S301 — carried in from another of the user's same-insurer disputes. */
+  appealsCarriedFromPriorDispute?: boolean;
 }
 
 interface Props {
@@ -122,6 +124,39 @@ function AddressedToBlock({
   );
 }
 
+/**
+ * The unconfirmed-appeals-address prompt. PURE + exported so the exact strings
+ * are asserted in a fixture (S300 lesson: when a surface and its copy share a
+ * vocabulary, assert the strings, don't trust them).
+ *
+ * TWO provenances, two prompts (S301):
+ *   carried — the user typed this address on ANOTHER of their bills for this same
+ *             insurer. Say so. A bare "Last verified «date»" would read as a
+ *             Candid verification of something the user supplied themselves, and
+ *             the date shown would belong to a different bill.
+ *   catalog — shared, admin-mediated data. Keeps its existing Block C2.2 prompt.
+ *
+ * Carried copy Andrew-approved S301, verbatim.
+ */
+export function appealsConfirmCopy(input: {
+  carriedFromPriorDispute: boolean;
+  insurerName: string;
+  lastVerified: string;
+}): { prompt: string; confirmLabel: string; changeLabel: string } {
+  if (input.carriedFromPriorDispute) {
+    return {
+      prompt: `You used this address for ${input.insurerName} on an earlier bill. Still correct?`,
+      confirmLabel: "Use this",
+      changeLabel: "Change",
+    };
+  }
+  return {
+    prompt: `Last verified ${input.lastVerified}. Is this the right appeals address?`,
+    confirmLabel: "Looks right",
+    changeLabel: "Not correct",
+  };
+}
+
 function VerifyStrip({
   insurer,
   needsConfirmation,
@@ -204,13 +239,16 @@ function VerifyStrip({
     );
   }
 
-  // Address present but unconfirmed → "Looks right" / "Not correct" as real
-  // buttons (Block C2.2 note 2 — were underlined text links).
+  // Address present but unconfirmed — prompt + labels come from the pure copy
+  // resolver so the exact strings are fixture-asserted rather than trusted.
+  const copy = appealsConfirmCopy({
+    carriedFromPriorDispute: insurer.appealsCarriedFromPriorDispute === true,
+    insurerName: insurer.name,
+    lastVerified,
+  });
   return (
     <div className="mt-3 rounded-lg border border-amber-100 bg-amber-50/60 px-3 py-2.5 text-xs text-amber-900">
-      <p className="mb-2 font-medium">
-        Last verified {lastVerified}. Is this the right appeals address?
-      </p>
+      <p className="mb-2 font-medium">{copy.prompt}</p>
       <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
@@ -218,7 +256,7 @@ function VerifyStrip({
           disabled={state === "confirming"}
           className={btnPrimary}
         >
-          {state === "confirming" ? "Confirming…" : "Looks right"}
+          {state === "confirming" ? "Confirming…" : copy.confirmLabel}
         </button>
         {onProposeCorrection ? (
           <button
@@ -226,7 +264,7 @@ function VerifyStrip({
             onClick={() => onProposeCorrection(insurer.id)}
             className={btnSecondary}
           >
-            Not correct
+            {copy.changeLabel}
           </button>
         ) : null}
       </div>

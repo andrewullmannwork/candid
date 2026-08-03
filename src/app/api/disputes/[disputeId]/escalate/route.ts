@@ -253,6 +253,48 @@ export async function POST(
     console.error("[disputes/escalate] escalation-input metadata persist failed (non-fatal):", err);
   }
 
+  // S301 — seed the CLAIM-scoped collector knowledge from this capture.
+  //
+  // CollectorModal is where we first learn the agency, so the create path has to
+  // write the same home the edit path (collector-contact) writes; otherwise the
+  // same fact lives in two places and only one of them cascades. The dispute's
+  // own metadata.collector above stays the AS-ADDRESSED record for this letter
+  // (immutable once sent, S299) — this is the knowledge every LATER letter reads.
+  //
+  // Fill-only: never overwrite a stored value with a blank, so a re-escalation
+  // that omits the address can't erase one the user already supplied. Non-fatal.
+  if (collector && dispute.claim_id) {
+    try {
+      const { data: claimRow } = await userScoped(supabase, user.id)
+        .table("claims")
+        .select("id, metadata")
+        .eq("id", dispute.claim_id)
+        .single();
+      const claimMeta = (claimRow?.metadata as Record<string, unknown> | null) ?? {};
+      const existing = (claimMeta.collector as Record<string, unknown> | undefined) ?? {};
+      const fill = (next: unknown, prev: unknown) =>
+        typeof next === "string" && next.trim() ? next.trim() : (prev ?? null);
+      const nextCollector = {
+        ...existing,
+        name: fill(collector.name, existing.name),
+        address: fill(collector.address, existing.address),
+        originalCreditor: fill(collector.originalCreditor, existing.originalCreditor),
+        accountNumber: fill(
+          (collector as { accountNumber?: string | null }).accountNumber,
+          existing.accountNumber,
+        ),
+        source: existing.source ?? "user_supplied",
+        updated_at: new Date().toISOString(),
+      };
+      await userScoped(supabase, user.id)
+        .table("claims")
+        .update({ metadata: { ...claimMeta, collector: nextCollector } })
+        .eq("id", dispute.claim_id);
+    } catch (err) {
+      console.error("[disputes/escalate] claim collector seed failed (non-fatal):", err);
+    }
+  }
+
   // S298 (Andrew) — birth fingerprint. Escalation-created letters never got an
   // evidence_fingerprint (generate's D16 block stamps it; this route didn't),
   // so isDisputeStale read `current ≠ null-stored` and every freshly escalated

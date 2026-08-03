@@ -96,6 +96,25 @@ export interface DeadlineResult {
 const INSURER_TRACK = new Set<string>(["insurance_appeal"]);
 const COLLECTOR_TRACK = new Set<string>(["debt_validation"]);
 
+/**
+ * The USER-SUPPLIED date this letter's governing deadline anchors on — null when
+ * the letter has no dated window.
+ *
+ * Exported so `letterNeeds` derives its date asks from the engine that actually
+ * consumes them (S301) instead of restating the mapping. Before this, the needs
+ * panel asked for a denial date on final_notice and external_review, where the
+ * engine never reads one and no template prints it — a dead ask on two letter
+ * types. Add a type to a track above and the ask follows automatically; the two
+ * can no longer drift apart.
+ */
+export function deadlineAnchorField(
+  letterType: string,
+): "denialNoticeDate" | "collectorFirstContactDate" | null {
+  if (COLLECTOR_TRACK.has(letterType)) return "collectorFirstContactDate";
+  if (INSURER_TRACK.has(letterType)) return "denialNoticeDate";
+  return null;
+}
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** Parse a date string (YYYY-MM-DD or ISO) to epoch ms; null when absent/unparseable. */

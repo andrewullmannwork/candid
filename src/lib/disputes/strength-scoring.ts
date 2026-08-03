@@ -32,6 +32,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { DisputeEvidence, LineItemEvidence } from "./evidence-resolver";
+import { recipientAddressGapKindFor } from "./letter-type";
 
 // ============================================================================
 // Axis (a) — data-trust gate
@@ -109,8 +110,13 @@ export type ReadinessState = "attention" | "ready_to_send" | "airtight";
  * behavior). Derived from the letter type by `letterRecipientKind` in
  * src/lib/disputes/index.ts (single source of truth, shared with the templates).
  */
-// "collector" (debt_validation) is accepted for parity with LetterRecipientKind; it falls to the
-// conservative else-branch below and is not recovery-scored (dispute-letters v2 S2).
+// S301 — "collector" USED to fall to the conservative else-branch below, which required BOTH the
+// insurer appeals address AND the provider address on a debt-validation letter that prints
+// neither. Because `provider_address_missing` fired for every non-appeal letter, any collections
+// letter on a claim without a clinic address failed MVDL #3 and was reported "Not ready to send"
+// for an address it never mails to. Under `letter_requirements_v1` the required address comes from
+// `letterNeeds`, which is the machine image of the composer's own recipient decision.
+// "both" remains for the legacy/undefined caller.
 export type RecipientKind = "insurer" | "provider" | "both" | "collector";
 
 export interface StrengthWeights {
@@ -457,6 +463,18 @@ export interface ComputeStrengthOptions {
    * routes derive this from the resolved letter type via `letterRecipientKind`.
    */
   recipientKind?: RecipientKind;
+  /**
+   * S301 `letter_requirements_v1`. OFF reproduces the pre-S301 mapping exactly,
+   * including `collector` falling to the both-addresses branch. ON scopes the
+   * floor to the ONE address this recipient prints — which is what makes a
+   * debt-validation letter stop being marked "Not ready to send" for a missing
+   * provider address it never mails to.
+   *
+   * ⚠ REQUIRED. As an optional field it shipped with ZERO call sites passing it,
+   * so the floor silently kept the legacy mapping and the readiness tier never
+   * moved (Andrew, S301 E2E). Every caller must now state its flag state.
+   */
+  letterRequirementsOn: boolean;
 }
 
 /**
@@ -501,12 +519,18 @@ export function computeDisputeStrength(
   // the non-recipient address stays an optional "strengthen" item, not a floor.
   // `both`/undefined → either-missing fails (conservative legacy behavior).
   const recipientKind: RecipientKind = opts?.recipientKind ?? "both";
+  // S301 — under `letter_requirements_v1` the required address comes from the
+  // SAME helper that decides what the panel asks for, so the address we score is
+  // always the address the letter prints. "both" (legacy/undefined caller) keeps
+  // the conservative either-missing-fails behavior.
   const requiredAddressGaps =
-    recipientKind === "insurer"
-      ? ["insurer_address_missing"]
-      : recipientKind === "provider"
-        ? ["provider_address_missing"]
-        : Array.from(ADDRESS_GAP_KINDS);
+    opts?.letterRequirementsOn && recipientKind !== "both"
+      ? [recipientAddressGapKindFor(recipientKind)]
+      : recipientKind === "insurer"
+        ? ["insurer_address_missing"]
+        : recipientKind === "provider"
+          ? ["provider_address_missing"]
+          : Array.from(ADDRESS_GAP_KINDS);
   const recipientAddress = !requiredAddressGaps.some((k) => gapKinds.has(k));
   const required = {
     dataTrustPass: dataTrust.gate !== "hard_stop",

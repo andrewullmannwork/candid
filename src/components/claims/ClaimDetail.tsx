@@ -29,6 +29,13 @@ import { ExhaustionAttestModal } from "@/components/disputes/ExhaustionAttestMod
 import { railHasExtension, fmtRailDate } from "@/lib/case/rail-steps";
 import type { ProjectedLetterStep } from "@/lib/case/timeline-projector";
 import { letterRecipientKind } from "@/lib/disputes";
+import { UnsendControl } from "@/components/disputes/UnsendControl";
+import { OUTCOME_LABELS } from "@/lib/disputes/outcome-taxonomy";
+import {
+  markSentPayload,
+  undoResultPayload,
+  unsendPayload,
+} from "@/lib/disputes/outcome-actions";
 import { CASE_RAIL, GUIDE_4B, GUIDE_CHROME, PHONE_OUTCOME, type GuideFillContext, type GuideFinding } from "@/lib/guides/pack-registry";
 
 interface CodeIdentityState {
@@ -341,6 +348,9 @@ function friendlyFindingType(type: string): string {
 
 // Lifecycle labels for disputes. Legacy statuses (filed, in_progress, settled,
 // withdrawn, *_on_escalation) still occur in the DB and are mapped here.
+/** S301 (Andrew) — a mailed letter says so, instead of reporting as a draft. */
+const DISPUTE_STATUS_SENT_LABEL = "Letter Sent";
+
 const DISPUTE_STATUS_LABEL: Record<string, string> = {
   flagged: "Flagged",
   filed: "Dispute Letter Drafted",
@@ -792,7 +802,7 @@ export function ClaimDetail({
         const res = await fetch(`/api/disputes/outcome`, {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ disputeId, status: "filed", clearOutcomeDetail: true }),
+          body: JSON.stringify(undoResultPayload(disputeId)),
         });
         if (!res.ok) return false;
         await refetchClaim();
@@ -803,6 +813,81 @@ export function ClaimDetail({
       }
     },
     [getAuthToken, refetchClaim, onClaimUpdated],
+  );
+
+  // S301 — the collections "Mail it certified" step IS mark-as-sent, in both
+  // directions (Andrew). Routes to the EXISTING outcome route rather than a
+  // parallel writer, so the immutable snapshot, the deadline clock, the version
+  // stack, and the letter_sent / letter_unsent events all fire exactly once on
+  // the path that already owns them.
+  //
+  // ⚠ Un-sending is a real state change with a sequencing guard: §0.9b allows it
+  // only while NO response is logged, so an unsend can never orphan a logged
+  // outcome. The route enforces it; a refusal surfaces in the rail's error strip
+  // instead of failing silently.
+  const handleRailMarkSent = useCallback(
+    async (disputeId: string, sent: boolean): Promise<boolean> => {
+      try {
+        const token = await getAuthToken();
+        if (!token) {
+          setRailActionError("Couldn't save that — please refresh and try again.");
+          return false;
+        }
+        const res = await fetch(`/api/disputes/outcome`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          // ONE payload source (outcome-actions). The invented `markSent` /
+          // `undoSent` keys this used to send were never route params — the
+          // route requires `status` and reads clearSentAt/clearOutcomeDetail —
+          // so unsend 400'd every time while the catch below blamed the §0.9b
+          // guard.
+          body: JSON.stringify(sent ? markSentPayload(disputeId) : unsendPayload(disputeId)),
+        });
+        if (!res.ok) {
+          // S301 — the old message here BLAMED the §0.9b guard, which disguised
+          // a malformed request as correct behavior. Unsend now clears the
+          // outcome in the same patch, so there is no prerequisite to name.
+          setRailActionError(
+            sent
+              ? "Couldn't mark this as sent — please try again."
+              : "Couldn't unsend this — please try again.",
+          );
+          return false;
+        }
+        await refetchClaim();
+        if (onClaimUpdated) void onClaimUpdated();
+        return true;
+      } catch {
+        setRailActionError("Couldn't save that — please try again.");
+        return false;
+      }
+    },
+    [getAuthToken, refetchClaim, onClaimUpdated],
+  );
+
+  // S301 — the FDCPA §1692g anchor, through the EXISTING deadline-inputs route
+  // (the same endpoint the dispute page's date rows use), so the engine keeps
+  // one input path and the rail does not learn about deadlines.
+  const handleRailFirstContactDate = useCallback(
+    async (disputeId: string, date: string | null): Promise<void> => {
+      try {
+        const token = await getAuthToken();
+        if (!token) return;
+        const res = await fetch(`/api/disputes/${disputeId}/deadline-inputs`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ collectorFirstContactDate: date }),
+        });
+        if (!res.ok) {
+          setRailActionError("Couldn't save that date — please try again.");
+          return;
+        }
+        await refetchClaim();
+      } catch {
+        setRailActionError("Couldn't save that date — please try again.");
+      }
+    },
+    [getAuthToken, refetchClaim],
   );
 
   // ONE escalate path for every rail offer (phase 1b generalizes 1a's
@@ -1537,6 +1622,9 @@ export function ClaimDetail({
                 provider={providerName}
                 recovery={billTotals.potentialRecovery}
                 hasCostShare={!!data.costShareBill}
+                sent={
+                  railTimeline?.letters.find((l) => l.disputeId === d.id)?.latestSendAt != null
+                }
               />
             ))}
           </div>
@@ -3374,6 +3462,30 @@ export function ClaimDetail({
               <div className={railPrimarySent && !fourBFullOpen ? "hidden" : undefined}>
                 {recoverBranchNode(muted4b)}
               </div>
+              {/* S301 (Andrew) — unsend on the PRIMARY letter's step too. Its
+                  send step is 4b in the prep rail, never the extension rail
+                  (contributesSendStep excludes the primary), so without this the
+                  case surface offered unsend for every letter EXCEPT the main
+                  one — reachable only by opening the letter page. Same shared
+                  control, same atomic request: unsending here reopens the letter
+                  as a draft, which is exactly what clicking into it then shows. */}
+              {railPrimarySent && fourBFullOpen && railPrimaryLetter && (
+                <div className="mt-3">
+                  <UnsendControl
+                    loggedOutcomeLabel={
+                      railPrimaryLetter.outcome
+                        ? OUTCOME_LABELS[railPrimaryLetter.outcome.detail]
+                        : null
+                    }
+                    loggedOutcomeDateLabel={
+                      railPrimaryLetter.outcome?.loggedAt
+                        ? fmtRailDate(railPrimaryLetter.outcome.loggedAt)
+                        : null
+                    }
+                    onUnsend={() => handleRailMarkSent(railPrimaryLetter.disputeId, false)}
+                  />
+                </div>
+              )}
             </RailStep>
           </>
         );
@@ -3428,6 +3540,13 @@ export function ClaimDetail({
             onUndoResult={handleRailUndoResult}
             onStartNextLetter={handleRailStartNextLetter}
             escalating={railEscalating}
+            // S301 — collections step state + the §1692g anchor ride the
+            // PROJECTION (ProjectedLetterStep.collectionsSteps /
+            // .collectorFirstContactDate), so the rail takes one input and there
+            // is no prop here to forget.
+            onMarkSent={handleRailMarkSent}
+            onSaveFirstContactDate={handleRailFirstContactDate}
+            onRefetch={refetchClaim}
           />
         </>
       )}
@@ -4099,11 +4218,22 @@ function DisputeRow({
   provider,
   recovery,
   hasCostShare,
+  sent,
 }: {
   dispute: { id: string; dispute_type: string; status: string; amount_disputed: number; amount_recovered: number; isStale?: boolean; chargeCount?: number };
   provider: string;
   recovery: number;
   hasCostShare: boolean;
+  /**
+   * S301 — has this letter actually been MAILED, from the projection's
+   * `latestSendAt`. The badge below cannot answer that from `status`: mark-as-sent
+   * writes `filed`, and DISPUTE_STATUS_LABEL maps BOTH `filed` and
+   * `dispute_letter_drafted` to "Dispute Letter Drafted" — so a sent letter
+   * reported itself as a draft. `sent_at` is deliberately stripped from the claim
+   * payload, so this reads the projection ClaimDetail already holds rather than
+   * widening the payload or inventing a second proxy.
+   */
+  sent: boolean;
 }) {
   // Cost-Share v2 (§17.4) — the card surfaces the "May need update" state + the
   // linked-charge count from props (the claim GET now folds `isStale` +
@@ -4112,7 +4242,11 @@ function DisputeRow({
   // The heavy bill / letter / court detail lives on the /disputes letter page
   // ("Open dispute letter"), which also carries Refresh / Keep-as-is.
   const typeLabel = disputeTypeLabel(dispute.dispute_type);
-  const statusLabel = DISPUTE_STATUS_LABEL[dispute.status] || dispute.status;
+  // Sent is a FACT; the status is a proxy that cannot distinguish drafted from
+  // mailed. Null projection (rail flag OFF) → today's label, byte-identical.
+  const statusLabel = sent
+    ? DISPUTE_STATUS_SENT_LABEL
+    : DISPUTE_STATUS_LABEL[dispute.status] || dispute.status;
   const statusBadgeClass = DISPUTE_STATUS_BADGE[dispute.status] || "text-gray-700 bg-gray-100";
   const isStale = !!dispute.isStale;
   const chargeCount = dispute.chargeCount ?? null;

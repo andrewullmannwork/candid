@@ -51,6 +51,13 @@ export const CASE_EVENT_KINDS = [
   // Guided steps (attested-only; checkedAt is the server stamp)
   "guide_step_attested",
   "guide_step_unchecked",
+  // S301 — a step DISMISSED without doing it. Its own kind, never folded into
+  // `guide_step_attested`: a skip is the user declining an action, and recording
+  // it as an attestation would put a claim in the case record that the user
+  // never made (S297 §3.2). No migration — mig 221 shape-checks `kind`
+  // (`^[a-z0-9_]+$`) rather than enumerating it, precisely so the vocabulary can
+  // grow in TS. Vocabulary count: 18 → 19.
+  "guide_step_skipped",
   "phone_outcome_answered",
   // Case-basis changes the rows overwrite in place
   "plan_repinned",

@@ -213,6 +213,7 @@ export async function GET(
       config: strengthConfig,
       patientIdentityResolved: !patientNameMismatch,
       recipientKind: letterRecipientKind(dispute.dispute_type),
+      letterRequirementsOn: await isFeatureEnabled("letter_requirements_v1"),
     });
   } catch (err) {
     console.error(

@@ -29,7 +29,8 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { ShowFullStepButton } from "@/components/claims/GuidedPhoneSteps";
-import { CASE_RAIL } from "@/lib/guides/pack-registry";
+import { UnsendControl } from "@/components/disputes/UnsendControl";
+import { CASE_RAIL, COLLECTIONS_CHROME } from "@/lib/guides/pack-registry";
 import {
   composeRailSteps,
   railStepDisputeId,
@@ -51,6 +52,7 @@ export function RailStep({
   sub,
   done,
   attention,
+  skipped,
   right,
   last,
   headerOnly,
@@ -68,6 +70,11 @@ export function RailStep({
    * finished, so it must stay findable. `done` wins if both are set.
    */
   attention?: boolean;
+  /**
+   * S301 — the user DISMISSED this step. Grey badge with a dash, never a check:
+   * a declined step must not read as a performed one. `done` wins if both set.
+   */
+  skipped?: boolean;
   right?: React.ReactNode;
   last?: boolean;
   headerOnly?: boolean;
@@ -94,15 +101,20 @@ export function RailStep({
       <header className="mb-3.5 flex flex-wrap items-start gap-3.5">
         <span
           className={
-            "relative z-10 grid h-[30px] w-[30px] flex-shrink-0 place-items-center rounded-full text-sm font-bold text-white " +
+            // leading-none: without it the glyph sits off-centre in the 30px
+            // circle (Andrew, S301 \u2014 "the numbers are not centred in their
+            // bubbles"); grid centring positions the LINE BOX, not the glyph.
+            "relative z-10 grid h-[30px] w-[30px] flex-shrink-0 place-items-center rounded-full text-sm font-bold leading-none text-white " +
             (done
               ? "bg-emerald-700 shadow-[0_2px_8px_rgba(4,120,87,0.25)]"
-              : attention
-                ? "bg-amber-500 shadow-[0_2px_8px_rgba(245,158,11,0.28)]"
-                : "bg-blue-600 shadow-[0_2px_8px_rgba(37,99,235,0.25)]")
+              : skipped
+                ? "bg-gray-300 text-gray-600 shadow-none"
+                : attention
+                  ? "bg-amber-500 shadow-[0_2px_8px_rgba(245,158,11,0.28)]"
+                  : "bg-blue-600 shadow-[0_2px_8px_rgba(37,99,235,0.25)]")
           }
         >
-          {done ? "\u2713" : n}
+          {done ? "\u2713" : skipped ? "\u2013" : n}
         </span>
         {/* S297 (Andrew E2E) — min-w-[12rem], not min-w-0: with a wide right
             cluster, flex was crushing the title into a one-word-per-line
@@ -142,6 +154,7 @@ function WaitCardBody({
   onDoor,
   doorLogged,
   doorBusy,
+  doorFailed,
 }: {
   card: RailWaitCard;
   whnOpen: boolean;
@@ -150,6 +163,8 @@ function WaitCardBody({
   onDoor: () => void;
   doorLogged: boolean;
   doorBusy: boolean;
+  /** The last door write FAILED. Rendered — never swallowed (S300 lesson). */
+  doorFailed: boolean;
 }) {
   return (
     <div className="rounded-xl border border-gray-200 bg-white px-4 py-3.5">
@@ -205,6 +220,11 @@ function WaitCardBody({
           </button>
         )}
       </div>
+      {doorFailed && (
+        <p className="mt-2 text-[11.5px] font-medium text-red-600">
+          That didn&apos;t save — please try again.
+        </p>
+      )}
       {card.foot && <div className="mt-2 text-[11.5px] text-gray-400">{card.foot}</div>}
       {card.whn && (
         <details
@@ -231,6 +251,142 @@ function WaitCardBody({
   );
 }
 
+/**
+ * S301 — one collections step. Andrew's grammar, exactly:
+ *
+ *   open     empty white CIRCLE (never a checkbox — the affordance is the
+ *            button, not the indicator)
+ *   done     green fill + white check, with the server stamp beside it
+ *   skipped  light grey + a skip mark, NEVER a check — a declined step must not
+ *            be readable as a performed one (these feed letters)
+ *
+ * Every step's action is a button, or input(s) plus a confirming button.
+ */
+function GuideStepCard({
+  step,
+  busy,
+  failed,
+  draft,
+  onDraft,
+  onAct,
+  onSkip,
+  onUndoSkip,
+}: {
+  step: Extract<RailStepModel, { kind: "guide-step" }>;
+  busy: boolean;
+  /** The last write for this step FAILED. Rendered — never swallowed (S300). */
+  failed: boolean;
+  draft: string | undefined;
+  onDraft: (v: string) => void;
+  onAct: (value: string | null) => void;
+  onSkip: () => void;
+  onUndoSkip: () => void;
+}) {
+  const value = draft ?? step.value ?? "";
+
+  // NO inner indicator (Andrew, S301). Each of these steps carries exactly ONE
+  // action, so the step's own NUMBER is the indicator — it turns green on
+  // completion and grey on skip. A second circle inside the card would be a
+  // sub-step marker for a step that has no sub-steps. Inner circles come back
+  // only if a step ever holds several actions that resolve independently.
+  return (
+    <div className="rounded-xl border border-gray-200 bg-white px-4 py-3.5">
+      <div className="min-w-0 flex-1">
+        <div className="text-[13.5px] font-bold text-gray-900">{step.title}</div>
+        <div className="mt-0.5 text-[12.5px] leading-[1.55] text-gray-500">{step.body}</div>
+
+        {step.state === "skipped" ? (
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <span className="text-[11.5px] font-medium text-gray-400">
+              {COLLECTIONS_CHROME.skippedLabel}
+            </span>
+            <button
+              type="button"
+              onClick={onUndoSkip}
+              disabled={busy}
+              className="text-[11.5px] font-medium text-gray-500 underline underline-offset-2 hover:text-gray-700 disabled:opacity-60"
+            >
+              {COLLECTIONS_CHROME.undoSkipLabel}
+            </button>
+          </div>
+        ) : step.state === "done" ? (
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <span className="text-[11.5px] font-medium text-emerald-700">
+              {step.action.kind === "date" && step.value
+                ? `${step.value}`
+                : step.doneAt
+                  ? `Done ${step.doneAt}`
+                  : "Done"}
+            </span>
+            <button
+              type="button"
+              onClick={() => onAct(null)}
+              disabled={busy}
+              className="text-[11.5px] font-medium text-gray-500 underline underline-offset-2 hover:text-gray-700 disabled:opacity-60"
+            >
+              Undo
+            </button>
+          </div>
+        ) : (
+          <div className="mt-2 flex flex-wrap items-end gap-2">
+            {step.action.kind !== "attest" && (
+              <label className="flex flex-col gap-1">
+                <span className="text-[11px] font-medium text-gray-500">{step.action.label}</span>
+                <input
+                  type={step.action.kind === "date" ? "date" : "text"}
+                  value={value}
+                  placeholder={step.action.kind === "text" ? step.action.placeholder : undefined}
+                  onChange={(e) => onDraft(e.target.value)}
+                  className="w-56 rounded-lg border border-gray-200 px-3 py-[7px] text-[12.5px] text-gray-800 placeholder:text-gray-400 focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-100"
+                />
+              </label>
+            )}
+            {/* Skip sits on the button's centre line, not the input's baseline
+                (Andrew, S301) — they are peers, so they share a row. */}
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => onAct(step.action.kind === "attest" ? null : value)}
+                disabled={busy || (step.action.kind !== "attest" && !value.trim())}
+                className="inline-flex items-center rounded-xl bg-blue-600 px-3.5 py-[7px] text-[12.5px] font-semibold text-white transition-colors hover:bg-blue-700 disabled:opacity-60"
+              >
+                {/* "Working…" ONLY for the structural action (mark-as-sent).
+                    Round 3b put it on every button, which masked the optimistic
+                    flip it was supposed to complement — an attest that already
+                    turned green still read as pending for the whole refetch
+                    (Andrew, S301: "the undo is still pretty slow"). */}
+                {busy && step.derivedFromSend
+                  ? "Working…"
+                  : step.action.kind === "attest"
+                    ? step.action.label
+                    : step.action.saveLabel}
+              </button>
+              {step.skippable && (
+                <button
+                  type="button"
+                  onClick={onSkip}
+                  disabled={busy}
+                  className="text-[11.5px] font-medium text-gray-500 underline underline-offset-2 hover:text-gray-700 disabled:opacity-60"
+                >
+                  {COLLECTIONS_CHROME.skipLabel}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* A write that fails must SAY so. The S300 `acknowledge` bug 400'd on
+            every click and showed nothing, because the UI moved on regardless. */}
+        {failed && (
+          <p className="mt-2 text-[11.5px] font-medium text-red-600">
+            That didn&apos;t save — please try again.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function CaseRail({
   letters,
   insurerNameByDispute,
@@ -244,6 +400,9 @@ export function CaseRail({
   onUndoResult,
   onStartNextLetter,
   escalating,
+  onMarkSent,
+  onSaveFirstContactDate,
+  onRefetch,
 }: Omit<ComposeRailInput, "insurerNameByDispute" | "providerName" | "now"> & {
   insurerNameByDispute: Record<string, string>;
   providerName: string | null;
@@ -261,14 +420,29 @@ export function CaseRail({
   onStartNextLetter: (disputeId: string, targetLetterType: string) => void;
   /** Escalate in flight (ClaimDetail state) — disables the offer buttons. */
   escalating: boolean;
+  /** S301 — mark-as-sent / unsend for the collections "Mail it certified" step.
+   *  Routes to the EXISTING mark-sent + unsend paths (one writer). */
+  onMarkSent: (disputeId: string, sent: boolean) => Promise<boolean>;
+  /** S301 — the FDCPA §1692g anchor, through the existing deadline-inputs route. */
+  onSaveFirstContactDate: (disputeId: string, date: string | null) => Promise<void>;
+  /** Refetch the claim projection after a collections step writes. */
+  onRefetch: () => Promise<void>;
 }) {
   const router = useRouter();
   const [openSteps, setOpenSteps] = useState<Record<string, boolean>>({});
   const [whnOpen, setWhnOpen] = useState<Record<string, boolean>>({});
   const [doorLogged, setDoorLogged] = useState<Record<string, boolean>>({});
   const [doorBusy, setDoorBusy] = useState<Record<string, boolean>>({});
+  const [doorError, setDoorError] = useState<Record<string, boolean>>({});
   const [undoBusy, setUndoBusy] = useState<Record<string, boolean>>({});
   const [undoError, setUndoError] = useState<Record<string, boolean>>({});
+  // S301 — collections step state, keyed by stepId (claim-scoped, so one per bill).
+  const [guideBusy, setGuideBusy] = useState<Record<string, boolean>>({});
+  const [guideError, setGuideError] = useState<Record<string, boolean>>({});
+  const [guideDrafts, setGuideDrafts] = useState<Record<string, string>>({});
+  const [guideOverride, setGuideOverride] = useState<
+    Record<string, "open" | "done" | "skipped">
+  >({});
   // Pack-D filed attest (phase 1b) — optimistic with snap-back (S295 idiom);
   // server truth arrives with the next projection refetch. Note drafts are
   // controlled (GuidedPhoneSteps idiom) so the attest click can carry the
@@ -297,17 +471,23 @@ export function CaseRail({
   const logCollectionResumed = async (disputeId: string) => {
     if (doorBusy[disputeId] || doorLogged[disputeId]) return;
     setDoorBusy((m) => ({ ...m, [disputeId]: true }));
+    setDoorError((m) => ({ ...m, [disputeId]: false }));
+    // Optimistic + snap-back, matching every other action on this rail (Andrew,
+    // S301). It used to flip ONLY on success and swallow failure entirely — the
+    // S300 acknowledge bug exactly: a write that 400s and shows no symptom.
+    setDoorLogged((m) => ({ ...m, [disputeId]: true }));
     try {
       const token = await getAuthToken();
-      if (!token) return;
+      if (!token) throw new Error("no token");
       const res = await fetch(`/api/claims/${claimId}/case-events`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ kind: "collection_resumed_reported", disputeId }),
       });
-      if (res.ok) setDoorLogged((m) => ({ ...m, [disputeId]: true }));
+      if (!res.ok) throw new Error(`case-events ${res.status}`);
     } catch {
-      // fail-quiet — the door stays available
+      setDoorLogged((m) => ({ ...m, [disputeId]: false }));
+      setDoorError((m) => ({ ...m, [disputeId]: true }));
     } finally {
       setDoorBusy((m) => ({ ...m, [disputeId]: false }));
     }
@@ -341,6 +521,120 @@ export function CaseRail({
     if (!ok) setFiledOverride((m) => ({ ...m, [disputeId]: !next }));
   };
 
+  // ── Collections steps (S301) ──────────────────────────────────────────────
+  //
+  // Persist through the EXISTING claim-checklist route: its stamps are
+  // server-side, which is where each step's "done «date»" comes from, and being
+  // claim-scoped they stay with the bill across escalation.
+  //
+  // ⚠ These calls do NOT navigate, and they surface failure. The S300 lesson was
+  // an `acknowledge` write that 400'd on every click with no symptom, because
+  // the button navigated whether or not the write landed. Every action here
+  // awaits its result and reverts the row on failure.
+  const runGuideStep = async (
+    body: { stepId: string; checked?: boolean; skipped?: boolean; note?: string },
+  ): Promise<boolean> => {
+    try {
+      const token = await getAuthToken();
+      if (!token) return false;
+      const res = await fetch(`/api/claims/${claimId}/checklist`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify(body),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  };
+
+  // Optimistic override, snap-back on failure (the same S295 idiom filedOverride
+  // uses above). Without it every click waited on a FULL claim refetch — ~3s on
+  // this account — so the rail looked dead and Andrew clicked twice, which is
+  // exactly what the doubled ledger events recorded.
+  const applyOptimistic = (stepId: string, next: "open" | "done" | "skipped") =>
+    setGuideOverride((m) => ({ ...m, [stepId]: next }));
+  const clearOptimistic = (stepId: string) =>
+    setGuideOverride((m) => {
+      if (!(stepId in m)) return m;
+      const rest = { ...m };
+      delete rest[stepId];
+      return rest;
+    });
+
+  // Unsend from the rail — the EXISTING mark-sent route in its undo direction,
+  // so the snapshot retention, clock retraction, and letter_unsent event all
+  // happen on the one path that owns them. Structural (it changes which steps
+  // exist), so this shows a PENDING state rather than faking the new shape:
+  // inventing it client-side would be a second derivation of the rail.
+  const runGuideAction = async (
+    s: Extract<RailStepModel, { kind: "guide-step" }>,
+    value: string | null,
+  ) => {
+    setGuideBusy((m) => ({ ...m, [s.stepId]: true }));
+    setGuideError((m) => ({ ...m, [s.stepId]: false }));
+    try {
+      // "Mail it certified" IS mark-as-sent — one writer, so the immutable
+      // snapshot, the clock, the version stack, and the letter_sent event all
+      // happen exactly once, on the path that already owns them.
+      if (s.derivedFromSend) {
+        await onMarkSent(s.disputeId, s.state !== "done");
+        return;
+      }
+      if (s.doneSource === "date") {
+        // Undo on a date step CLEARS it (null); saving sets it. Both go through
+        // the existing deadline-inputs route — the engine keeps one input path.
+        // Optimistic like every other field flip: the stored date IS the answer,
+        // so the step can show its new state immediately and reconcile after.
+        const clearing = s.state === "done";
+        if (!clearing && !value) return;
+        applyOptimistic(s.stepId, clearing ? "open" : "done");
+        try {
+          await onSaveFirstContactDate(s.disputeId, clearing ? null : value);
+        } finally {
+          clearOptimistic(s.stepId);
+        }
+        return;
+      }
+      const nextDone = s.action.kind === "text" ? true : s.state !== "done";
+      applyOptimistic(s.stepId, nextDone ? "done" : "open");
+      const ok =
+        s.action.kind === "text"
+          ? await runGuideStep({ stepId: s.stepId, checked: true, note: value ?? "" })
+          : await runGuideStep({ stepId: s.stepId, checked: nextDone });
+      if (ok) {
+        await onRefetch();
+        clearOptimistic(s.stepId);
+      } else {
+        clearOptimistic(s.stepId);
+        setGuideError((m) => ({ ...m, [s.stepId]: true }));
+      }
+    } finally {
+      setGuideBusy((m) => ({ ...m, [s.stepId]: false }));
+    }
+  };
+
+  const runGuideSkip = async (
+    s: Extract<RailStepModel, { kind: "guide-step" }>,
+    skipped: boolean,
+  ) => {
+    setGuideBusy((m) => ({ ...m, [s.stepId]: true }));
+    setGuideError((m) => ({ ...m, [s.stepId]: false }));
+    try {
+      applyOptimistic(s.stepId, skipped ? "skipped" : "open");
+      const ok = await runGuideStep({ stepId: s.stepId, skipped });
+      if (ok) {
+        await onRefetch();
+        clearOptimistic(s.stepId);
+      } else {
+        clearOptimistic(s.stepId);
+        setGuideError((m) => ({ ...m, [s.stepId]: true }));
+      }
+    } finally {
+      setGuideBusy((m) => ({ ...m, [s.stepId]: false }));
+    }
+  };
+
   return (
     <>
       {steps.map((s, i) => {
@@ -361,6 +655,7 @@ export function CaseRail({
                   }
                   doorLogged={doorLogged[s.card.disputeId] ?? false}
                   doorBusy={doorBusy[s.card.disputeId] ?? false}
+                  doorFailed={doorError[s.card.disputeId] ?? false}
                 />
               </RailStep>
             );
@@ -389,7 +684,10 @@ export function CaseRail({
                         disabled={undoBusy[s.disputeId] ?? false}
                         className="border-none bg-transparent p-0 text-[12px] text-gray-400 underline underline-offset-2 transition-colors hover:text-gray-600 disabled:cursor-not-allowed disabled:opacity-60"
                       >
-                        {CASE_RAIL.quietUndoResult}
+                        {/* Label flips while in flight — disabled+dimmed alone
+                            still reads as "nothing happened" on a slow refetch
+                            (S301 E2E). Same treatment as unsend below. */}
+                        {undoBusy[s.disputeId] ? "Working…" : CASE_RAIL.quietUndoResult}
                       </button>
                       {(undoError[s.disputeId] ?? false) && (
                         <span className="text-[11.5px] text-red-600">
@@ -516,6 +814,22 @@ export function CaseRail({
                             </svg>
                           )}
                         </button>
+                        {/* S301 (Andrew E2E) — the attest WAS already a toggle,
+                            but once filed it reads as a status pill, so nobody
+                            discovers that clicking it again un-files. Same
+                            explicit Undo the collections steps carry, so every
+                            attestation on this rail reverses the same way. */}
+                        {filedNow && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void toggleFiled(s.move.disputeId, false, attestNoteValue.trim())
+                            }
+                            className="text-[11.5px] font-medium text-gray-500 underline underline-offset-2 hover:text-gray-700"
+                          >
+                            {COLLECTIONS_CHROME.undoSkipLabel}
+                          </button>
+                        )}
                       </div>
                     </div>
                     <div className="mt-2.5 text-[11.5px] text-gray-400">{s.move.regulator.foot}</div>
@@ -543,13 +857,23 @@ export function CaseRail({
               >
                 {(openSteps[s.key] ?? false) && (
                   <div className="rounded-xl border border-gray-200 bg-white px-4 py-3.5">
-                    <button
-                      type="button"
-                      onClick={() => goToLetter(s.disputeId)}
-                      className="inline-flex items-center rounded-lg border border-gray-200 bg-white px-4 py-2 text-[13.5px] font-semibold text-gray-700 transition-colors hover:bg-gray-50"
-                    >
-                      {s.openLetterLabel}
-                    </button>
+                    <div className="flex flex-wrap items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => goToLetter(s.disputeId)}
+                        className="inline-flex items-center rounded-lg border border-gray-200 bg-white px-4 py-2 text-[13.5px] font-semibold text-gray-700 transition-colors hover:bg-gray-50"
+                      >
+                        {s.openLetterLabel}
+                      </button>
+                      {/* S301 — unsend on the CASE surface, the SAME component
+                          the letter page renders, so the two can never describe
+                          the act differently. */}
+                      <UnsendControl
+                        loggedOutcomeLabel={s.unsend.loggedOutcomeLabel}
+                        loggedOutcomeDateLabel={s.unsend.loggedOutcomeDateLabel}
+                        onUnsend={() => onMarkSent(s.disputeId, false)}
+                      />
+                    </div>
                   </div>
                 )}
               </RailStep>
@@ -566,6 +890,33 @@ export function CaseRail({
                     {s.openLetterLabel}
                   </button>
                 </div>
+              </RailStep>
+            );
+          case "guide-step":
+            return (
+              <RailStep
+                key={s.key}
+                dataLetter={railStepDisputeId(s)}
+                n={s.badge}
+                title={s.title}
+                last={last}
+                done={(guideOverride[s.stepId] ?? s.state) === "done"}
+                skipped={(guideOverride[s.stepId] ?? s.state) === "skipped"}
+              >
+                <GuideStepCard
+                  step={
+                    guideOverride[s.stepId]
+                      ? { ...s, state: guideOverride[s.stepId] }
+                      : s
+                  }
+                  busy={guideBusy[s.stepId] === true}
+                  failed={guideError[s.stepId] === true}
+                  draft={guideDrafts[s.stepId]}
+                  onDraft={(v) => setGuideDrafts((d) => ({ ...d, [s.stepId]: v }))}
+                  onAct={(value) => void runGuideAction(s, value)}
+                  onSkip={() => void runGuideSkip(s, true)}
+                  onUndoSkip={() => void runGuideSkip(s, false)}
+                />
               </RailStep>
             );
         }

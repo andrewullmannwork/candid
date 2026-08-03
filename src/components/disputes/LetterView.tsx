@@ -19,16 +19,20 @@
  * insurer letters the pinned plan's insurer + appeals address — never
  * claim/track defaults, never a synthesized "Reprocess the claim" line.
  *
- * §0.9b sequencing guard: the unlock affordance renders ONLY while the
- * letter is stage `awaiting` (no outcome logged) — an unsend can never
- * orphan a logged response. The version stack labels unsent snapshots
- * "Marked sent «date», then unsent — never mailed" and never renders them
- * as mailed letters.
+ * §0.9b's invariant — an unsend can never orphan a logged response — is upheld
+ * by the WRITE, not by hiding the affordance (S301). Unsend is always offered;
+ * when a response exists it is confirmed away, and the route clears the send and
+ * the outcome in a single row patch. Withholding the button instead made a
+ * denied letter read as a dead end, and left this surface disagreeing with the
+ * rail about whether unsend was possible at all — hence the shared
+ * UnsendControl. The version stack still labels unsent snapshots "Marked sent
+ * «date», then unsent — never mailed" and never renders them as mailed letters.
  */
 
 import { useRouter } from "next/navigation";
 import { LETTER_TYPE_LABELS } from "@/lib/disputes/letter-type";
 import { fmtRailDate } from "@/lib/case/rail-steps";
+import { UnsendControl } from "@/components/disputes/UnsendControl";
 import type { DisputeLetterType } from "@/lib/billing/types";
 
 export interface LetterViewProps {
@@ -63,11 +67,15 @@ export interface LetterViewProps {
   }>;
   /** Present while stage `awaiting` — drives the pointer card's deadline line. */
   waitingDueLabel: string | null;
-  /** §0.9b guard — true ONLY at stage `awaiting` (no outcome logged). */
-  canUnlock: boolean;
+  /**
+   * S301 — the logged response, when there is one. Drives the unsend confirm.
+   * Replaces `canUnlock`: unsend is no longer withheld, it is confirmed.
+   */
+  loggedOutcomeLabel: string | null;
+  loggedOutcomeDateLabel: string | null;
   onDownload: () => void;
-  onDraftUpdated: () => void;
-  onUnlock: () => void;
+  /** Performs the unsend; resolves false on failure. */
+  onUnlock: () => Promise<boolean>;
 }
 
 function letterLabel(letterType: string): string {
@@ -230,23 +238,35 @@ export function LetterView(p: LetterViewProps) {
 
       <hr className="my-4 border-gray-200" />
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-3">
-          <button
-            type="button"
-            onClick={p.onDraftUpdated}
-            className="inline-flex items-center rounded-lg border border-gray-200 bg-white px-4 py-2 text-[13.5px] font-semibold text-gray-700 transition-colors hover:bg-gray-50"
-          >
-            Draft an updated letter
-          </button>
-          {p.canUnlock && (
-            <button
-              type="button"
-              onClick={p.onUnlock}
-              className="border-none bg-transparent p-0 text-[12px] text-gray-400 underline underline-offset-2 transition-colors hover:text-gray-600"
-            >
-              I haven&apos;t actually sent this — unlock and edit
-            </button>
-          )}
+        {/* S301 — "Draft an updated letter" REMOVED from the sent view.
+            It could never work: /redraft rewrites `letter_content`, while the
+            GET serves the immutable `sent_letter` for as long as `sent_at` is
+            set (S74.5 chain-of-custody). The write landed and no code path
+            could ever display it. Drafting alongside a genuinely-mailed letter
+            is §0.9 rule-4 Case 2, which is specified but unbuilt — so the
+            honest affordance is unsend-then-redraft, and the hint says so
+            INCLUDING the consequence (Andrew, S301: unsending restarts the
+            response clock, so the user must know before they choose it).
+
+            Where a response is already logged, §0.9b withholds unsend too —
+            correctly, so it can never orphan an outcome — and the real forward
+            path is the escalation the rail offers. Nothing renders here then. */}
+        {/* S301 — the SAME control the rail renders. Unsend is now ALWAYS
+            offered: a logged response is confirmed away rather than blocking
+            the action, and the route clears both in one atomic patch. Two
+            implementations of one act is how these surfaces ended up
+            disagreeing about whether unsend was even possible. */}
+        <div className="flex flex-col gap-1">
+          <UnsendControl
+            loggedOutcomeLabel={p.loggedOutcomeLabel}
+            loggedOutcomeDateLabel={p.loggedOutcomeDateLabel}
+            withEditLabel
+            onUnsend={p.onUnlock}
+          />
+          <span className="text-[11.5px] text-gray-400">
+            Need to send an updated letter? Unlock it first — that reopens it for editing and
+            restarts their response clock.
+          </span>
         </div>
         <button
           type="button"

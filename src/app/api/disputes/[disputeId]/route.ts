@@ -16,7 +16,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { userScoped, selectOwnedChildren } from "@/lib/security/user-scoped";
-import { resolvePlanContext, type InsurerAddressOverride } from "@/lib/disputes/plan-context";
+import {
+  resolvePlanContext,
+  resolveCollectorContact,
+  type InsurerAddressOverride,
+} from "@/lib/disputes/plan-context";
 import { resolveEvidence } from "@/lib/disputes/evidence-resolver";
 import {
   readUserPatientPaidOverride,
@@ -717,6 +721,10 @@ export async function GET(
       config: strengthConfig,
       patientIdentityResolved: !patientNameMismatch,
       recipientKind: letterRecipientKind(dispute.dispute_type),
+      // S301 — without this the floor keeps the legacy mapping, where
+      // `collector` falls to the both-addresses branch and a debt-validation
+      // letter stays "Not ready to send" for two addresses it never prints.
+      letterRequirementsOn: await isFeatureEnabled("letter_requirements_v1"),
     });
   } catch (err) {
     console.error("[disputes/[disputeId]] strength computation failed (non-fatal):", err);
@@ -824,6 +832,21 @@ export async function GET(
           missingForYear: planContext.missingForYear,
           fallbackPlan: planContext.fallbackPlan,
           providerContact: planContext.providerContact,
+          // S301 — the claim-scoped collector knowledge layer. This payload picks
+          // fields EXPLICITLY, so a new PlanContext field is invisible to the
+          // client until it is named here; CaseNeedsPanel's collections rows and
+          // the collector edit modal's prefill both read it.
+          //
+          // ⚠ FALLS BACK to the dispute's own collector. Cases created before the
+          // knowledge layer existed carry the agency only on the dispute row
+          // (escalate wrote it there), so a claim-only read showed an EMPTY name
+          // in the edit modal for a collector we plainly knew — Andrew hit exactly
+          // that on Ballard. Resolved server-side, once, so the panel and the
+          // modal cannot disagree about what is on file.
+          collectorContact: resolveCollectorContact(
+            planContext.collectorContact,
+            dispute.metadata as Record<string, unknown> | null,
+          ),
           // S110 Chunk C — surface archive auto-lookup result so PlanSearchModal
           // can highlight it as a best-match suggestion. S111 D1: this is a UI
           // hint only — never drives letter citations (those flow through

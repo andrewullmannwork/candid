@@ -11,9 +11,11 @@ import { InlineSubscribePanel } from "@/components/billing/InlineSubscribePanel"
 import { downloadCaseFile } from "@/lib/casefile";
 import { disputeUrlForResult } from "@/lib/disputes/url";
 import { letterRecipientKind } from "@/lib/disputes";
+import { unsendPayload } from "@/lib/disputes/outcome-actions";
 import { LETTER_TYPE_LABELS, parseLetterDate } from "@/lib/disputes/letter-type";
 import { LetterView } from "@/components/disputes/LetterView";
 import { fmtRailDate } from "@/lib/case/rail-steps";
+import { OUTCOME_LABELS } from "@/lib/disputes/outcome-taxonomy";
 import type { ProjectedLetterStep } from "@/lib/case/timeline-projector";
 import { isTerminalRung, suggestDoors } from "@/lib/guides/pack-registry";
 import { DisputeLetterHero } from "@/components/disputes/DisputeLetterHero";
@@ -333,6 +335,9 @@ function DisputesContent() {
   const [suggestedNextStep, setSuggestedNextStep] = useState<NextStepSuggestion | null>(null);
   // Zone-3 (S266) — ladder-advance capture modals + in-flight guard.
   const [collectorModalOpen, setCollectorModalOpen] = useState(false);
+  // S301 — post-creation collector edit (same modal, edit mode).
+  const [collectorEditOpen, setCollectorEditOpen] = useState(false);
+  const [savingCollector, setSavingCollector] = useState(false);
   const [exhaustionModalOpen, setExhaustionModalOpen] = useState(false);
   const [escalating, setEscalating] = useState(false);
   // Bugbash Item 3 — "Why {band}?" evidence-strength explanation modal.
@@ -363,6 +368,8 @@ function DisputesContent() {
   // Guided Steps v1 (S297) — spine packs C/D gate + per-row notes
   // (dispute.metadata.checklistNotes, hydrated from the GET).
   const { enabled: guidedStepsOn } = useFeatureFlag("guided_steps_v1");
+  // S301 — each letter asks only for what it needs (CaseNeedsPanel row set).
+  const { enabled: letterRequirementsOn } = useFeatureFlag("letter_requirements_v1");
   const [checklistNotes, setChecklistNotes] = useState<Record<string, string>>({});
   // Dispute Letters v2 (Zone-2) — recovery estimate + deadline surface hydrated from the GET.
   const [amountDisputed, setAmountDisputed] = useState<number | null>(null);
@@ -1097,8 +1104,8 @@ function DisputesContent() {
   };
 
   // Zone-3 (S266) — undo (clicked in error). Optimistic + background reconcile.
-  const handleUndoSent = async () => {
-    if (!user || !disputeId || !alreadySent) return;
+  const handleUndoSent = async (): Promise<boolean> => {
+    if (!user || !disputeId || !alreadySent) return false;
     const prevStatus = disputeStatus;
     mutationGenRef.current += 1;
     setDisputeStatus("dispute_letter_drafted");
@@ -1108,14 +1115,16 @@ function DisputesContent() {
       const res = await fetch(`/api/disputes/outcome`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ disputeId, status: "dispute_letter_drafted", clearSentAt: true, clearOutcomeDetail: true }),
+        body: JSON.stringify(unsendPayload(disputeId)),
       });
       if (!res.ok) throw new Error("undo failed");
       void fetchDispute(disputeId);
+      return true;
     } catch {
       setDisputeStatus(prevStatus);
       setMarkSentToast("Couldn't undo — please try again.");
       setTimeout(() => setMarkSentToast(null), 6000);
+      return false;
     }
   };
 
@@ -1252,6 +1261,60 @@ function DisputesContent() {
       scheduleReconcile();
     },
     [user, disputeId, scheduleReconcile],
+  );
+
+  // S301 — save the collector's details from the edit modal.
+  //
+  // TWO writes, deliberately, because the two facts have different owners:
+  //   collector-contact  → claims.metadata.collector — the KNOWLEDGE layer, so
+  //                        the agency cascades to every later letter on this bill
+  //   deadline-inputs    → the dispute's first-contact date, which is the FDCPA
+  //                        §1692g anchor the deadline engine reads. Reuses the
+  //                        EXISTING route rather than teaching a second endpoint
+  //                        about deadlines.
+  // The date write is skipped when unchanged so a no-op edit can't re-anchor a
+  // running window.
+  const handleSaveCollectorDetails = useCallback(
+    async (input: {
+      collector: {
+        name: string;
+        address: string | null;
+        originalCreditor: string | null;
+        accountNumber: string | null;
+      };
+      collectorFirstContactDate: string | null;
+    }) => {
+      if (!user || !disputeId) return;
+      setSavingCollector(true);
+      try {
+        const token = await user.firebaseUser.getIdToken();
+        const res = await fetch(`/api/disputes/${disputeId}/collector-contact`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify(input.collector),
+        });
+        if (!res.ok) throw new Error("Failed to save collector details");
+        if (input.collectorFirstContactDate !== deadlineInputs.collectorFirstContactDate) {
+          await handleSaveDeadlineDate(
+            "collectorFirstContactDate",
+            input.collectorFirstContactDate,
+          );
+        }
+        setCollectorEditOpen(false);
+        scheduleReconcile();
+      } catch (err) {
+        console.error("[disputes] collector details save failed:", err);
+      } finally {
+        setSavingCollector(false);
+      }
+    },
+    [
+      user,
+      disputeId,
+      deadlineInputs.collectorFirstContactDate,
+      handleSaveDeadlineDate,
+      scheduleReconcile,
+    ],
   );
 
   // ── S292 (#8) — batched/optimistic service-cost saves ────────────────────────
@@ -2153,6 +2216,11 @@ function DisputesContent() {
         }
       }}
       onSaveDeadlineDate={handleSaveDeadlineDate}
+      // S301 — the row set comes from letterNeeds when this is ON.
+      letterRequirementsOn={letterRequirementsOn}
+      collectorAddressOnFile={!!planContext?.collectorContact?.address}
+      accountNumberOnFile={!!planContext?.collectorContact?.accountNumber}
+      onAddCollectorDetails={() => setCollectorEditOpen(true)}
     />
   );
 
@@ -2325,6 +2393,11 @@ function DisputesContent() {
       status={disputeStatus}
       outcomeLine={viewedOutcomeLine}
       recipientKind={letterRecipientKind(letter.letterType)}
+      // S301 — the spine's mailing-address row is three-way under the flag; a
+      // collector letter asked for the PROVIDER's address before this.
+      letterRequirementsOn={letterRequirementsOn}
+      collectorAddressOnFile={!!planContext?.collectorContact?.address}
+      onAddCollectorDetails={() => setCollectorEditOpen(true)}
       providerAddressOnFile={zone1ProviderAddressOnFile}
       onAddProviderAddress={() => setProviderAddressOpen(true)}
       insurerAddressOnFile={zone1InsurerAddressOnFile}
@@ -2438,12 +2511,20 @@ function DisputesContent() {
       // Guided Steps v1 (S297) — Pack C on the collections track; Pack D at
       // the ladder's terminal rung. Both null when the flag is OFF.
       guidedPackC={
-        // S299 2a: in one-letter mode the packs are case furniture — Pack C's
-        // relocation to the rail is the next unit (Andrew's held critique).
+        // S301 — RELOCATED to the claim rail. This mount survives only for the
+        // rail-OFF world (`case_rail_v1` absent, which is PROD until the flip);
+        // with the rail ON it was ALREADY page-nulled by `!letterViewOn`, so the
+        // guard-rail rendered nowhere at all. It retires with UnifiedTodo in the
+        // phase-3 remainder.
+        //
+        // ⚠ The comment below is WRONG and was the S301 finding: the collector
+        // name IS persisted — escalate writes `metadata.collector` and the GET
+        // serves it. Corrected here rather than left to mislead again; the rail
+        // names the agency in its header.
         !letterViewOn && guidedStepsOn && letterRecipientKind(letter.letterType) === "collector"
           ? {
-              // Collector NAME is never persisted (generate consumes it into
-              // the letter only) — the chip renders date-only, honestly.
+              // Legacy: the pre-S301 pack rendered a date-only chip. Kept as-is
+              // because this mount is scheduled for demolition, not investment.
               collectorName: null,
               firstContactDateLabel: deadlineInputs.collectorFirstContactDate
                 ? formatFiledDate(deadlineInputs.collectorFirstContactDate)
@@ -2523,10 +2604,16 @@ function DisputesContent() {
               ? fmtRailDate(entry.responseDueDate)
               : null
           }
-          canUnlock={entry?.stage === "awaiting"}
+          // S301 — unsend is confirmed, not withheld. The facts drive the
+          // confirm; the route clears the response in the same patch.
+          loggedOutcomeLabel={
+            entry?.outcome ? OUTCOME_LABELS[entry.outcome.detail] : null
+          }
+          loggedOutcomeDateLabel={
+            entry?.outcome?.loggedAt ? fmtRailDate(entry.outcome.loggedAt) : null
+          }
           onDownload={handleDownload}
-          onDraftUpdated={() => void handleRedraft()}
-          onUnlock={() => void handleUndoSent()}
+          onUnlock={() => handleUndoSent()}
         />
       </div>
     );
@@ -2902,6 +2989,26 @@ function DisputesContent() {
             collector: input.collector,
             collectorFirstContactDate: input.collectorFirstContactDate,
           });
+        }}
+      />
+      {/* S301 — the SAME modal in edit mode: the post-creation collector path
+          that never existed (banked defect #2). Writes the CLAIM-scoped
+          knowledge layer, so the values cascade to every later letter on this
+          bill and never rewrite a letter already mailed. */}
+      <CollectorModal
+        open={collectorEditOpen}
+        mode="edit"
+        submitting={savingCollector}
+        initial={{
+          name: planContext?.collectorContact?.name ?? undefined,
+          address: planContext?.collectorContact?.address ?? undefined,
+          originalCreditor: planContext?.collectorContact?.originalCreditor ?? undefined,
+          accountNumber: planContext?.collectorContact?.accountNumber ?? undefined,
+          firstContactDate: deadlineInputs.collectorFirstContactDate ?? undefined,
+        }}
+        onCancel={() => setCollectorEditOpen(false)}
+        onSubmit={(input) => {
+          void handleSaveCollectorDetails(input);
         }}
       />
       <ExhaustionAttestModal
