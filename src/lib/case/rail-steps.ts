@@ -151,12 +151,20 @@ export type RailStepModel =
       disputeId: string;
       openLetterLabel: string;
       /**
-       * S301 — unsend, on the CASE surface. `available` mirrors §0.9b exactly
-       * (stage `awaiting` = nothing logged against it yet); when it is false the
-       * `blockedReason` names the prerequisite instead of the affordance simply
-       * disappearing, which is what made a denied letter read as a dead end.
+       * S301 — unsend, on the CASE surface. ALWAYS offered (Andrew): blocking it
+       * behind "undo the result first" made a denied letter read as a dead end,
+       * and the server clears both in ONE atomic patch anyway, so there is no
+       * partial state to protect against.
+       *
+       * When a response is logged, the card confirms first — carrying the FACTS
+       * (what was logged, when) so the copy can name them. §0.9b's invariant is
+       * preserved by the route, not by hiding the button: an unsend can still
+       * never leave an orphaned response, because the same patch clears it.
        */
-      unsend: { available: boolean; blockedReason: string | null };
+      unsend: {
+        loggedOutcomeLabel: string | null;
+        loggedOutcomeDateLabel: string | null;
+      };
     }
   | {
       kind: "send-draft";
@@ -517,13 +525,12 @@ export function composeRailSteps(input: ComposeRailInput): RailStepModel[] {
                 : CASE_RAIL.sendReceiptGeneric(letterLabel(l.letterType), dateLabel, l.mailedCertified),
             disputeId: l.disputeId,
             openLetterLabel: CASE_RAIL.ctaOpenLetter,
-            unsend:
-              l.stage === "awaiting"
-                ? { available: true, blockedReason: null }
-                : {
-                    available: false,
-                    blockedReason: CASE_RAIL.unsendBlocked(CASE_RAIL.quietUndoResult),
-                  },
+            unsend: {
+              loggedOutcomeLabel: l.outcome ? OUTCOME_LABELS[l.outcome.detail] : null,
+              loggedOutcomeDateLabel: l.outcome?.loggedAt
+                ? fmtRailDate(l.outcome.loggedAt)
+                : null,
+            },
           },
         });
       }

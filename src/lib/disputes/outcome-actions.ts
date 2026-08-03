@@ -64,3 +64,30 @@ export function unsendPayload(disputeId: string): OutcomeActionPayload {
 export function undoResultPayload(disputeId: string): OutcomeActionPayload {
   return { disputeId, status: "filed", clearOutcomeDetail: true };
 }
+
+// ── Unsend copy (S301, Andrew-approved verbatim) ────────────────────────────
+//
+// Lives HERE, not in CASE_RAIL, because both the claim rail and the letter page
+// render it and this module already owns what unsend does. Splitting the words
+// from the operation is how the two surfaces end up describing the same act
+// differently.
+
+export const UNSEND_COPY = {
+  /** The quiet affordance, on both surfaces. */
+  action: "I haven't actually sent this",
+  /** Letter-page variant, which also reopens the letter for editing. */
+  actionWithEdit: "I haven't actually sent this — unlock and edit",
+  confirmTitle: "You logged a response on this letter",
+  /**
+   * Names WHAT disappears and WHY — a response to a letter that was never sent
+   * cannot stand. The earlier design blocked unsend and only named the
+   * prerequisite, which made a denied letter read as a dead end.
+   */
+  confirmBody: (outcomeLabel: string, loggedDateLabel: string | null) =>
+    `You reported ${outcomeLabel}${loggedDateLabel ? ` on ${loggedDateLabel}` : ""}. ` +
+    `If it was never sent, that response can't stand either — unsending clears both.`,
+  /** Names the user's actual intent, not the prerequisite. */
+  confirm: "Unsend and clear the response",
+  /** Says what happens if they decline, rather than "Never mind". */
+  cancel: "Keep it as sent",
+} as const;

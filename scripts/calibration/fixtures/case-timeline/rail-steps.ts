@@ -34,6 +34,7 @@ import {
 import { CASE_RAIL } from "../../../../src/lib/guides/pack-registry";
 import {
   OUTCOME_ROUTE_KEYS,
+  UNSEND_COPY,
   markSentPayload,
   undoResultPayload,
   unsendPayload,
@@ -742,15 +743,16 @@ const compose = (
     aSteps.map((s) => s.kind),
   );
 
-  // (g2) Unsend on the rail (S301). §0.9b mirrored exactly: available only while
-  // nothing is logged against the letter; otherwise the reason NAMES the action
-  // that unblocks it rather than the affordance vanishing.
+  // (g2) Unsend on the rail (S301). ALWAYS offered — the earlier design blocked
+  // it behind "undo the result first", which made a denied letter read as a dead
+  // end. The model instead carries the FACTS a confirm needs, and the route
+  // clears the response in the SAME patch, so §0.9b's invariant (never orphan an
+  // outcome) is upheld by the write rather than by hiding the button.
   {
     const awaiting = compose([dv], null, {}, {}).steps.find((x) => x.kind === "send-receipt") as {
-      unsend: { available: boolean; blockedReason: string | null };
+      unsend: { loggedOutcomeLabel: string | null; loggedOutcomeDateLabel: string | null };
     };
-    check("unsend · available while awaiting", awaiting.unsend.available === true);
-    check("unsend · no blocked reason when available", awaiting.unsend.blockedReason === null);
+    check("unsend · no logged outcome → no confirm facts", awaiting.unsend.loggedOutcomeLabel === null);
 
     const answered = mkDispute({
       dispute_type: "debt_validation",
@@ -763,20 +765,28 @@ const compose = (
         outcomeReportedAt: iso(-1),
       },
     });
-    const blocked = compose([answered], null, {}, {}).steps.find(
+    const withOutcome = compose([answered], null, {}, {}).steps.find(
       (x) => x.kind === "send-receipt",
-    ) as { unsend: { available: boolean; blockedReason: string | null } };
-    check("unsend · withheld once a response is logged", blocked.unsend.available === false);
+    ) as { unsend: { loggedOutcomeLabel: string | null; loggedOutcomeDateLabel: string | null } };
     check(
-      "unsend · blocked reason names the unblocking action",
-      blocked.unsend.blockedReason === CASE_RAIL.unsendBlocked(CASE_RAIL.quietUndoResult),
-      blocked.unsend.blockedReason,
+      "unsend · logged outcome surfaces its LABEL for the confirm",
+      withOutcome.unsend.loggedOutcomeLabel === "Fully denied — no payment",
+      withOutcome.unsend.loggedOutcomeLabel,
     );
     check(
-      "unsend · blocked reason quotes the EXACT undo label the rail renders",
-      (blocked.unsend.blockedReason ?? "").includes(CASE_RAIL.quietUndoResult),
-      blocked.unsend.blockedReason,
+      "unsend · logged outcome surfaces its DATE for the confirm",
+      withOutcome.unsend.loggedOutcomeDateLabel === fmtRailDate(iso(-1)),
+      withOutcome.unsend.loggedOutcomeDateLabel,
     );
+    // The confirm names both facts — a body that dropped either would ask the
+    // user to approve clearing something it never identified.
+    const body = UNSEND_COPY.confirmBody(
+      withOutcome.unsend.loggedOutcomeLabel ?? "",
+      withOutcome.unsend.loggedOutcomeDateLabel,
+    );
+    check("unsend confirm · names the outcome", body.includes("Fully denied — no payment"), body);
+    check("unsend confirm · names the date", body.includes(fmtRailDate(iso(-1))), body);
+    check("unsend confirm · states that BOTH are cleared", body.includes("clears both"), body);
   }
 
   // (h) The CLIENT↔ROUTE vocabulary, both directions (the S300 lesson: the

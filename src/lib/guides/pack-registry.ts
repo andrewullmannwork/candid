@@ -818,17 +818,6 @@ export const CASE_RAIL = {
   doorCollectionResumedAck: "Logged — this is on your case record.",
   ctaOpenLetter: "Open this letter",
   quietUndoResult: "Undo this result",
-  // S301 (Andrew) — unsend belongs on the rail too, not only on the letter page.
-  // COPY PENDING ANDREW APPROVAL.
-  quietUnsend: "I haven't actually sent this",
-  /**
-   * §0.9b withholds unsend once a response is logged, so an unsend can never
-   * orphan an outcome. Before this the affordance simply VANISHED and the letter
-   * read as a dead end (Andrew, S301 E2E). It now states the prerequisite and
-   * names the action that satisfies it — which is on the very next step.
-   */
-  unsendBlocked: (undoLabel: string) =>
-    `To unsend this, "${undoLabel}" on the response below first.`,
 
   // Reminder foot — dated waits only; hidden once the deadline passes.
   remindFoot: (dateLabel: string): string =>

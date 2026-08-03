@@ -821,12 +821,12 @@ export function ClaimDetail({
   // outcome. The route enforces it; a refusal surfaces in the rail's error strip
   // instead of failing silently.
   const handleRailMarkSent = useCallback(
-    async (disputeId: string, sent: boolean): Promise<void> => {
+    async (disputeId: string, sent: boolean): Promise<boolean> => {
       try {
         const token = await getAuthToken();
         if (!token) {
           setRailActionError("Couldn't save that — please refresh and try again.");
-          return;
+          return false;
         }
         const res = await fetch(`/api/disputes/outcome`, {
           method: "POST",
@@ -839,17 +839,22 @@ export function ClaimDetail({
           body: JSON.stringify(sent ? markSentPayload(disputeId) : unsendPayload(disputeId)),
         });
         if (!res.ok) {
+          // S301 — the old message here BLAMED the §0.9b guard, which disguised
+          // a malformed request as correct behavior. Unsend now clears the
+          // outcome in the same patch, so there is no prerequisite to name.
           setRailActionError(
             sent
               ? "Couldn't mark this as sent — please try again."
-              : "Couldn't undo this — log or undo the response first.",
+              : "Couldn't unsend this — please try again.",
           );
-          return;
+          return false;
         }
         await refetchClaim();
         if (onClaimUpdated) void onClaimUpdated();
+        return true;
       } catch {
         setRailActionError("Couldn't save that — please try again.");
+        return false;
       }
     },
     [getAuthToken, refetchClaim, onClaimUpdated],

@@ -29,6 +29,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { ShowFullStepButton } from "@/components/claims/GuidedPhoneSteps";
+import { UnsendControl } from "@/components/disputes/UnsendControl";
 import { CASE_RAIL, COLLECTIONS_CHROME } from "@/lib/guides/pack-registry";
 import {
   composeRailSteps,
@@ -416,7 +417,7 @@ export function CaseRail({
   escalating: boolean;
   /** S301 — mark-as-sent / unsend for the collections "Mail it certified" step.
    *  Routes to the EXISTING mark-sent + unsend paths (one writer). */
-  onMarkSent: (disputeId: string, sent: boolean) => Promise<void>;
+  onMarkSent: (disputeId: string, sent: boolean) => Promise<boolean>;
   /** S301 — the FDCPA §1692g anchor, through the existing deadline-inputs route. */
   onSaveFirstContactDate: (disputeId: string, date: string | null) => Promise<void>;
   /** Refetch the claim projection after a collections step writes. */
@@ -438,6 +439,7 @@ export function CaseRail({
     Record<string, "open" | "done" | "skipped">
   >({});
   const [unsendBusy, setUnsendBusy] = useState<Record<string, boolean>>({});
+  const [unsendError, setUnsendError] = useState<Record<string, boolean>>({});
   // Pack-D filed attest (phase 1b) — optimistic with snap-back (S295 idiom);
   // server truth arrives with the next projection refetch. Note drafts are
   // controlled (GuidedPhoneSteps idiom) so the attest click can carry the
@@ -564,8 +566,10 @@ export function CaseRail({
   // inventing it client-side would be a second derivation of the rail.
   const handleUnsend = async (disputeId: string) => {
     setUnsendBusy((m) => ({ ...m, [disputeId]: true }));
+    setUnsendError((m) => ({ ...m, [disputeId]: false }));
     try {
-      await onMarkSent(disputeId, false);
+      const ok = await onMarkSent(disputeId, false);
+      if (!ok) setUnsendError((m) => ({ ...m, [disputeId]: true }));
     } finally {
       setUnsendBusy((m) => ({ ...m, [disputeId]: false }));
     }
@@ -865,26 +869,17 @@ export function CaseRail({
                       >
                         {s.openLetterLabel}
                       </button>
-                      {/* S301 — unsend on the CASE surface. Same route, same
-                          §0.9b guard as the letter page; the rail just makes it
-                          reachable where the user already is. */}
-                      {s.unsend.available && (
-                        <button
-                          type="button"
-                          onClick={() => void handleUnsend(s.disputeId)}
-                          disabled={unsendBusy[s.disputeId] === true}
-                          className="border-none bg-transparent p-0 text-[12px] text-gray-400 underline underline-offset-2 transition-colors hover:text-gray-600 disabled:opacity-60"
-                        >
-                          {unsendBusy[s.disputeId] ? "Working…" : CASE_RAIL.quietUnsend}
-                        </button>
-                      )}
+                      {/* S301 — unsend on the CASE surface, the SAME component
+                          the letter page renders, so the two can never describe
+                          the act differently. */}
+                      <UnsendControl
+                        loggedOutcomeLabel={s.unsend.loggedOutcomeLabel}
+                        loggedOutcomeDateLabel={s.unsend.loggedOutcomeDateLabel}
+                        busy={unsendBusy[s.disputeId] === true}
+                        failed={unsendError[s.disputeId] === true}
+                        onUnsend={() => void handleUnsend(s.disputeId)}
+                      />
                     </div>
-                    {/* Blocked → say WHY and name the action that unblocks it,
-                        rather than letting the affordance vanish (Andrew, S301:
-                        a denied letter read as a dead end). */}
-                    {!s.unsend.available && s.unsend.blockedReason && (
-                      <p className="mt-2 text-[11.5px] text-gray-400">{s.unsend.blockedReason}</p>
-                    )}
                   </div>
                 )}
               </RailStep>

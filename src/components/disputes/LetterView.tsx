@@ -29,6 +29,7 @@
 import { useRouter } from "next/navigation";
 import { LETTER_TYPE_LABELS } from "@/lib/disputes/letter-type";
 import { fmtRailDate } from "@/lib/case/rail-steps";
+import { UnsendControl } from "@/components/disputes/UnsendControl";
 import type { DisputeLetterType } from "@/lib/billing/types";
 
 export interface LetterViewProps {
@@ -63,8 +64,14 @@ export interface LetterViewProps {
   }>;
   /** Present while stage `awaiting` — drives the pointer card's deadline line. */
   waitingDueLabel: string | null;
-  /** §0.9b guard — true ONLY at stage `awaiting` (no outcome logged). */
-  canUnlock: boolean;
+  /**
+   * S301 — the logged response, when there is one. Drives the unsend confirm.
+   * Replaces `canUnlock`: unsend is no longer withheld, it is confirmed.
+   */
+  loggedOutcomeLabel: string | null;
+  loggedOutcomeDateLabel: string | null;
+  unsending?: boolean;
+  unsendFailed?: boolean;
   onDownload: () => void;
   onUnlock: () => void;
 }
@@ -242,23 +249,24 @@ export function LetterView(p: LetterViewProps) {
             Where a response is already logged, §0.9b withholds unsend too —
             correctly, so it can never orphan an outcome — and the real forward
             path is the escalation the rail offers. Nothing renders here then. */}
-        <div className="flex flex-wrap items-center gap-3">
-          {p.canUnlock && (
-            <div className="flex flex-col gap-1">
-              <button
-                type="button"
-                onClick={p.onUnlock}
-                className="self-start border-none bg-transparent p-0 text-[12px] text-gray-400 underline underline-offset-2 transition-colors hover:text-gray-600"
-              >
-                I haven&apos;t actually sent this — unlock and edit
-              </button>
-              {/* COPY PENDING ANDREW APPROVAL (S301) */}
-              <span className="text-[11.5px] text-gray-400">
-                Need to send an updated letter? Unlock it first — that reopens it for editing and
-                restarts their response clock.
-              </span>
-            </div>
-          )}
+        {/* S301 — the SAME control the rail renders. Unsend is now ALWAYS
+            offered: a logged response is confirmed away rather than blocking
+            the action, and the route clears both in one atomic patch. Two
+            implementations of one act is how these surfaces ended up
+            disagreeing about whether unsend was even possible. */}
+        <div className="flex flex-col gap-1">
+          <UnsendControl
+            loggedOutcomeLabel={p.loggedOutcomeLabel}
+            loggedOutcomeDateLabel={p.loggedOutcomeDateLabel}
+            busy={p.unsending === true}
+            failed={p.unsendFailed === true}
+            withEditLabel
+            onUnsend={p.onUnlock}
+          />
+          <span className="text-[11.5px] text-gray-400">
+            Need to send an updated letter? Unlock it first — that reopens it for editing and
+            restarts their response clock.
+          </span>
         </div>
         <button
           type="button"

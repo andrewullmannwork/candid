@@ -15,6 +15,7 @@ import { unsendPayload } from "@/lib/disputes/outcome-actions";
 import { LETTER_TYPE_LABELS, parseLetterDate } from "@/lib/disputes/letter-type";
 import { LetterView } from "@/components/disputes/LetterView";
 import { fmtRailDate } from "@/lib/case/rail-steps";
+import { OUTCOME_LABELS } from "@/lib/disputes/outcome-taxonomy";
 import type { ProjectedLetterStep } from "@/lib/case/timeline-projector";
 import { isTerminalRung, suggestDoors } from "@/lib/guides/pack-registry";
 import { DisputeLetterHero } from "@/components/disputes/DisputeLetterHero";
@@ -2601,7 +2602,14 @@ function DisputesContent() {
               ? fmtRailDate(entry.responseDueDate)
               : null
           }
-          canUnlock={entry?.stage === "awaiting"}
+          // S301 — unsend is confirmed, not withheld. The facts drive the
+          // confirm; the route clears the response in the same patch.
+          loggedOutcomeLabel={
+            entry?.outcome ? OUTCOME_LABELS[entry.outcome.detail] : null
+          }
+          loggedOutcomeDateLabel={
+            entry?.outcome?.loggedAt ? fmtRailDate(entry.outcome.loggedAt) : null
+          }
           onDownload={handleDownload}
           onUnlock={() => void handleUndoSent()}
         />
