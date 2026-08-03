@@ -18,6 +18,10 @@
  *    never prose with holes.
  *  - Step ids are stable and match the checklist routes' KEY_RE.
  */
+// Type-only — keeps this module runtime-dependency-free while making the S302
+// per-letter copy table EXHAUSTIVE: a new DisputeLetterType fails the compile
+// until someone writes its rail copy, instead of silently taking a fallback.
+import type { DisputeLetterType } from "@/lib/billing/types";
 
 /** Mirrors the checklist routes' key validation — ids here MUST pass it. */
 export const GUIDE_KEY_RE = /^[a-zA-Z0-9_.:-]{1,64}$/;
@@ -701,12 +705,98 @@ export const PHONE_OUTCOME = {
   resolvedChipPrefix: "Resolved by phone",
 } as const;
 
-/** Step 4b — the letter step of the S297 4a/4b split. Title is track-aware;
- *  sub carries the approved hand-off sentence (its directive prefix now lives
- *  in the title + question); subResolved is the yes-state watch-guidance. */
+/**
+ * ONE copy table per letter type (S302, phase 3) — replaces six scattered
+ * builders that each answered "what do we call this letter here":
+ * `sendTitleValidation` + `sendTitleGeneric` + `GUIDE_4B.titleInsurer/Provider`
+ * for titles, `sendReceiptValidation` + `sendReceiptGeneric` +
+ * `receipt4bInsurer` + `receipt4bProvider` for receipts.
+ *
+ * Three registers, because they genuinely differ:
+ *   band        the letter-group header, followed by " — «counterparty»"
+ *   receiptNoun the sent receipt's subject, followed by " sent to «counterparty»"
+ *   sendTitle   the send step's own title
+ *
+ * The generic builders could not survive the merge: `sendTitleGeneric`
+ * lowercased LETTER_TYPE_LABELS, so an appeal rendered "Send the appeal to
+ * insurer letter" the moment the primary letter stopped being special-cased.
+ *
+ * Exhaustive by type — a new DisputeLetterType fails the compile until it has
+ * copy, which is the point. Andrew-approved S302 (mock Panel 6 + the group
+ * header options); the four carried-verbatim strings are marked.
+ */
+export const LETTER_RAIL_COPY: Record<
+  DisputeLetterType,
+  { band: string; receiptNoun: string; sendTitle: string }
+> = {
+  // "Send the appeal" + "Appeal sent to …" carried VERBATIM from GUIDE_4B
+  // titleInsurer / CASE_RAIL.receipt4bInsurer.
+  insurance_appeal: { band: "Appeal", receiptNoun: "Appeal", sendTitle: "Send the appeal" },
+  // "Answer the collector" + "Debt-validation letter sent to …" carried
+  // VERBATIM from CASE_RAIL.sendTitleValidation / sendReceiptValidation.
+  debt_validation: {
+    band: "Debt validation",
+    receiptNoun: "Debt-validation letter",
+    sendTitle: "Answer the collector",
+  },
+  external_review: {
+    band: "External review",
+    receiptNoun: "External review request",
+    sendTitle: "Send the external review request",
+  },
+  final_notice: {
+    band: "Final notice",
+    receiptNoun: "Final notice",
+    sendTitle: "Send the final notice",
+  },
+  // The provider-track trio share one voice — "Send the dispute letter" +
+  // "Dispute letter sent to …" carried VERBATIM from GUIDE_4B titleProvider /
+  // CASE_RAIL.receipt4bProvider.
+  balance_billing: {
+    band: "Dispute letter",
+    receiptNoun: "Dispute letter",
+    sendTitle: "Send the dispute letter",
+  },
+  overcharge: {
+    band: "Dispute letter",
+    receiptNoun: "Dispute letter",
+    sendTitle: "Send the dispute letter",
+  },
+  duplicate_charge: {
+    band: "Dispute letter",
+    receiptNoun: "Dispute letter",
+    sendTitle: "Send the dispute letter",
+  },
+  itemized_request: {
+    band: "Itemized bill request",
+    receiptNoun: "Itemized bill request",
+    sendTitle: "Send the itemized bill request",
+  },
+  negotiation: {
+    band: "Self-pay negotiation",
+    receiptNoun: "Self-pay negotiation letter",
+    sendTitle: "Send the negotiation letter",
+  },
+};
+
+/** Unknown/legacy vocab that never resolved — the generic provider voice. */
+const LETTER_RAIL_COPY_FALLBACK = LETTER_RAIL_COPY.balance_billing;
+
+export function letterRailCopy(letterType: string): {
+  band: string;
+  receiptNoun: string;
+  sendTitle: string;
+} {
+  return LETTER_RAIL_COPY[letterType as DisputeLetterType] ?? LETTER_RAIL_COPY_FALLBACK;
+}
+
+/** Step 4b — the letter step of the S297 4a/4b split, which now renders ONLY
+ *  before the first letter exists (once it does, the letter's own send step is
+ *  the rail's — S302). Titles REFERENCE the copy table rather than restating
+ *  it, so the pre-draft step and the letter it creates cannot disagree. */
 export const GUIDE_4B = {
-  titleInsurer: "Send the appeal",
-  titleProvider: "Send the dispute letter",
+  titleInsurer: LETTER_RAIL_COPY.insurance_appeal.sendTitle,
+  titleProvider: LETTER_RAIL_COPY.balance_billing.sendTitle,
   sub: "It cites everything above, and what you logged here rides with your case.",
   subResolved: "Still here if the fix doesn't land — watch for the corrected bill or EOB.",
 } as const;
@@ -845,19 +935,36 @@ export const CASE_RAIL = {
   outcomeReceipt: (outcomeLabel: string, loggedLabel: string | null): string =>
     loggedLabel ? `${outcomeLabel} · logged ${loggedLabel}` : outcomeLabel,
 
-  // Extension send-steps.
-  sendTitleValidation: "Answer the collector",
-  sendTitleGeneric: (letterNoun: string): string => `Send the ${letterNoun}`,
-  sendReceiptValidation: (collector: string | null, dateLabel: string, certified: boolean): string =>
-    `Debt-validation letter sent${collector ? ` to ${collector}` : ""} · ${dateLabel}${certified ? " · certified mail" : ""}`,
-  sendReceiptGeneric: (letterLabel: string, dateLabel: string, certified: boolean): string =>
-    `${letterLabel} sent · ${dateLabel}${certified ? " · certified mail" : ""}`,
+  // Extension send-steps — ONE receipt for every letter (S302). The four
+  // predecessors differed only in which noun and which counterparty they
+  // hardcoded; both now come from LETTER_RAIL_COPY + the rail's single
+  // counterparty resolution, so a new letter type gets a correct receipt
+  // without a new builder.
+  sendReceipt: (receiptNoun: string, counterparty: string | null, dateLabel: string, certified: boolean): string =>
+    `${receiptNoun} sent${counterparty ? ` to ${counterparty}` : ""} · ${dateLabel}${certified ? " · certified mail" : ""}`,
 
-  // Step-4b receipt subs (the primary letter's send step, per guided track).
-  receipt4bInsurer: (insurer: string | null, dateLabel: string, certified: boolean): string =>
-    `Appeal sent${insurer ? ` to ${insurer}` : ""} · ${dateLabel}${certified ? " · certified mail" : ""}`,
-  receipt4bProvider: (provider: string | null, dateLabel: string, certified: boolean): string =>
-    `Dispute letter sent${provider ? ` to ${provider}` : ""} · ${dateLabel}${certified ? " · certified mail" : ""}`,
+  // ── Letter band (S302, mock option B) — the group header above each
+  // letter's steps. Names the letter once so the steps under it don't have to,
+  // and carries the per-letter status the rail could not show at a glance.
+  bandEyebrow: (position: number, total: number): string => `Letter ${position} of ${total}`,
+  /** `counterparty` is the rail's total resolution ("your plan" / "the
+   *  provider" when unnamed), so there is no unnamed branch to write. */
+  bandTitle: (band: string, counterparty: string): string => `${band} — ${counterparty}`,
+  bandStatusDraft: "Draft — not sent yet",
+  bandStatusWaiting: (dueLabel: string | null): string =>
+    dueLabel ? `Waiting on their response · due ${dueLabel}` : "Waiting on their response",
+  /** Outcome logged — the existing receipt grammar, minus the "logged" verb. */
+  bandStatusAnswered: (outcomeLabel: string, dateLabel: string | null): string =>
+    dateLabel ? `${outcomeLabel} · ${dateLabel}` : outcomeLabel,
+
+  // ── Resolved fold (S302; agenda §2.2 + mock Panel D). The headline is the
+  // closing letter's own outcome label, verbatim — only these meta fragments
+  // are new copy. §2.2's go-back principle: the collapse is never permanent.
+  foldLetterCount: (n: number): string => (n === 1 ? "1 letter" : `${n} letters`),
+  foldRecovered: (amount: number): string =>
+    `$${amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} recovered`,
+  foldExpand: "Show the full case",
+  foldCollapse: "Collapse the case",
 
   // ── Stage-8 "Your next move" (S299 phase 1b; mock Panel C, rulings 3/4/5) ──
   // Renders per letter at stage `next` (letter offer + regulator card) and at

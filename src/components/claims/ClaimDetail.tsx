@@ -22,15 +22,13 @@ import { AddPlanDetailsModal } from "@/components/claims/AddPlanDetailsModal";
 import type { CostShareAssumption, CostShareOverrides } from "@/lib/claims/recovery-math";
 import { useFeatureFlag } from "@/lib/config/use-feature-flag";
 import { GuidedPhoneSteps, ShowFullStepButton, derivePhonePackState, type GuideStepState, type PhonePackState } from "@/components/claims/GuidedPhoneSteps";
-import { CaseRail, RailStep } from "@/components/claims/CaseRail";
+import { CaseRail, CaseResolvedFold, RailStep } from "@/components/claims/CaseRail";
 import { OutcomeReportingModal } from "@/components/disputes/OutcomeReportingModal";
 import { CollectorModal, type CollectorSubmit } from "@/components/disputes/CollectorModal";
 import { ExhaustionAttestModal } from "@/components/disputes/ExhaustionAttestModal";
-import { railHasExtension, fmtRailDate } from "@/lib/case/rail-steps";
+import { railHasExtension, railCaseResolution, fmtRailDate } from "@/lib/case/rail-steps";
 import type { ProjectedLetterStep } from "@/lib/case/timeline-projector";
 import { letterRecipientKind } from "@/lib/disputes";
-import { UnsendControl } from "@/components/disputes/UnsendControl";
-import { OUTCOME_LABELS } from "@/lib/disputes/outcome-taxonomy";
 import {
   markSentPayload,
   undoResultPayload,
@@ -548,7 +546,9 @@ export function ClaimDetail({
   // S299 phase 1a — the extended rail's UI flag (the event spine is gated
   // separately by case_timeline_v1; see mig 222).
   const caseRailFlag = useFeatureFlag("case_rail_v1");
-  const [fourBFullOpen, setFourBFullOpen] = useState(false);
+  // S302 — resolved-case fold, expanded on demand (§2.2: no collapse in this
+  // product is ever permanent, and every expanded step stays interactive).
+  const [caseExpanded, setCaseExpanded] = useState(false);
   // S299 — the rail's inline actions (shared dispute-side modals; see the
   // CaseRail mount + the modal mounts below).
   const [railOutcomeDisputeId, setRailOutcomeDisputeId] = useState<string | null>(null);
@@ -1456,16 +1456,37 @@ export function ClaimDetail({
   // don't count — the letter has to actually exist.
   const hasDraftedDispute = data.disputes.some((d) => d.status !== "cancelled");
   // S299 phase 1a — the extended rail (projection attached by the GET only
-  // when case_rail_v1 is ON). The PRIMARY letter is the one 4b renders — its
-  // send step is never duplicated on the extension (rail-steps contract).
+  // when case_rail_v1 is ON).
+  //
+  // S302 — there is no PRIMARY letter any more. Once ANY letter exists the rail
+  // owns every letter's send step, rendered with one anatomy; 4b (and the
+  // flag-OFF "Recover the money" step) shrink to what they uniquely are — the
+  // affordance that CREATES the first letter — and stop rendering entirely once
+  // one exists. That also retires 4b's done-state bug rather than patching it:
+  // it was titled "Send the appeal" but keyed on `hasDraftedDispute`, so it went
+  // green when a DRAFT existed and stayed green through an unsend.
   const railTimeline = caseRailFlag.enabled ? (data.caseTimeline ?? null) : null;
-  const railPrimaryDisputeId =
-    railTimeline?.letters.find((l) => l.stage !== "none")?.disputeId ?? null;
-  const railPrimaryLetter =
-    railTimeline?.letters.find((l) => l.disputeId === railPrimaryDisputeId) ?? null;
-  const railExtends =
-    railTimeline != null && railHasExtension(railTimeline.letters, railPrimaryDisputeId);
-  const railPrimarySent = railExtends && railPrimaryLetter?.latestSendAt != null;
+  const railExtends = railTimeline != null && railHasExtension(railTimeline.letters);
+  // S302 — the resolved fold (agenda §2.2). Derived from the projection, never
+  // stored: "every letter reached a terminal outcome" is already answerable.
+  // Distinct from "the user closed the case", which is real server state and
+  // its own unit. The whole rail folds — prep steps included — because a
+  // finished case should read as one line, not thirteen.
+  //
+  // ⚠ Gated on `isFlagged` for the same reason the rail itself is (agenda §2.1:
+  // v1 gives the extended rail to flagged bills only, clean bills keep today's
+  // UI). Without it, a CLEAN bill that happens to carry a resolved letter — an
+  // itemized-bill request, say — would fold away its own line-items table,
+  // because the collapse wrapper spans the whole rail region.
+  const railResolution =
+    isFlagged && railTimeline != null
+      ? railCaseResolution({
+          letters: railTimeline.letters,
+          insurerNameByDispute: railTimeline.insurerNameByDispute,
+          providerName: providerName === "Unknown Provider" ? null : providerName,
+        })
+      : null;
+  const caseFolded = railResolution != null && !caseExpanded;
   // Stage-8 offer router (phase 1b): external_review needs the exhaustion
   // attestation (same modal + fail-closed gate as the dispute page);
   // final_notice goes direct with the prior letter's LOCAL send date
@@ -1649,15 +1670,14 @@ export function ClaimDetail({
   // greyed button) until the phone question concludes "Not yet"/skip — the
   // button STAYS clickable per the locked contract §3.6 (the pack never blocks
   // letter generation); muted=false emits today's classes byte-identically.
+  //
+  // S302 — the S299 primary-only filter is GONE with the caller that needed it.
+  // Both mount sites now render only while `!railExtends`, i.e. only while no
+  // letter exists, so the drafted-cards branch is reachable exclusively with the
+  // rail OFF — where the full list is the correct, byte-identical behaviour.
   const recoverBranchNode = (muted: boolean) =>
     data.disputes.length > 0 ? (
-      // S299 — when the extension rail owns the escalated letters, 4b lists
-      // only the primary letter's card (rail OFF → full list, byte-identical).
-      railExtends && railPrimaryDisputeId != null ? (
-        disputesListNodeFor(data.disputes.filter((d) => d.id === railPrimaryDisputeId))
-      ) : (
-        disputesListNode
-      )
+      disputesListNode
     ) : (
       <div className={`mb-4 flex flex-col gap-4 rounded-[18px] border ${muted ? "border-gray-200 bg-white" : "border-blue-200 bg-gradient-to-br from-blue-50 to-white"} px-6 py-5 sm:-ml-[43px] sm:flex-row sm:items-center sm:justify-between`}>
         <div className="max-w-[50ch] text-[13px] leading-[1.55] text-gray-600">
@@ -2021,6 +2041,20 @@ export function ClaimDetail({
         </div>
       )}
 
+      {/* S302 — the resolved fold, ABOVE the rail it collapses. */}
+      {railResolution && (
+        <CaseResolvedFold
+          resolution={railResolution}
+          expanded={caseExpanded}
+          onToggle={() => setCaseExpanded((v) => !v)}
+        />
+      )}
+      {/* `display:contents` when open, so the wrapper is layout-invisible and
+          the rail's spacing is byte-identical to before; `hidden` when folded.
+          HIDDEN, not unmounted — the same idiom 4a's body uses, so expanding
+          restores every step with its state (§2.2: expanded steps stay
+          interactive, and nothing here is a one-way collapse). */}
+      <div className={caseFolded ? "hidden" : "contents"}>
       {/* ── Surface 3 (clarity redesign): flagged bills use a numbered guided
           step rail. S291 (Andrew) re-ordered it to confirm-then-reveal —
           1 Verify our assumptions (Cost-Share rows) · 2 Verify the services
@@ -3362,7 +3396,10 @@ export function ClaimDetail({
           it by phone first" + 4b "Send the appeal / dispute letter" — the
           phone question concludes 4a (auto-collapse; yes carries the resolved
           date, skip goes amber) and 4b's panel activates white/grey → blue on
-          "Not yet"/skip. Flag OFF renders today's single step, byte-identical. */}
+          "Not yet"/skip. Flag OFF renders today's single step, byte-identical.
+          S302 — 4b renders ONLY while no letter exists. Once one does, the rail
+          owns its send step, so the a/b split has nothing left to split and the
+          phone step is simply step 4. */}
       {isFlagged && guidedCtx && (() => {
         const muted4b = !(
           guidedPack.outcome === "no" ||
@@ -3373,7 +3410,7 @@ export function ClaimDetail({
         return (
           <>
             <RailStep
-              n="4a"
+              n={railExtends ? "4" : "4a"}
               done={guidedPack.concluded}
               title={GUIDE_CHROME.packATitle}
               sub={GUIDE_CHROME.packAMeta}
@@ -3421,82 +3458,44 @@ export function ClaimDetail({
                 />
               </div>
             </RailStep>
-            <RailStep
-              n="4b"
-              done={hasDraftedDispute}
-              title={guidedTrack === "insurer" ? GUIDE_4B.titleInsurer : GUIDE_4B.titleProvider}
-              sub={
-                railPrimarySent && railPrimaryLetter ? (
-                  // S299 — the mock's collapsed-4b receipt (history grammar).
-                  <span className="text-[13px] font-semibold text-emerald-700">
-                    {guidedTrack === "insurer"
-                      ? CASE_RAIL.receipt4bInsurer(
-                          railTimeline?.insurerNameByDispute[railPrimaryLetter.disputeId] ?? null,
-                          fmtRailDate(railPrimaryLetter.latestSendAt!),
-                          railPrimaryLetter.mailedCertified,
-                        )
-                      : CASE_RAIL.receipt4bProvider(
-                          providerName === "Unknown Provider" ? null : providerName,
-                          fmtRailDate(railPrimaryLetter.latestSendAt!),
-                          railPrimaryLetter.mailedCertified,
-                        )}
-                  </span>
-                ) : guidedPack.outcome === "yes" ? (
-                  GUIDE_4B.subResolved
-                ) : (
-                  GUIDE_4B.sub
-                )
-              }
-              right={
-                railPrimarySent ? (
-                  <ShowFullStepButton
-                    open={fourBFullOpen}
-                    onToggle={() => setFourBFullOpen((v) => !v)}
-                  />
-                ) : undefined
-              }
-              last={!railExtends}
-            >
-              {/* Mounted-but-hidden while collapsed (the 4a idiom) — the
-                  drafted dispute cards keep their state across toggles. */}
-              <div className={railPrimarySent && !fourBFullOpen ? "hidden" : undefined}>
+            {/* 4b — the CREATE step, and only that. Everything it used to carry
+                about a letter that already exists (the send receipt, the
+                Show-full-step toggle, the bolted-on unsend, the drafted-cards
+                list, the done-state) now belongs to that letter's own rail
+                step, rendered identically to every other letter's. `done` is
+                gone rather than corrected: with no letter, there is nothing to
+                be done about. */}
+            {!railExtends && (
+              <RailStep
+                n="4b"
+                // KEPT, and inert by construction. `railExtends` is false only
+                // when the rail flag is OFF or no letter exists — and no letter
+                // means `hasDraftedDispute` is false — so this can evaluate true
+                // ONLY in the flag-OFF world, where it reproduces today's
+                // behaviour byte-for-byte. Deleting it would have been an
+                // un-flagged change to production. The bug it caused (green
+                // before anything was sent, still green after an unsend) dies
+                // structurally with the flip: flag ON, this step is gone the
+                // moment a letter exists, and the letter's own send step derives
+                // its state from the send record.
+                done={hasDraftedDispute}
+                title={guidedTrack === "insurer" ? GUIDE_4B.titleInsurer : GUIDE_4B.titleProvider}
+                sub={guidedPack.outcome === "yes" ? GUIDE_4B.subResolved : GUIDE_4B.sub}
+                last
+              >
                 {recoverBranchNode(muted4b)}
-              </div>
-              {/* S301 (Andrew) — unsend on the PRIMARY letter's step too. Its
-                  send step is 4b in the prep rail, never the extension rail
-                  (contributesSendStep excludes the primary), so without this the
-                  case surface offered unsend for every letter EXCEPT the main
-                  one — reachable only by opening the letter page. Same shared
-                  control, same atomic request: unsending here reopens the letter
-                  as a draft, which is exactly what clicking into it then shows. */}
-              {railPrimarySent && fourBFullOpen && railPrimaryLetter && (
-                <div className="mt-3">
-                  <UnsendControl
-                    loggedOutcomeLabel={
-                      railPrimaryLetter.outcome
-                        ? OUTCOME_LABELS[railPrimaryLetter.outcome.detail]
-                        : null
-                    }
-                    loggedOutcomeDateLabel={
-                      railPrimaryLetter.outcome?.loggedAt
-                        ? fmtRailDate(railPrimaryLetter.outcome.loggedAt)
-                        : null
-                    }
-                    onUnsend={() => handleRailMarkSent(railPrimaryLetter.disputeId, false)}
-                  />
-                </div>
-              )}
-            </RailStep>
+              </RailStep>
+            )}
           </>
         );
       })()}
-      {isFlagged && !guidedCtx && (
+      {isFlagged && !guidedCtx && !railExtends && (
         <RailStep
           n={railStepRecover}
           done={hasDraftedDispute}
           title="Recover the money"
           sub="Call the billing office to verify the charge or send the appeal — many members do both."
-          last={!railExtends}
+          last
         >
           {/* S290 (Andrew) — recover card spans the full container: sm:-ml-[43px]
               cancels the rail body's indent so it runs from under the step badge
@@ -3507,8 +3506,11 @@ export function ClaimDetail({
       )}
       {/* S299 phase 1a — the extension rail (approved mock Panels A+B):
           per-letter waiting cards + concurrent waits + collapsed receipts,
-          rendered from the projector via rail-steps. Numbering continues the
-          prep rail (5 after the guided 4a/4b split). */}
+          rendered from the projector via rail-steps.
+          S302 — numbering continues the prep rail with NO gap, because the step
+          it replaces has stopped rendering: guided → phone step is 4, rail
+          starts at 5; flag-OFF guided → the rail starts AT railStepRecover,
+          whose step no longer renders once a letter exists. */}
       {isFlagged && railExtends && railTimeline && (
         <>
           {railActionError && (
@@ -3528,8 +3530,7 @@ export function ClaimDetail({
             letters={railTimeline.letters}
             insurerNameByDispute={railTimeline.insurerNameByDispute}
             providerName={providerName === "Unknown Provider" ? null : providerName}
-            primaryDisputeId={railPrimaryDisputeId}
-            firstNumber={guidedCtx ? 5 : railStepRecover + 1}
+            firstNumber={guidedCtx ? 5 : railStepRecover}
             claimId={claimId}
             getAuthToken={getAuthToken}
             onLogResponse={(id) => setRailOutcomeDisputeId(id)}
@@ -3550,6 +3551,7 @@ export function ClaimDetail({
           />
         </>
       )}
+      </div>{/* /S302 resolved-fold collapse wrapper */}
       {/* S299 — the rail's inline-action modals: the dispute page's OWN
           components mounted here (one modal source; zero new UI machinery).
           Open state is settable only from the rail, so flag-OFF renders

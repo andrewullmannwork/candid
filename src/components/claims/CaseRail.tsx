@@ -4,12 +4,17 @@
  * CaseRail — the extended claim rail's live phase (S299, timeline unification
  * phase 1a; approved mock: plans/mocks/s298-extended-rail-mock.html Panels A+B).
  *
- * Mounted by ClaimDetail below the prep steps (1–4b) when `case_rail_v1` is ON
- * and the projection extends the rail. Renders EXCLUSIVELY from rail-steps
- * models (which compose EXCLUSIVELY from the projector — agenda §1 one
- * derivation): per-letter waiting cards (chips + countdown + "What happens
- * next"), concurrent waits in chronological order, collapsed receipts for
- * sent/answered steps.
+ * Mounted by ClaimDetail below the prep steps when `case_rail_v1` is ON and any
+ * letter exists. Renders EXCLUSIVELY from rail-steps models (which compose
+ * EXCLUSIVELY from the projector — agenda §1 one derivation): per-letter
+ * waiting cards (chips + countdown + "What happens next"), collapsed receipts
+ * for sent/answered steps.
+ *
+ * S302 phase 3 — the rail owns EVERY letter's send step, grouped one block per
+ * letter under a band. Before this the first letter's send step was the prep
+ * rail's 4b, so one letter rendered with guided-step anatomy and the rest
+ * rendered with rail anatomy (Andrew, S301: "each letter is a little
+ * different"). 4b now renders only before the first letter exists.
  *
  * Phase-1a action contract (Andrew, S299 E2E round): the wait-card options
  * act INLINE on the claim page via the EXISTING machinery — "Log their
@@ -32,9 +37,10 @@ import { ShowFullStepButton } from "@/components/claims/GuidedPhoneSteps";
 import { UnsendControl } from "@/components/disputes/UnsendControl";
 import { CASE_RAIL, COLLECTIONS_CHROME } from "@/lib/guides/pack-registry";
 import {
-  composeRailSteps,
-  railStepDisputeId,
+  composeRailGroups,
   type ComposeRailInput,
+  type RailCaseResolution,
+  type RailLetterGroup,
   type RailStepModel,
   type RailWaitCard,
 } from "@/lib/case/rail-steps";
@@ -139,6 +145,51 @@ export function RailStep({
       </header>
       {children != null && <div className="sm:ml-[43px]">{children}</div>}
     </section>
+  );
+}
+
+/**
+ * S302 — the resolved fold (agenda §2.2, mock Panel D). Every letter on the
+ * case reached a terminal outcome, so the whole rail collapses to one line.
+ *
+ * Exported from here with the rest of the rail chrome; ClaimDetail owns the
+ * expanded/collapsed state because the steps it hides are ITS children (1–4
+ * prep included — a resolved case folds entirely, not just its letters).
+ *
+ * §2.2's go-back principle: no collapse in this product is permanent, so the
+ * expanded state keeps a Collapse control rather than being one-way.
+ */
+export function CaseResolvedFold({
+  resolution,
+  expanded,
+  onToggle,
+}: {
+  resolution: RailCaseResolution;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div className="mt-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3.5">
+      <div className="flex min-w-0 items-center gap-3">
+        <span
+          className="grid h-[26px] w-[26px] flex-shrink-0 place-items-center rounded-full bg-emerald-700 text-[12px] font-bold leading-none text-white"
+          aria-hidden
+        >
+          {"✓"}
+        </span>
+        <div className="min-w-0">
+          <div className="text-[14.5px] font-bold text-emerald-800">{resolution.headline}</div>
+          <div className="mt-px text-[12.5px] text-emerald-700/80">{resolution.meta}</div>
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex-shrink-0 text-[13px] font-semibold text-emerald-800 underline-offset-2 hover:underline"
+      >
+        {expanded ? CASE_RAIL.foldCollapse : resolution.expandLabel}
+      </button>
+    </div>
   );
 }
 
@@ -387,11 +438,46 @@ function GuideStepCard({
   );
 }
 
+/**
+ * S302 — the letter band: the group header above one letter's steps (approved
+ * mock option B). Names the letter once so its steps don't have to, and
+ * carries the per-letter status the rail could not show at a glance before.
+ *
+ * The INDENT lives on the group wrapper below, not here: the band is the
+ * group's left edge, and the steps step in under it.
+ */
+function LetterBand({ group }: { group: RailLetterGroup }) {
+  const tone = group.status?.tone;
+  return (
+    <div className="mb-3 mt-1 flex flex-wrap items-center justify-between gap-2.5 rounded-xl border border-blue-100 bg-blue-50/40 px-3.5 py-2.5">
+      <div className="min-w-0">
+        <div className="text-[10px] font-extrabold uppercase tracking-[0.11em] text-blue-400">
+          {group.eyebrow}
+        </div>
+        <div className="mt-px text-[14px] font-bold text-gray-900">{group.title}</div>
+      </div>
+      {group.status && (
+        <span
+          className={
+            "inline-flex items-center rounded-full px-2.5 py-[3px] text-[12px] font-semibold ring-1 ring-inset " +
+            (tone === "green"
+              ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
+              : tone === "amber"
+                ? "bg-amber-50 text-amber-800 ring-amber-200"
+                : "bg-slate-100 text-slate-600 ring-slate-200")
+          }
+        >
+          {group.status.label}
+        </span>
+      )}
+    </div>
+  );
+}
+
 export function CaseRail({
   letters,
   insurerNameByDispute,
   providerName,
-  primaryDisputeId,
   firstNumber,
   claimId,
   getAuthToken,
@@ -452,16 +538,15 @@ export function CaseRail({
   const [filedOverride, setFiledOverride] = useState<Record<string, boolean>>({});
   const [attestNoteDrafts, setAttestNoteDrafts] = useState<Record<string, string>>({});
 
-  const steps: RailStepModel[] = composeRailSteps({
+  const groups: RailLetterGroup[] = composeRailGroups({
     letters,
-    primaryDisputeId,
     firstNumber,
     insurerNameByDispute,
     providerName,
     // Client clock — calendars are the user's timezone (letter-type.ts rule).
     now: new Date(),
   });
-  if (steps.length === 0) return null;
+  if (groups.length === 0) return null;
 
   const goToLetter = (disputeId: string) => router.push(`/disputes?dispute=${disputeId}`);
 
@@ -635,14 +720,20 @@ export function CaseRail({
     }
   };
 
-  return (
-    <>
-      {steps.map((s, i) => {
-        const last = i === steps.length - 1;
+  /**
+   * One step. `letterId` is the S300 deep-link anchor — it comes from the
+   * GROUP now, because every step inside a group belongs to that letter by
+   * construction (which is what retired `railStepDisputeId`, whose whole job
+   * was reaching the id through `card`/`move`). The anchor semantics are
+   * unchanged: still one attribute per step, so claim/page.tsx's "last match
+   * is the most recent step" still lands on the actionable card.
+   */
+  const renderStep = (s: RailStepModel, last: boolean, letterId: string) => {
+    {
         switch (s.kind) {
           case "wait-active":
             return (
-              <RailStep key={s.key} dataLetter={railStepDisputeId(s)} n={s.badge} title={s.title} sub={s.sub ?? undefined} last={last}>
+              <RailStep key={s.key} dataLetter={letterId} n={s.badge} title={s.title} sub={s.sub ?? undefined} last={last}>
                 <WaitCardBody
                   card={s.card}
                   whnOpen={whnOpen[s.key] ?? s.card.whn?.defaultOpen ?? false}
@@ -663,7 +754,7 @@ export function CaseRail({
             return (
               <RailStep
                 key={s.key}
-                dataLetter={railStepDisputeId(s)}
+                dataLetter={letterId}
                 n={s.badge}
                 done
                 title={s.title}
@@ -705,7 +796,7 @@ export function CaseRail({
             const attestNoteValue =
               attestNoteDrafts[s.move.disputeId] ?? s.move.regulator.attest.note ?? "";
             return (
-              <RailStep key={s.key} dataLetter={railStepDisputeId(s)} n={s.badge} title={s.title} sub={s.sub ?? undefined} last={last}>
+              <RailStep key={s.key} dataLetter={letterId} n={s.badge} title={s.title} sub={s.sub ?? undefined} last={last}>
                 <div className="space-y-2.5">
                   {s.move.letterOffer && (
                     <div className="rounded-xl border border-gray-200 bg-white px-4 py-3.5">
@@ -842,7 +933,7 @@ export function CaseRail({
             return (
               <RailStep
                 key={s.key}
-                dataLetter={railStepDisputeId(s)}
+                dataLetter={letterId}
                 n={s.badge}
                 done
                 title={s.title}
@@ -880,7 +971,7 @@ export function CaseRail({
             );
           case "send-draft":
             return (
-              <RailStep key={s.key} dataLetter={railStepDisputeId(s)} n={s.badge} title={s.title} last={last}>
+              <RailStep key={s.key} dataLetter={letterId} n={s.badge} title={s.title} last={last}>
                 <div className="rounded-xl border border-gray-200 bg-white px-4 py-3.5">
                   <button
                     type="button"
@@ -896,7 +987,7 @@ export function CaseRail({
             return (
               <RailStep
                 key={s.key}
-                dataLetter={railStepDisputeId(s)}
+                dataLetter={letterId}
                 n={s.badge}
                 title={s.title}
                 last={last}
@@ -920,7 +1011,31 @@ export function CaseRail({
               </RailStep>
             );
         }
-      })}
+    }
+  };
+
+  return (
+    <>
+      {groups.map((g) => (
+        <section key={g.disputeId}>
+          <LetterBand group={g} />
+          {/* The group's own spine — sits LEFT of the step badges, so the two
+              lines read as hierarchy (letter, then its steps) rather than as
+              one broken connector. Indent is sm-only: on a phone the rail
+              already drops its indent and the band carries the grouping. */}
+          <div className="relative sm:ml-[26px]">
+            <span
+              className="absolute -left-[13px] bottom-3.5 top-0 hidden w-[2px] rounded-full bg-blue-100 sm:block"
+              aria-hidden
+            />
+            {g.steps.map((s, i) =>
+              // Last WITHIN the group: the step connector must stop before the
+              // next letter's band rather than running into it.
+              renderStep(s, i === g.steps.length - 1, g.disputeId),
+            )}
+          </div>
+        </section>
+      ))}
     </>
   );
 }

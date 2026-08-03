@@ -59,6 +59,10 @@ export interface ProjectorDisputeRow {
   governing_deadline_date: string | null;
   deadline_type: string | null;
   metadata: Record<string, unknown> | null;
+  /** S302 — what the user logged as recovered on this letter; the resolved
+   *  fold sums it across the case. NUMERIC comes back as a number or a
+   *  string depending on the driver, so consumers coerce. */
+  amount_recovered?: number | string | null;
 }
 
 export interface ProjectorClaimRow {
@@ -151,6 +155,12 @@ export interface ProjectedLetterStep {
   /** Its confirmation note (metadata.checklistNotes["packD:filed"]); null when empty. */
   regulatorFiledNote: string | null;
   outcome: { detail: OutcomeDetail; status: string; loggedAt: string | null } | null;
+  /**
+   * S302 — dollars this letter recovered, as the user logged them. Null when
+   * unlogged or unparseable; NEVER 0-as-unknown, so the resolved fold can tell
+   * "recovered nothing" from "never said".
+   */
+  amountRecovered: number | null;
 }
 
 export interface ProjectedSentLetterMeta {
@@ -419,7 +429,18 @@ function projectLetterStep(
             typeof meta.outcomeReportedAt === "string" ? meta.outcomeReportedAt : null,
         }
       : null,
+    amountRecovered: coerceAmount(d.amount_recovered),
   };
+}
+
+/** NUMERIC → number. Null/absent/NaN → null (never a silent 0). */
+function coerceAmount(v: number | string | null | undefined): number | null {
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (typeof v === "string" && v.trim() !== "") {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
 }
 
 // ── The projector ───────────────────────────────────────────────────────────

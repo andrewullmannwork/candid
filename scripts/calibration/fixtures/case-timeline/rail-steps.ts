@@ -2,9 +2,9 @@
  * rail-steps — phase-1a composition fixture (S299).
  *
  * Locks the extension rail's contract BEFORE the DEV E2E:
- *   - chronological numbering after the prep rail (wait anchors at latest
- *     send; send-steps at row birth; primary letter's send step NEVER
- *     duplicated — it is 4b)
+ *   - S302: steps GROUP BY LETTER (letters in projector order, fixed order
+ *     within), flat badge numbering across groups, and EVERY letter renders
+ *     its own send step — there is no primary exclusion and no 4b
  *   - stage → step-kind mapping via the stage machine (awaiting → active
  *     card; next → receipt + undo; resolved → receipt; draft → open-letter;
  *     none → omitted)
@@ -26,7 +26,8 @@ import {
   type ProjectorDisputeRow,
 } from "../../../../src/lib/case/timeline-projector";
 import {
-  composeRailSteps,
+  composeRailGroups,
+  railCaseResolution,
   railHasExtension,
   fmtRailDate,
   type RailStepModel,
@@ -81,9 +82,10 @@ function mkDispute(over: Partial<ProjectorDisputeRow>): ProjectorDisputeRow {
   };
 }
 
+const NAMES = { providerName: "Swedish Primary Care Ballard" };
+
 const compose = (
   disputes: ProjectorDisputeRow[],
-  primaryDisputeId: string | null,
   insurerNameByDispute: Record<string, string> = {},
   // S301 — collections step state rides the PROJECTION, so it is injected via
   // the CLAIM row (claims.metadata.guideSteps), exactly as production does.
@@ -102,15 +104,24 @@ const compose = (
     now: NOW,
     amberDays: 7,
   });
+  const groups = composeRailGroups({
+    letters: t.letters,
+    firstNumber: 5,
+    insurerNameByDispute,
+    providerName: NAMES.providerName,
+    now: NOW,
+  });
   return {
     t,
-    steps: composeRailSteps({
+    groups,
+    // S302 — the rail is grouped by letter now. Most checks below assert copy
+    // and per-step shape, which grouping does not change, so they read the
+    // FLATTENED steps; grouping itself is asserted on `groups` in §11.
+    steps: groups.flatMap((g) => g.steps),
+    resolution: railCaseResolution({
       letters: t.letters,
-      primaryDisputeId,
-      firstNumber: 5,
       insurerNameByDispute,
-      providerName: "Swedish Primary Care Ballard",
-      now: NOW,
+      providerName: NAMES.providerName,
     }),
   };
 };
@@ -141,7 +152,7 @@ const compose = (
       escalatedFromDisputeId: appeal.id,
     },
   });
-  const { steps } = compose([appeal, validation], appeal.id, {
+  const { steps } = compose([appeal, validation], {
     [appeal.id]: "Providence Health Plan",
   });
 
@@ -155,8 +166,8 @@ const compose = (
   const letterSteps = steps.filter((s) => s.kind !== "guide-step");
   const guideSteps = steps.filter((s) => s.kind === "guide-step");
   check(
-    "ballard · 4 letter steps (wait + send + wait + next-move)",
-    letterSteps.length === 4,
+    "ballard · 5 letter steps (send + wait + next-move | send + wait)",
+    letterSteps.length === 5,
     letterSteps.length,
   );
   check("ballard · 4 collections steps ride the debt-validation letter", guideSteps.length === 4, guideSteps.length);
@@ -165,14 +176,37 @@ const compose = (
     steps.map((s) => s.badge).join(",") === steps.map((_, i) => String(i + 5)).join(","),
     steps.map((s) => s.badge),
   );
+  // S302 — addressed by (kind, disputeId), never by index. The rail is grouped
+  // by letter now, so "the appeal's wait" is a lookup, not a position — and an
+  // inserted step can no longer break six unrelated checks at once (the S301
+  // positional-assertion lesson, applied).
+  const forLetter = (id: string) =>
+    steps.filter((s) =>
+      s.kind === "wait-active"
+        ? s.card.disputeId === id
+        : s.kind === "next-move"
+          ? s.move.disputeId === id
+          : s.disputeId === id,
+    );
+  const byKind = <K extends RailStepModel["kind"]>(id: string, kind: K) =>
+    forLetter(id).find((s): s is Extract<RailStepModel, { kind: K }> => s.kind === kind);
+  const s5 = byKind(appeal.id, "wait-receipt")!;
+  const s6 = byKind(validation.id, "send-receipt")!;
+  const s7 = byKind(validation.id, "wait-active")!;
   check(
-    "ballard · the next-move is last",
-    steps[steps.length - 1].kind === "next-move",
-    steps[steps.length - 1].kind,
+    "S302 · the appeal's own send step exists (no primary exclusion)",
+    byKind(appeal.id, "send-receipt") != null,
   );
-  const s5 = letterSteps[0];
-  const s6 = letterSteps[1];
-  const s7 = letterSteps[2];
+  check(
+    "S302 · every step of a letter is contiguous — appeal block then collector block",
+    steps.map((s) => (forLetter(appeal.id).includes(s) ? "A" : "C")).join("") === "AAACCCCCC",
+    steps.map((s) => (forLetter(appeal.id).includes(s) ? "A" : "C")).join(""),
+  );
+  check(
+    "S302 · the appeal's next-move closes ITS block, not the whole rail",
+    steps.findIndex((s) => s.kind === "next-move") === 2,
+    steps.findIndex((s) => s.kind === "next-move"),
+  );
   check("ballard · appeal wait is a receipt (stage next)", s5.kind === "wait-receipt");
   check(
     "ballard · appeal wait title",
@@ -240,7 +274,7 @@ const compose = (
       collector: { name: "Cascade Recovery", address: null, originalCreditor: null },
     },
   });
-  const { t, steps } = compose([appeal, validation], appeal.id, {
+  const { t, steps } = compose([appeal, validation], {
     [appeal.id]: "Providence Health Plan",
   });
   check("concurrent · waitingCount 2", t.waitingCount === 2);
@@ -272,9 +306,9 @@ const compose = (
     governing_deadline_date: dateOnly(-2),
     deadline_type: "plan_response",
   });
-  const { steps } = compose([appeal], appeal.id, { [appeal.id]: "Providence Health Plan" });
-  const w = steps[0];
-  check("overdue · still an active wait", w.kind === "wait-active");
+  const { steps } = compose([appeal], { [appeal.id]: "Providence Health Plan" });
+  const w = steps.find((x) => x.kind === "wait-active")!;
+  check("overdue · still an active wait", w != null && w.kind === "wait-active");
   if (w.kind === "wait-active") {
     check(
       "overdue · passed chip",
@@ -301,7 +335,7 @@ const compose = (
       collector: { name: "Cascade Recovery", address: null, originalCreditor: null },
     },
   });
-  const { steps } = compose([validation], null);
+  const { steps } = compose([validation]);
   const w = steps.find((s) => s.kind === "wait-active");
   check("undated · wait renders", w != null);
   if (w && w.kind === "wait-active") {
@@ -326,12 +360,17 @@ const compose = (
     created_at: iso(-1),
     metadata: { letterType: "debt_validation" },
   });
-  const { steps } = compose([appeal, draftValidation], appeal.id, {});
+  const { steps } = compose([appeal, draftValidation], {});
   const draftStep = steps.find((s) => s.kind === "send-draft");
   check("draft · escalated draft renders an open-letter step", draftStep != null);
   check("draft · open-letter label", draftStep?.kind === "send-draft" && draftStep.openLetterLabel === "Open this letter");
   check("draft · no wait step for an unsent letter", steps.filter((s) => s.kind.startsWith("wait")).length === 1);
-  check("draft · insurer fallback title", steps[0].title === "Waiting on your plan — your appeal", steps[0].title);
+  const fallbackWait = steps.find((s) => s.kind === "wait-active");
+  check(
+    "draft · insurer fallback title",
+    fallbackWait?.title === "Waiting on your plan — your appeal",
+    fallbackWait?.title,
+  );
 
   check("grammar · sent today", CASE_RAIL.chipSentAgo(0) === "Sent today");
   check("grammar · 1 day ago", CASE_RAIL.chipSentAgo(1) === "Sent 1 day ago");
@@ -348,14 +387,14 @@ const compose = (
   localMidnight.setHours(0, 0, 0, 0);
   const lateLastNight = new Date(localMidnight.getTime() - 3_600_000).toISOString();
   const earlyToday = new Date(localMidnight.getTime() + 60_000).toISOString();
-  const { steps: tzA } = compose([mkDispute({ status: "filed", sent_at: lateLastNight })], null);
+  const { steps: tzA } = compose([mkDispute({ status: "filed", sent_at: lateLastNight })]);
   const tzWa = tzA.find((s) => s.kind === "wait-active");
   check(
     "tz · pre-local-midnight send → Sent 1 day ago",
     tzWa?.kind === "wait-active" && tzWa.card.chipSentAgo === "Sent 1 day ago",
     tzWa?.kind === "wait-active" ? tzWa.card.chipSentAgo : tzWa?.kind,
   );
-  const { steps: tzB } = compose([mkDispute({ status: "filed", sent_at: earlyToday })], null);
+  const { steps: tzB } = compose([mkDispute({ status: "filed", sent_at: earlyToday })]);
   const tzWb = tzB.find((s) => s.kind === "wait-active");
   check(
     "tz · post-local-midnight send → Sent today",
@@ -369,32 +408,48 @@ const compose = (
     sent_at: iso(-3),
     metadata: { letterType: "overcharge" },
   });
-  const { steps: pSteps } = compose([provider], provider.id, {});
-  const pw = pSteps[0];
-  check("omission · provider wait has no whn set", pw.kind === "wait-active" && pw.card.whn === null, pw.kind);
+  const { steps: pSteps } = compose([provider], {});
+  const pw = pSteps.find((s) => s.kind === "wait-active")!;
+  check("omission · provider wait has no whn set", pw?.kind === "wait-active" && pw.card.whn === null, pw?.kind);
   check(
-    // Noun comes from LETTER_TYPE_LABELS (one source, S299): overcharge's
-    // label is "Billing Dispute" → "your billing dispute letter".
-    "omission · provider wait generic title (label-sourced noun)",
-    pw.title === "Waiting on Swedish Primary Care Ballard — your billing dispute letter",
+    // S302 — noun comes from LETTER_RAIL_COPY, the one table the send title,
+    // the receipt and the band also read. The provider-track trio (overcharge /
+    // balance_billing / duplicate_charge) share the "Dispute letter" voice, so
+    // this reads "your dispute letter" where the old LETTER_TYPE_LABELS
+    // lowercase produced "your billing dispute letter".
+    "omission · provider wait generic title (copy-table noun)",
+    pw.title === "Waiting on Swedish Primary Care Ballard — your dispute letter",
     pw.title,
   );
 }
 
 // ── 6 · Extension predicate + cancelled rows ────────────────────────────────
 {
+  // S302 — the FIRST letter is no longer excluded. A lone draft now extends the
+  // rail (it contributes its own send step), which is exactly what retires 4b:
+  // the prep rail stops owning any letter's send.
   const draftPrimary = mkDispute({});
-  const { t } = compose([draftPrimary], draftPrimary.id);
+  const { t, steps } = compose([draftPrimary]);
+  check("predicate · a lone DRAFT extends the rail", railHasExtension(t.letters) === true);
   check(
-    "predicate · draft primary only → no extension",
-    railHasExtension(t.letters, draftPrimary.id) === false,
+    "S302 · the first letter renders its own send step (4b retired)",
+    steps.length === 1 && steps[0].kind === "send-draft" && steps[0].badge === "5",
+    steps.map((s) => `${s.kind}:${s.badge}`),
   );
   const cancelled = mkDispute({ status: "cancelled", sent_at: iso(-3) });
-  const { t: t2, steps: s2 } = compose([cancelled], null);
-  check("predicate · cancelled contributes nothing", railHasExtension(t2.letters, null) === false && s2.length === 0);
+  const { t: t2, steps: s2 } = compose([cancelled]);
+  check(
+    "predicate · cancelled contributes nothing",
+    railHasExtension(t2.letters) === false && s2.length === 0,
+  );
   const sentPrimary = mkDispute({ status: "filed", sent_at: iso(-3) });
-  const { t: t3 } = compose([sentPrimary], sentPrimary.id);
-  check("predicate · sent primary → extension (its wait)", railHasExtension(t3.letters, sentPrimary.id) === true);
+  const { t: t3, steps: s3 } = compose([sentPrimary]);
+  check("predicate · sent letter → extension", railHasExtension(t3.letters) === true);
+  check(
+    "S302 · a sent first letter renders send-receipt THEN its wait",
+    s3.map((s) => s.kind).join(",") === "send-receipt,wait-active",
+    s3.map((s) => s.kind),
+  );
 }
 
 // ── 7 · Stage-8 "Your next move" (phase 1b: offers + doors + terminal rule) ─
@@ -421,7 +476,7 @@ const compose = (
       collector: { name: "Cascade Recovery", address: null, originalCreditor: null },
     },
   });
-  const { steps } = compose([appeal, validation], appeal.id, {
+  const { steps } = compose([appeal, validation], {
     [appeal.id]: "Providence Health Plan",
   });
   const nm = steps.find((s) => s.kind === "next-move");
@@ -488,7 +543,7 @@ const compose = (
       outcomeReportedAt: iso(-2),
     },
   });
-  const { steps: pSteps } = compose([provider], provider.id, {});
+  const { steps: pSteps } = compose([provider], {});
   const pNm = pSteps.find((s) => s.kind === "next-move");
   check(
     "next-move · provider track → final notice offer",
@@ -511,7 +566,7 @@ const compose = (
       outcomeReportedAt: iso(-3),
     },
   });
-  const { steps: tSteps } = compose([terminal], terminal.id, {});
+  const { steps: tSteps } = compose([terminal], {});
   const tNm = tSteps.find((s) => s.kind === "next-move");
   check("terminal · doors-only next-move renders", tNm?.kind === "next-move");
   check(
@@ -539,7 +594,7 @@ const compose = (
       outcomeReportedAt: iso(-2),
     },
   });
-  const { steps: bbSteps } = compose([bb], bb.id, {});
+  const { steps: bbSteps } = compose([bb], {});
   const bbNm = bbSteps.find((s) => s.kind === "next-move");
   check(
     "next-move · balance_billing → AG + CMS doors",
@@ -559,7 +614,7 @@ const compose = (
       checklistNotes: { "packD:filed": "DOI #4417" },
     },
   });
-  const { steps: fSteps } = compose([filed], filed.id, {});
+  const { steps: fSteps } = compose([filed], {});
   const fNm = fSteps.find((s) => s.kind === "next-move");
   check(
     "next-move · filed attest passthrough",
@@ -584,7 +639,7 @@ const compose = (
     created_at: iso(0, -1000),
     metadata: { letterType: "external_review" },
   });
-  const { steps: gSteps } = compose([deniedAppeal, startedReview], deniedAppeal.id, {});
+  const { steps: gSteps } = compose([deniedAppeal, startedReview], {});
   const gNm = gSteps.find((s) => s.kind === "next-move");
   check(
     "suppression · offer gone once the letter exists",
@@ -612,7 +667,7 @@ const compose = (
       outcomeReportedAt: iso(-1),
     },
   });
-  const { steps: oSteps } = compose([open], open.id, {});
+  const { steps: oSteps } = compose([open], {});
   check(
     "next-move · absent for open non-terminal outcomes",
     oSteps.every((s) => s.kind !== "next-move"),
@@ -636,7 +691,7 @@ const compose = (
   // (a) The FOUR net-new steps — and only four. "Your debt validation letter is
   // ready" is this letter's own send step and "What did the collector do?" is
   // its waiting card; rebuilding either would put two doors on the same act.
-  const { steps } = compose([dv], null, {}, {});
+  const { steps } = compose([dv], {}, {});
   const guides = steps.filter((s) => s.kind === "guide-step");
   check("collections · exactly 4 net-new steps", guides.length === 4, guides.length);
   check(
@@ -701,7 +756,7 @@ const compose = (
     sent_at: iso(-3),
     metadata: { letterType: "debt_validation", collector: { name: "Cascade Recovery" } },
   });
-  const undated = compose([noDate], null, {}, {}).steps.find(
+  const undated = compose([noDate], {}, {}).steps.find(
     (x) => x.kind === "guide-step" && (x as { stepId: string }).stepId === "packC:first-contact",
   ) as { state: string; value: string | null };
   check("collections · no date → step is OPEN", undated.state === "open", undated.state);
@@ -709,14 +764,14 @@ const compose = (
 
   // (e) THREE states, and skipped is NOT a flavour of done. These attestations
   // feed the prior-contact recital, so a declined step must never read as done.
-  const skipped = compose([dv], null, {}, { "packC:receipt": { skippedAt: iso(-1) } });
+  const skipped = compose([dv], {}, { "packC:receipt": { skippedAt: iso(-1) } });
   const receipt = skipped.steps.find(
     (s) => s.kind === "guide-step" && (s as { stepId: string }).stepId === "packC:receipt",
   ) as { state: string; doneAt: string | null };
   check("collections · skipped state is 'skipped'", receipt.state === "skipped", receipt.state);
   check("collections · skipped carries NO done stamp", receipt.doneAt === null, receipt.doneAt);
 
-  const done = compose([dv], null, {}, { "packC:not-paid": { checkedAt: iso(-2) } });
+  const done = compose([dv], {}, { "packC:not-paid": { checkedAt: iso(-2) } });
   const notPaid = done.steps.find(
     (s) => s.kind === "guide-step" && (s as { stepId: string }).stepId === "packC:not-paid",
   ) as { state: string; doneAt: string | null };
@@ -736,7 +791,7 @@ const compose = (
     sent_at: iso(-3),
     metadata: { letterType: "insurance_appeal" },
   });
-  const { steps: aSteps } = compose([appealOnly], null);
+  const { steps: aSteps } = compose([appealOnly]);
   check(
     "collections · absent on an insurer letter",
     aSteps.every((s) => s.kind !== "guide-step"),
@@ -749,7 +804,7 @@ const compose = (
   // clears the response in the SAME patch, so §0.9b's invariant (never orphan an
   // outcome) is upheld by the write rather than by hiding the button.
   {
-    const awaiting = compose([dv], null, {}, {}).steps.find((x) => x.kind === "send-receipt") as {
+    const awaiting = compose([dv], {}, {}).steps.find((x) => x.kind === "send-receipt") as {
       unsend: { loggedOutcomeLabel: string | null; loggedOutcomeDateLabel: string | null };
     };
     check("unsend · no logged outcome → no confirm facts", awaiting.unsend.loggedOutcomeLabel === null);
@@ -765,7 +820,7 @@ const compose = (
         outcomeReportedAt: iso(-1),
       },
     });
-    const withOutcome = compose([answered], null, {}, {}).steps.find(
+    const withOutcome = compose([answered], {}, {}).steps.find(
       (x) => x.kind === "send-receipt",
     ) as { unsend: { loggedOutcomeLabel: string | null; loggedOutcomeDateLabel: string | null } };
     check(
@@ -841,6 +896,199 @@ const compose = (
     "collections · 'skipped' is in the vocabulary (not folded into 'checked')",
     CLIENT_KEYS.includes("skipped") && ROUTE_KEYS.includes("skipped"),
   );
+}
+
+// ── 11 · S302 phase 3 — letter grouping, bands, and the resolved fold ───────
+{
+  const appeal = mkDispute({
+    status: "filed",
+    sent_at: iso(-6),
+    governing_deadline_date: dateOnly(54),
+    deadline_type: "plan_response",
+  });
+  const validation = mkDispute({
+    status: "filed",
+    created_at: iso(-5),
+    sent_at: iso(-4),
+    metadata: {
+      letterType: "debt_validation",
+      collector: { name: "Cascade Recovery", address: null, originalCreditor: null },
+    },
+  });
+  const review = mkDispute({
+    created_at: iso(-2),
+    dispute_type: "external_appeal",
+    metadata: { letterType: "external_review" },
+  });
+  const { groups, steps } = compose([appeal, validation, review], {
+    [appeal.id]: "Blue Cross Blue Shield of Wyoming",
+    [review.id]: "Blue Cross Blue Shield of Wyoming",
+  });
+
+  check("group · one group per letter, in projector order", groups.length === 3, groups.length);
+  check(
+    "group · group ids follow letter birth",
+    groups.map((g) => g.disputeId).join(",") === [appeal.id, validation.id, review.id].join(","),
+    groups.map((g) => g.disputeId),
+  );
+  check(
+    "group · badges run FLAT across groups from firstNumber",
+    steps.map((s) => s.badge).join(",") === steps.map((_, i) => String(i + 5)).join(","),
+    steps.map((s) => s.badge),
+  );
+  check(
+    "group · every step belongs to its group's letter",
+    groups.every((g) =>
+      g.steps.every((s) =>
+        s.kind === "wait-active"
+          ? s.card.disputeId === g.disputeId
+          : s.kind === "next-move"
+            ? s.move.disputeId === g.disputeId
+            : s.disputeId === g.disputeId,
+      ),
+    ),
+  );
+  // The S302 regression this whole unit exists to prevent: an unrelated later
+  // letter landing INSIDE an earlier letter's block. Before grouping, the
+  // external-review draft (born after the collections send, before its
+  // certified-mail steps) sorted between them.
+  check(
+    "group · intra-letter order is send → after-guide → wait, uninterrupted",
+    groups[1].steps.map((s) => s.kind).join(",") ===
+      "guide-step,guide-step,send-receipt,guide-step,guide-step,wait-active",
+    groups[1].steps.map((s) => s.kind),
+  );
+
+  check(
+    "band · eyebrow counts position of total",
+    groups.map((g) => g.eyebrow).join("|") === "Letter 1 of 3|Letter 2 of 3|Letter 3 of 3",
+    groups.map((g) => g.eyebrow),
+  );
+  check(
+    "band · title is «letter» — «counterparty»",
+    groups[0].title === "Appeal — Blue Cross Blue Shield of Wyoming" &&
+      groups[1].title === "Debt validation — Cascade Recovery" &&
+      groups[2].title === "External review — Blue Cross Blue Shield of Wyoming",
+    groups.map((g) => g.title),
+  );
+  check(
+    "band · sent + awaiting + dated → amber, with the engine deadline",
+    groups[0].status?.tone === "amber" &&
+      groups[0].status.label === `Waiting on their response · due ${fmtRailDate(dateOnly(54))}`,
+    groups[0].status,
+  );
+  check(
+    "band · UNDATED wait names no deadline (the sent+30d fallback is not one)",
+    groups[1].status?.tone === "amber" &&
+      groups[1].status.label === "Waiting on their response",
+    groups[1].status,
+  );
+  check(
+    "band · unsent letter reads as a draft",
+    groups[2].status?.tone === "slate" && groups[2].status.label === "Draft — not sent yet",
+    groups[2].status,
+  );
+
+  // Send-step copy, per letter type, from the ONE table.
+  const sendTitles = groups.map(
+    (g) => g.steps.find((s) => s.kind === "send-receipt" || s.kind === "send-draft")!.title,
+  );
+  check(
+    "copy · send titles carry the approved per-type strings",
+    sendTitles.join("|") === "Send the appeal|Answer the collector|Send the external review request",
+    sendTitles,
+  );
+  const appealReceipt = groups[0].steps.find((s) => s.kind === "send-receipt")!;
+  check(
+    "copy · the appeal's receipt names its insurer (was receipt4bInsurer)",
+    appealReceipt.kind === "send-receipt" &&
+      appealReceipt.receipt ===
+        `Appeal sent to Blue Cross Blue Shield of Wyoming · ${fmtRailDate(iso(-6))}`,
+    appealReceipt.kind === "send-receipt" ? appealReceipt.receipt : appealReceipt.kind,
+  );
+}
+
+// The resolved fold — derived, never stored.
+{
+  const openCase = mkDispute({ status: "filed", sent_at: iso(-3) });
+  check("fold · an unfinished case does NOT fold", compose([openCase]).resolution === null);
+
+  const nextRung = mkDispute({
+    status: "lost",
+    sent_at: iso(-6),
+    metadata: {
+      letterType: "insurance_appeal",
+      outcomeDetail: "denied_fully",
+      outcomeReportedAt: iso(-2),
+    },
+  });
+  check(
+    "fold · stage `next` (a move is still open) does NOT fold",
+    compose([nextRung]).resolution === null,
+  );
+
+  // external_review + denied_fully is the ladder's end: terminal, no next rung.
+  const doneAppeal = mkDispute({
+    status: "won",
+    sent_at: iso(-20),
+    amount_recovered: 100.27,
+    metadata: {
+      letterType: "insurance_appeal",
+      outcomeDetail: "resolved_win",
+      outcomeReportedAt: iso(-9),
+    },
+  });
+  const doneReview = mkDispute({
+    dispute_type: "external_appeal",
+    status: "lost",
+    created_at: iso(-8),
+    sent_at: iso(-7),
+    amount_recovered: 63,
+    metadata: {
+      letterType: "external_review",
+      outcomeDetail: "denied_fully",
+      outcomeReportedAt: iso(-3),
+    },
+  });
+  const { resolution } = compose([doneAppeal, doneReview], {
+    [doneAppeal.id]: "Blue Cross Blue Shield of Wyoming",
+    [doneReview.id]: "Blue Cross Blue Shield of Wyoming",
+  });
+  check("fold · an all-terminal case folds", resolution != null);
+  check(
+    "fold · headline is the CLOSING letter's outcome label, verbatim",
+    resolution?.headline === "Fully denied — no payment",
+    resolution?.headline,
+  );
+  check(
+    "fold · meta = counterparty · date · letter count · money recovered",
+    resolution?.meta ===
+      `Blue Cross Blue Shield of Wyoming · ${fmtRailDate(iso(-3))} · 2 letters · $163.27 recovered`,
+    resolution?.meta,
+  );
+  check("fold · expand label", resolution?.expandLabel === "Show the full case");
+
+  // amount_recovered absent → the money clause is omitted, never rendered $0.
+  const noMoney = mkDispute({
+    status: "lost",
+    sent_at: iso(-20),
+    dispute_type: "external_appeal",
+    metadata: {
+      letterType: "external_review",
+      outcomeDetail: "denied_fully",
+      outcomeReportedAt: iso(-4),
+    },
+  });
+  const r2 = compose([noMoney], { [noMoney.id]: "Blue Cross Blue Shield of Wyoming" }).resolution;
+  check(
+    "fold · unlogged recovery omits the money clause (never $0.00)",
+    r2?.meta === `Blue Cross Blue Shield of Wyoming · ${fmtRailDate(iso(-4))} · 1 letter`,
+    r2?.meta,
+  );
+
+  // A case of nothing but cancelled letters is not a resolution.
+  const onlyCancelled = mkDispute({ status: "cancelled", sent_at: iso(-5) });
+  check("fold · cancelled-only case does not fold", compose([onlyCancelled]).resolution === null);
 }
 
 console.log(`\ncase-timeline rail-steps fixture: ${pass} passed, ${fails.length} failed`);
