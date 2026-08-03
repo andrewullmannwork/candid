@@ -19,11 +19,14 @@
  * insurer letters the pinned plan's insurer + appeals address — never
  * claim/track defaults, never a synthesized "Reprocess the claim" line.
  *
- * §0.9b sequencing guard: the unlock affordance renders ONLY while the
- * letter is stage `awaiting` (no outcome logged) — an unsend can never
- * orphan a logged response. The version stack labels unsent snapshots
- * "Marked sent «date», then unsent — never mailed" and never renders them
- * as mailed letters.
+ * §0.9b's invariant — an unsend can never orphan a logged response — is upheld
+ * by the WRITE, not by hiding the affordance (S301). Unsend is always offered;
+ * when a response exists it is confirmed away, and the route clears the send and
+ * the outcome in a single row patch. Withholding the button instead made a
+ * denied letter read as a dead end, and left this surface disagreeing with the
+ * rail about whether unsend was possible at all — hence the shared
+ * UnsendControl. The version stack still labels unsent snapshots "Marked sent
+ * «date», then unsent — never mailed" and never renders them as mailed letters.
  */
 
 import { useRouter } from "next/navigation";
