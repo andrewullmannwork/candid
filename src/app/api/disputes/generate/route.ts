@@ -328,6 +328,7 @@ export async function POST(req: NextRequest) {
         strength = computeDisputeStrength(evidence, {
           config: strengthConfig,
           recipientKind: letterRecipientKind(letterType),
+          letterRequirementsOn: await isFeatureEnabled("letter_requirements_v1"),
         });
       } catch (err) {
         console.error("[disputes] strength computation failed (non-fatal):", err);

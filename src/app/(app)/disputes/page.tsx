@@ -2389,6 +2389,11 @@ function DisputesContent() {
       status={disputeStatus}
       outcomeLine={viewedOutcomeLine}
       recipientKind={letterRecipientKind(letter.letterType)}
+      // S301 — the spine's mailing-address row is three-way under the flag; a
+      // collector letter asked for the PROVIDER's address before this.
+      letterRequirementsOn={letterRequirementsOn}
+      collectorAddressOnFile={!!planContext?.collectorContact?.address}
+      onAddCollectorDetails={() => setCollectorEditOpen(true)}
       providerAddressOnFile={zone1ProviderAddressOnFile}
       onAddProviderAddress={() => setProviderAddressOpen(true)}
       insurerAddressOnFile={zone1InsurerAddressOnFile}

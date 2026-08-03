@@ -119,6 +119,12 @@ export interface UnifiedTodoProps {
   // GET IT READY — mailing-address rows (which one is REQUIRED depends on
   // recipientKind; the other stays available inside claim details).
   providerAddressOnFile: boolean;
+  /** S301 — collections track: the agency address this letter actually prints. */
+  collectorAddressOnFile?: boolean;
+  /** S301 — opens the collector-details editor (the parameterized CollectorModal). */
+  onAddCollectorDetails?: () => void;
+  /** S301 `letter_requirements_v1` — OFF keeps the insurer-or-provider binary. */
+  letterRequirementsOn?: boolean;
   onAddProviderAddress: () => void;
   insurerAddressOnFile: boolean;
   onAddInsurerAddress: () => void;
@@ -364,6 +370,9 @@ export function UnifiedTodo({
   outcomeLine = null,
   recipientKind,
   providerAddressOnFile,
+  collectorAddressOnFile = false,
+  onAddCollectorDetails,
+  letterRequirementsOn = false,
   onAddProviderAddress,
   insurerAddressOnFile,
   onAddInsurerAddress,
@@ -436,19 +445,50 @@ export function UnifiedTodo({
   // letter actually mails to; the other address stays editable inside the
   // claim-details expansion.
   const insurerMailing = recipientKind === "insurer";
+  // Which address THIS letter prints. Under the flag it is the real three-way
+  // answer; OFF it collapses to the legacy insurer-or-provider binary.
+  const mailingTo: "insurer" | "provider" | "collector" = letterRequirementsOn
+    ? recipientKind
+    : insurerMailing
+      ? "insurer"
+      : "provider";
   const prepRows: RowDef[] = [
     {
       id: "address",
-      title: insurerMailing
-        ? "Add your insurer's appeals address"
-        : "Add the provider's mailing address",
-      sub: insurerMailing
-        ? "The appeal has nowhere to be mailed without it."
-        : "The letter has nowhere to be mailed without it.",
-      state: lockIfSent((insurerMailing ? insurerAddressOnFile : providerAddressOnFile) ? "done" : "todo"),
+      // S301 — THREE recipients, not two. `insurerMailing` is a binary, so a
+      // COLLECTOR letter fell to the else-branch and asked for the provider's
+      // mailing address, with an Add button that opened the PROVIDER modal —
+      // banked defect #2, in a fourth place nobody had listed (Andrew found it
+      // in the S301 E2E, still showing after the needs panel was re-keyed).
+      // Flag OFF keeps the two-way binary exactly.
+      title:
+        mailingTo === "insurer"
+          ? "Add your insurer's appeals address"
+          : mailingTo === "collector"
+            ? // COPY PENDING ANDREW APPROVAL (S301)
+              "Add the collection agency's address"
+            : "Add the provider's mailing address",
+      sub:
+        mailingTo === "insurer"
+          ? "The appeal has nowhere to be mailed without it."
+          : "The letter has nowhere to be mailed without it.",
+      state: lockIfSent(
+        (mailingTo === "insurer"
+          ? insurerAddressOnFile
+          : mailingTo === "collector"
+            ? collectorAddressOnFile
+            : providerAddressOnFile)
+          ? "done"
+          : "todo",
+      ),
       required: true,
       cta: "Add address",
-      onDo: insurerMailing ? onAddInsurerAddress : onAddProviderAddress,
+      onDo:
+        mailingTo === "insurer"
+          ? onAddInsurerAddress
+          : mailingTo === "collector"
+            ? (onAddCollectorDetails ?? onAddProviderAddress)
+            : onAddProviderAddress,
     },
     ...(nameMismatch
       ? [

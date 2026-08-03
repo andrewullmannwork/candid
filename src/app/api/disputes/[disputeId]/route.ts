@@ -717,6 +717,10 @@ export async function GET(
       config: strengthConfig,
       patientIdentityResolved: !patientNameMismatch,
       recipientKind: letterRecipientKind(dispute.dispute_type),
+      // S301 — without this the floor keeps the legacy mapping, where
+      // `collector` falls to the both-addresses branch and a debt-validation
+      // letter stays "Not ready to send" for two addresses it never prints.
+      letterRequirementsOn: await isFeatureEnabled("letter_requirements_v1"),
     });
   } catch (err) {
     console.error("[disputes/[disputeId]] strength computation failed (non-fatal):", err);
@@ -828,7 +832,34 @@ export async function GET(
           // fields EXPLICITLY, so a new PlanContext field is invisible to the
           // client until it is named here; CaseNeedsPanel's collections rows and
           // the collector edit modal's prefill both read it.
-          collectorContact: planContext.collectorContact,
+          //
+          // ⚠ FALLS BACK to the dispute's own collector. Cases created before the
+          // knowledge layer existed carry the agency only on the dispute row
+          // (escalate wrote it there), so a claim-only read showed an EMPTY name
+          // in the edit modal for a collector we plainly knew — Andrew hit exactly
+          // that on Ballard. Resolved server-side, once, so the panel and the
+          // modal cannot disagree about what is on file.
+          collectorContact: (() => {
+            const known = planContext.collectorContact;
+            if (known?.name || known?.address) return known;
+            const onDispute = (dispute.metadata as Record<string, unknown> | null)
+              ?.collector as
+              | { name?: string; address?: string | null; originalCreditor?: string | null }
+              | undefined;
+            if (!onDispute?.name && !onDispute?.address) return known;
+            return {
+              name: onDispute.name ?? null,
+              address: onDispute.address ?? null,
+              originalCreditor: onDispute.originalCreditor ?? null,
+              accountNumber:
+                ((dispute.metadata as Record<string, unknown> | null)?.accountNumber as
+                  | string
+                  | undefined) ?? null,
+              source: "unknown" as const,
+              addressFields: null,
+              confirmedAt: null,
+            };
+          })(),
           // S110 Chunk C — surface archive auto-lookup result so PlanSearchModal
           // can highlight it as a best-match suggestion. S111 D1: this is a UI
           // hint only — never drives letter citations (those flow through

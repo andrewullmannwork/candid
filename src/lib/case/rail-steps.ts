@@ -238,13 +238,18 @@ export interface ComposeRailInput {
    * already writes through. Reused rather than given its own home so the
    * collections attestations arrive server-stamped (which is where the rail's
    * "done «when»" comes from) and stay on the bill, surviving escalation.
+   *
+   * ⚠ REQUIRED, not optional. As an optional field it let CaseRail forget to
+   * forward it and still compile — every collections step then read `{}` and sat
+   * permanently "open" while the clicks wrote to the database perfectly. The
+   * compiler is the only thing that catches a dropped prop.
    */
-  guideSteps?: Record<
+  guideSteps: Record<
     string,
     { checkedAt?: string | null; skippedAt?: string | null; note?: string }
   >;
   /** The collector's first-contact date (dispute metadata) — step 2's value. */
-  collectorFirstContactDate?: string | null;
+  collectorFirstContactDate: string | null;
 }
 
 /**

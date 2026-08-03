@@ -51,6 +51,7 @@ export function RailStep({
   sub,
   done,
   attention,
+  skipped,
   right,
   last,
   headerOnly,
@@ -68,6 +69,11 @@ export function RailStep({
    * finished, so it must stay findable. `done` wins if both are set.
    */
   attention?: boolean;
+  /**
+   * S301 — the user DISMISSED this step. Grey badge with a dash, never a check:
+   * a declined step must not read as a performed one. `done` wins if both set.
+   */
+  skipped?: boolean;
   right?: React.ReactNode;
   last?: boolean;
   headerOnly?: boolean;
@@ -94,15 +100,20 @@ export function RailStep({
       <header className="mb-3.5 flex flex-wrap items-start gap-3.5">
         <span
           className={
-            "relative z-10 grid h-[30px] w-[30px] flex-shrink-0 place-items-center rounded-full text-sm font-bold text-white " +
+            // leading-none: without it the glyph sits off-centre in the 30px
+            // circle (Andrew, S301 \u2014 "the numbers are not centred in their
+            // bubbles"); grid centring positions the LINE BOX, not the glyph.
+            "relative z-10 grid h-[30px] w-[30px] flex-shrink-0 place-items-center rounded-full text-sm font-bold leading-none text-white " +
             (done
               ? "bg-emerald-700 shadow-[0_2px_8px_rgba(4,120,87,0.25)]"
-              : attention
-                ? "bg-amber-500 shadow-[0_2px_8px_rgba(245,158,11,0.28)]"
-                : "bg-blue-600 shadow-[0_2px_8px_rgba(37,99,235,0.25)]")
+              : skipped
+                ? "bg-gray-300 text-gray-600 shadow-none"
+                : attention
+                  ? "bg-amber-500 shadow-[0_2px_8px_rgba(245,158,11,0.28)]"
+                  : "bg-blue-600 shadow-[0_2px_8px_rgba(37,99,235,0.25)]")
           }
         >
-          {done ? "\u2713" : n}
+          {done ? "\u2713" : skipped ? "\u2013" : n}
         </span>
         {/* S297 (Andrew E2E) — min-w-[12rem], not min-w-0: with a wide right
             cluster, flex was crushing the title into a one-word-per-line
@@ -263,35 +274,14 @@ function GuideStepCard({
   onUndoSkip: () => void;
 }) {
   const value = draft ?? step.value ?? "";
-  const dot =
-    step.state === "done" ? (
-      <span
-        className="mt-0.5 grid h-[18px] w-[18px] flex-shrink-0 place-items-center rounded-full bg-emerald-600 text-white"
-        aria-label="Done"
-      >
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round">
-          <path d="M5 13l4 4L19 7" />
-        </svg>
-      </span>
-    ) : step.state === "skipped" ? (
-      <span
-        className="mt-0.5 grid h-[18px] w-[18px] flex-shrink-0 place-items-center rounded-full bg-gray-200 text-gray-500"
-        aria-label="Skipped"
-      >
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round">
-          <path d="M5 12h14" />
-        </svg>
-      </span>
-    ) : (
-      <span
-        className="mt-0.5 h-[18px] w-[18px] flex-shrink-0 rounded-full border-[1.5px] border-gray-300 bg-white"
-        aria-label="Not done"
-      />
-    );
 
+  // NO inner indicator (Andrew, S301). Each of these steps carries exactly ONE
+  // action, so the step's own NUMBER is the indicator — it turns green on
+  // completion and grey on skip. A second circle inside the card would be a
+  // sub-step marker for a step that has no sub-steps. Inner circles come back
+  // only if a step ever holds several actions that resolve independently.
   return (
-    <div className="flex gap-2.5 rounded-xl border border-gray-200 bg-white px-4 py-3.5">
-      {dot}
+    <div className="rounded-xl border border-gray-200 bg-white px-4 py-3.5">
       <div className="min-w-0 flex-1">
         <div className="text-[13.5px] font-bold text-gray-900">{step.title}</div>
         <div className="mt-0.5 text-[12.5px] leading-[1.55] text-gray-500">{step.body}</div>
@@ -342,24 +332,28 @@ function GuideStepCard({
                 />
               </label>
             )}
-            <button
-              type="button"
-              onClick={() => onAct(step.action.kind === "attest" ? null : value)}
-              disabled={busy || (step.action.kind !== "attest" && !value.trim())}
-              className="inline-flex items-center rounded-xl bg-blue-600 px-3.5 py-[7px] text-[12.5px] font-semibold text-white transition-colors hover:bg-blue-700 disabled:opacity-60"
-            >
-              {step.action.kind === "attest" ? step.action.label : step.action.saveLabel}
-            </button>
-            {step.skippable && (
+            {/* Skip sits on the button's centre line, not the input's baseline
+                (Andrew, S301) — they are peers, so they share a row. */}
+            <div className="flex items-center gap-3">
               <button
                 type="button"
-                onClick={onSkip}
-                disabled={busy}
-                className="text-[11.5px] font-medium text-gray-500 underline underline-offset-2 hover:text-gray-700 disabled:opacity-60"
+                onClick={() => onAct(step.action.kind === "attest" ? null : value)}
+                disabled={busy || (step.action.kind !== "attest" && !value.trim())}
+                className="inline-flex items-center rounded-xl bg-blue-600 px-3.5 py-[7px] text-[12.5px] font-semibold text-white transition-colors hover:bg-blue-700 disabled:opacity-60"
               >
-                {COLLECTIONS_CHROME.skipLabel}
+                {step.action.kind === "attest" ? step.action.label : step.action.saveLabel}
               </button>
-            )}
+              {step.skippable && (
+                <button
+                  type="button"
+                  onClick={onSkip}
+                  disabled={busy}
+                  className="text-[11.5px] font-medium text-gray-500 underline underline-offset-2 hover:text-gray-700 disabled:opacity-60"
+                >
+                  {COLLECTIONS_CHROME.skipLabel}
+                </button>
+              )}
+            </div>
           </div>
         )}
 
@@ -388,6 +382,8 @@ export function CaseRail({
   onUndoResult,
   onStartNextLetter,
   escalating,
+  guideSteps,
+  collectorFirstContactDate,
   onMarkSent,
   onSaveFirstContactDate,
   onRefetch,
@@ -442,6 +438,8 @@ export function CaseRail({
     firstNumber,
     insurerNameByDispute,
     providerName,
+    guideSteps,
+    collectorFirstContactDate,
     // Client clock — calendars are the user's timezone (letter-type.ts rule).
     now: new Date(),
   });
@@ -800,7 +798,15 @@ export function CaseRail({
             );
           case "guide-step":
             return (
-              <RailStep key={s.key} dataLetter={railStepDisputeId(s)} n={s.badge} title={s.title} last={last}>
+              <RailStep
+                key={s.key}
+                dataLetter={railStepDisputeId(s)}
+                n={s.badge}
+                title={s.title}
+                last={last}
+                done={s.state === "done"}
+                skipped={s.state === "skipped"}
+              >
                 <GuideStepCard
                   step={s}
                   busy={guideBusy[s.stepId] === true}
