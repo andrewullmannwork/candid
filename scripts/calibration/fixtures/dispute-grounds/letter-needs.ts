@@ -26,6 +26,7 @@
 import {
   sendBlockers,
   SEND_GATE_COPY,
+  DATA_TRUST_HARD_STOP,
 } from "../../../../src/lib/disputes/dispute-readiness";
 import {
   letterNeeds,
@@ -346,6 +347,56 @@ for (const row of MATRIX) {
     (["data_trust", "backed_claim", "recipient_address", "patient_identity"] as const).every(
       (k) => SEND_GATE_COPY.blocker(k, "insurer").fix.length > 0,
     ),
+  );
+}
+
+
+// ── S302 · legacy vocab cannot produce wrong evidence ───────────────────────
+// The case-file drift (raw `dispute_type` into resolveEvidence) was one caller
+// of a defect that FOUR more shared — redraft (x2), bind-canonical, repin. The
+// fix normalizes at resolveEvidence's entry point, so these assertions are what
+// stop a future caller reintroducing it.
+{
+  for (const [raw, resolved] of [
+    ["internal_appeal", "insurance_appeal"],
+    ["external_appeal", "external_review"],
+    ["complaint", "balance_billing"],
+  ] as const) {
+    check(
+      `legacy vocab \u00b7 ${raw} normalizes to ${resolved}`,
+      normalizeLetterType(raw) === resolved,
+      normalizeLetterType(raw),
+    );
+    check(
+      `legacy vocab \u00b7 ${raw} asks for the SAME thing as ${resolved}`,
+      JSON.stringify(letterNeeds(raw)) === JSON.stringify(letterNeeds(resolved)),
+      [letterNeeds(raw), letterNeeds(resolved)],
+    );
+  }
+  check(
+    "legacy vocab \u00b7 raw internal_appeal is an INSURER letter, not a provider one",
+    letterNeeds("internal_appeal").recipientKind === "insurer",
+    letterNeeds("internal_appeal").recipientKind,
+  );
+  check(
+    "legacy vocab \u00b7 raw external_appeal wants the appeals address",
+    letterNeeds("external_appeal").recipientAddress === "insurer_appeals_address",
+    letterNeeds("external_appeal").recipientAddress,
+  );
+}
+
+// ── S302 · the data-trust hard stop speaks once ─────────────────────────────
+{
+  check(
+    "data trust \u00b7 the gate reuses the BANNER's words, not a second set",
+    SEND_GATE_COPY.blocker("data_trust", "insurer").what === DATA_TRUST_HARD_STOP.title,
+    SEND_GATE_COPY.blocker("data_trust", "insurer").what,
+  );
+  check(
+    "data trust \u00b7 the 24-hour estimate exists and lives in ONE place",
+    DATA_TRUST_HARD_STOP.body.includes("24 hours") &&
+      DATA_TRUST_HARD_STOP.gateFix.includes("24 hours"),
+    [DATA_TRUST_HARD_STOP.body, DATA_TRUST_HARD_STOP.gateFix],
   );
 }
 

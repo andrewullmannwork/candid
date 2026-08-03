@@ -1,4 +1,5 @@
 import type { DataTrustState } from "@/lib/disputes/strength-scoring";
+import { DATA_TRUST_HARD_STOP } from "@/lib/disputes/dispute-readiness";
 
 /**
  * DataTrustBanner — readout #1 of the Block C three-axis strength model (§1a).
@@ -30,13 +31,12 @@ export function DataTrustBanner({
         <div className="flex items-start gap-3">
           <WarnIcon className="mt-0.5 h-5 w-5 flex-shrink-0 text-red-600" />
           <div>
+            {/* S302 — verbatim from the SHARED const, which the send gate also
+                reads. The 24-hour estimate now lives in exactly one place. */}
             <div className="text-sm font-semibold text-red-900">
-              Verifying this bill
+              {DATA_TRUST_HARD_STOP.title}
             </div>
-            <p className="mt-1 text-sm text-red-800">
-              We noticed something unusual about this bill&apos;s totals and want
-              to verify before generating a dispute. Check back in 24 hours.
-            </p>
+            <p className="mt-1 text-sm text-red-800">{DATA_TRUST_HARD_STOP.body}</p>
           </div>
         </div>
       </div>

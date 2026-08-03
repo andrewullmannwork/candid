@@ -259,6 +259,31 @@ export type ReadinessBlocker =
  * Each blocker names WHAT is missing and HOW to fix it, because "Not ready to
  * send" without a remedy is the state this gate exists to end.
  */
+/**
+ * The data-trust hard stop, in ONE place (S302, Andrew: "where does the data
+ * trust string go? do we need a time estimate?").
+ *
+ * It already had both a home and a time estimate: DataTrustBanner has said
+ * "Check back in 24 hours" since Block A. The gate's own first draft invented a
+ * second sentence for the same condition — two voices, one fact. The banner now
+ * renders these strings verbatim and the send gate reuses them, so the estimate
+ * can only ever be changed in one place.
+ *
+ * WHERE EACH APPEARS. With `dispute_letter_v3_design` ON, a hard-stopped bill
+ * serves NO letter at all and the page renders the BANNER instead of the spine
+ * — so the gate line is the belt-and-braces path for the flag-OFF world. The
+ * blocker stays in the list either way, because the server gate protects the
+ * RECORD (clock, follow-ups, flywheel) and must not depend on a display flag.
+ */
+export const DATA_TRUST_HARD_STOP = {
+  title: "Verifying this bill",
+  body:
+    "We noticed something unusual about this bill's totals and want to verify " +
+    "before generating a dispute. Check back in 24 hours.",
+  /** The same promise, compressed for the gate's one-line list. */
+  gateFix: "we're verifying the totals first — check back in 24 hours",
+} as const;
+
 export const SEND_GATE_COPY = {
   /** 409 body — the client refetches and re-renders the locked state. */
   error: "This letter isn't ready to send yet.",
@@ -289,10 +314,8 @@ export const SEND_GATE_COPY = {
       case "patient_identity":
         return { what: "Who the patient is", fix: "confirm whether this bill is yours" };
       case "data_trust":
-        return {
-          what: "This bill's numbers don't add up yet",
-          fix: "we're re-checking it — the letter is on hold until they reconcile",
-        };
+        // The banner's own words, not a second set for the same condition.
+        return { what: DATA_TRUST_HARD_STOP.title, fix: DATA_TRUST_HARD_STOP.gateFix };
     }
   },
 } as const;

@@ -47,7 +47,7 @@ import {
   type SecondaryCoverage,
 } from "@/lib/audit/coverage-loader";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
-import { letterNeeds } from "./letter-type";
+import { letterNeeds, normalizeLetterType } from "./letter-type";
 import { userScoped, selectOwnedChildren } from "@/lib/security/user-scoped";
 
 const K_ANON_PRICING = 5;
@@ -620,7 +620,26 @@ export async function resolveEvidence(
     attestedLineItemIds?: string[];
   },
 ): Promise<DisputeEvidence> {
-  const { userId, claimIds, lineItemIds, planContext, letterType, disputeId } = params;
+  const { userId, claimIds, lineItemIds, planContext, disputeId } = params;
+  /**
+   * S302 — NORMALIZED at the entry point, so a caller passing the raw
+   * `dispute_outcomes.dispute_type` vocab can no longer produce wrong evidence.
+   *
+   * Every internal consumer wants the resolved type and none wants the raw one:
+   * `resolveLegalBasis` switches on "insurance_appeal" (raw "internal_appeal"
+   * returned NO legal basis, and `backedClaim` in the MVDL floor is partly
+   * `legalBasis.length > 0`), and `computeEvidenceGaps`'s flag-OFF branch tests
+   * `letterType === "insurance_appeal"` (raw vocab asked an appeal for the
+   * PROVIDER's address and never for its appeals address). `letterNeeds`
+   * already normalized internally; this brings the rest of the module in line.
+   *
+   * Found by auditing the call sites after the case-file drift: FOUR more were
+   * passing raw vocab — redraft (×2), bind-canonical, and repin. Fixing them
+   * one by one would leave the next caller free to make the same mistake, so
+   * the fix belongs here, where it cannot be forgotten.
+   */
+  const letterType =
+    params.letterType != null ? normalizeLetterType(params.letterType) : params.letterType;
   const userConfirmedSamePlan = params.userConfirmedSamePlan ?? null;
   const canonicalPlanIdForBillYear = params.canonicalPlanIdForBillYear ?? null;
   const attestedLineItemIds = new Set(params.attestedLineItemIds ?? []);
