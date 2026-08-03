@@ -400,6 +400,29 @@ export function planDeadlineReasserts(
  */
 export type ClaimFollowupGesture = "dismiss" | "acknowledge";
 
+/**
+ * The POST /api/disputes/followups action vocabulary, SHARED with the route so
+ * the two families cannot drift apart by hand.
+ *
+ * They did exactly that at S300: the route's `validActions` list predated
+ * `acknowledge`, so every banner click 400'd at the guard and never reached
+ * the branch that already accepted it. Nothing surfaced, because the banner
+ * navigates regardless of the response. Deriving the guard from these two
+ * exports — and asserting them in the followup fixture against the strings the
+ * client actually sends — is what makes that failure impossible to repeat.
+ */
+export const CLAIM_SCOPED_FOLLOWUP_ACTIONS: readonly ClaimFollowupGesture[] = [
+  "dismiss",
+  "acknowledge",
+];
+export const PER_FOLLOWUP_ACTIONS: readonly string[] = [
+  "won",
+  "settled",
+  "lost",
+  "still_waiting",
+  "dismiss",
+];
+
 export async function resolveClaimFollowups(
   supabase: SupabaseClient,
   params: {

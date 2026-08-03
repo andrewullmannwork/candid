@@ -20,6 +20,8 @@ import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { userScoped } from "@/lib/security/user-scoped";
 import {
+  CLAIM_SCOPED_FOLLOWUP_ACTIONS,
+  PER_FOLLOWUP_ACTIONS,
   resolveClaimFollowups,
   getActiveFollowups,
   groupFollowupsByClaim,
@@ -83,11 +85,29 @@ export async function POST(req: NextRequest) {
   const body = await req.json();
   const { followupId, followupIds, action, amountRecovered } = body;
 
-  const validActions = ["won", "settled", "lost", "still_waiting", "dismiss"];
+  // Two families, and the split is load-bearing: CLAIM-SCOPED gestures act on
+  // a banner row (many followups, one bill); PER-FOLLOWUP actions record an
+  // outcome on one letter. `acknowledge` is claim-scoped only — there is no
+  // single-letter meaning for "I'm on it".
+  //
+  // ⚠ S300 E2E: `acknowledge` was missing from this list while the branch
+  // below already accepted it, so every click 400'd here and never reached it.
+  // The banner navigates regardless of the response (a failed write must never
+  // eat the click), so the failure was completely silent — keep the two lists
+  // in lockstep.
+  const validActions = [
+    ...new Set<string>([...CLAIM_SCOPED_FOLLOWUP_ACTIONS, ...PER_FOLLOWUP_ACTIONS]),
+  ];
   if (!action || !validActions.includes(action)) {
     return NextResponse.json(
       { error: `action must be one of: ${validActions.join(", ")}` },
       { status: 400 }
+    );
+  }
+  if (action === "acknowledge" && !Array.isArray(followupIds)) {
+    return NextResponse.json(
+      { error: "acknowledge requires followupIds (claim-scoped)" },
+      { status: 400 },
     );
   }
 
@@ -98,9 +118,9 @@ export async function POST(req: NextRequest) {
   // status transition. Only `dismiss` may fan out — an outcome is per-letter
   // by construction and belongs in the rail's modal.
   if (Array.isArray(followupIds)) {
-    if (action !== "dismiss" && action !== "acknowledge") {
+    if (!(CLAIM_SCOPED_FOLLOWUP_ACTIONS as readonly string[]).includes(action)) {
       return NextResponse.json(
-        { error: "followupIds is only valid with action=dismiss|acknowledge" },
+        { error: `followupIds is only valid with action=${CLAIM_SCOPED_FOLLOWUP_ACTIONS.join("|")}` },
         { status: 400 },
       );
     }

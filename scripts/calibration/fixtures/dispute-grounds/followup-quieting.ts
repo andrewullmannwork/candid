@@ -18,6 +18,7 @@
  * Run:  npx tsx scripts/calibration/fixtures/dispute-grounds/followup-quieting.ts
  */
 import {
+  CLAIM_SCOPED_FOLLOWUP_ACTIONS,
   groupFollowupsByClaim,
   nextCheckInRung,
   planDeadlineReasserts,
@@ -250,6 +251,28 @@ const pend = (id: string, type: PendingFollowupRow["followup_type"], kind?: stri
   check(
     "gesture · deadline-only types never produce a check-in rung",
     nextCheckInRung(["post_escalation_60d"]) === null,
+  );
+}
+
+// ── The client↔route action contract ───────────────────────────────────────
+// S300 E2E: the route's validActions list predated `acknowledge`, so every
+// banner click 400'd at the guard and never reached the branch that already
+// accepted it — and nothing surfaced, because the button navigates regardless
+// of the response. These are the EXACT strings FollowupBanner.tsx sends; if a
+// gesture is added to the UI without landing here, this fails instead of
+// failing silently in a user's browser.
+{
+  const SENT_BY_BANNER = ["dismiss", "acknowledge"];
+  for (const a of SENT_BY_BANNER) {
+    check(
+      `contract · the route accepts the banner's "${a}"`,
+      (CLAIM_SCOPED_FOLLOWUP_ACTIONS as readonly string[]).includes(a),
+    );
+  }
+  check(
+    "contract · no claim-scoped gesture is missing a banner sender",
+    CLAIM_SCOPED_FOLLOWUP_ACTIONS.every((a) => SENT_BY_BANNER.includes(a)),
+    CLAIM_SCOPED_FOLLOWUP_ACTIONS,
   );
 }
 

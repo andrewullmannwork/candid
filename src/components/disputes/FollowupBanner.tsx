@@ -133,7 +133,17 @@ export function FollowupBanner() {
       };
       window.setTimeout(go, 1000);
       void post(group, "acknowledge")
-        .catch(() => {})
+        .then((res) => {
+          // Navigation wins either way, which means a rejected write shows NO
+          // user-visible symptom — that is exactly how the S300 E2E found a
+          // 400 that had been swallowed on every click. Leave a trace.
+          if (!res.ok) {
+            console.error("[FollowupBanner] acknowledge failed:", res.status, group.claimId);
+          }
+        })
+        .catch((err) => {
+          console.error("[FollowupBanner] acknowledge threw:", err);
+        })
         .finally(go);
     },
     [post],
