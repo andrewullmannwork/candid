@@ -245,8 +245,30 @@ export async function resolveDisputeReadiness(
  * which a collector letter fails for a provider address it never prints —
  * enforcing that would lock a user out of sending a correct letter.
  */
+/**
+ * ⚠ `data_trust` is deliberately NOT a blocker (S302, Andrew).
+ *
+ * The MVDL floor still scores it — `readiness.required.dataTrustPass` is
+ * unchanged, so the pill still reads "Not ready to send" — but the SEND GATE
+ * does not act on it, for two reasons:
+ *
+ *  1. It cannot fire. The gate keys on `claims.metadata.header_reconciliation_failed`,
+ *     which `evidence-resolver` READS and nothing in the repo WRITES. DEV has 3
+ *     `bill_parser_decisions` rows with that verdict and 0 claims carrying the
+ *     flag, so the condition never reaches a claim.
+ *  2. Blocking it would be a DEAD END. Andrew: "we should allow them to correct
+ *     the values that don't add up. We can't have them upload again since it
+ *     would likely be the same and result in the same error." A hold the user
+ *     cannot clear is worse than no hold, and copy promising a correction that
+ *     does not exist is worse still — the first draft of that string claimed
+ *     "we're re-checking it", which nothing does.
+ *
+ * Both come back together in the correction unit (tracker): the parse-persist
+ * write that makes the condition real, a line-level value editor, and copy that
+ * offers the exit it names. Until then this stays out rather than shipping a
+ * wall with no door.
+ */
 export type ReadinessBlocker =
-  | "data_trust"
   | "backed_claim"
   | "recipient_address"
   | "patient_identity";
@@ -259,31 +281,6 @@ export type ReadinessBlocker =
  * Each blocker names WHAT is missing and HOW to fix it, because "Not ready to
  * send" without a remedy is the state this gate exists to end.
  */
-/**
- * The data-trust hard stop, in ONE place (S302, Andrew: "where does the data
- * trust string go? do we need a time estimate?").
- *
- * It already had both a home and a time estimate: DataTrustBanner has said
- * "Check back in 24 hours" since Block A. The gate's own first draft invented a
- * second sentence for the same condition — two voices, one fact. The banner now
- * renders these strings verbatim and the send gate reuses them, so the estimate
- * can only ever be changed in one place.
- *
- * WHERE EACH APPEARS. With `dispute_letter_v3_design` ON, a hard-stopped bill
- * serves NO letter at all and the page renders the BANNER instead of the spine
- * — so the gate line is the belt-and-braces path for the flag-OFF world. The
- * blocker stays in the list either way, because the server gate protects the
- * RECORD (clock, follow-ups, flywheel) and must not depend on a display flag.
- */
-export const DATA_TRUST_HARD_STOP = {
-  title: "Verifying this bill",
-  body:
-    "We noticed something unusual about this bill's totals and want to verify " +
-    "before generating a dispute. Check back in 24 hours.",
-  /** The same promise, compressed for the gate's one-line list. */
-  gateFix: "we're verifying the totals first — check back in 24 hours",
-} as const;
-
 export const SEND_GATE_COPY = {
   /** 409 body — the client refetches and re-renders the locked state. */
   error: "This letter isn't ready to send yet.",
@@ -313,9 +310,6 @@ export const SEND_GATE_COPY = {
         };
       case "patient_identity":
         return { what: "Who the patient is", fix: "confirm whether this bill is yours" };
-      case "data_trust":
-        // The banner's own words, not a second set for the same condition.
-        return { what: DATA_TRUST_HARD_STOP.title, fix: DATA_TRUST_HARD_STOP.gateFix };
     }
   },
 } as const;
@@ -333,7 +327,7 @@ export function sendBlockers(
   if (!strength) return [];
   const r = strength.readiness.required;
   const out: ReadinessBlocker[] = [];
-  if (!r.dataTrustPass) out.push("data_trust");
+  // dataTrustPass is scored but NOT gated — see ReadinessBlocker above.
   if (!r.backedClaim) out.push("backed_claim");
   if (!r.recipientAddress) out.push("recipient_address");
   if (!r.patientIdentity) out.push("patient_identity");

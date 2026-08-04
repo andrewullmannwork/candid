@@ -26,7 +26,6 @@
 import {
   sendBlockers,
   SEND_GATE_COPY,
-  DATA_TRUST_HARD_STOP,
 } from "../../../../src/lib/disputes/dispute-readiness";
 import {
   letterNeeds,
@@ -306,7 +305,7 @@ for (const row of MATRIX) {
     sendBlockers(
       floor({ dataTrustPass: false, backedClaim: false, recipientAddress: false, patientIdentity: false }),
       true,
-    ).join(",") === "data_trust,backed_claim,recipient_address,patient_identity",
+    ).join(",") === "backed_claim,recipient_address,patient_identity",
     sendBlockers(floor({ dataTrustPass: false, backedClaim: false, recipientAddress: false, patientIdentity: false }), true),
   );
   check(
@@ -344,7 +343,7 @@ for (const row of MATRIX) {
   );
   check(
     "gate copy · every blocker carries a remedy, never just a complaint",
-    (["data_trust", "backed_claim", "recipient_address", "patient_identity"] as const).every(
+    (["backed_claim", "recipient_address", "patient_identity"] as const).every(
       (k) => SEND_GATE_COPY.blocker(k, "insurer").fix.length > 0,
     ),
   );
@@ -385,18 +384,16 @@ for (const row of MATRIX) {
   );
 }
 
-// ── S302 · the data-trust hard stop speaks once ─────────────────────────────
+// ── S302 · data trust is SCORED but not GATED ──────────────────────────────
+// A hold the user cannot clear is worse than no hold, and the condition cannot
+// even fire today (the flag `evidence-resolver` reads is never written). It
+// returns with the correction unit, alongside the editor that gives it an exit.
 {
   check(
-    "data trust \u00b7 the gate reuses the BANNER's words, not a second set",
-    SEND_GATE_COPY.blocker("data_trust", "insurer").what === DATA_TRUST_HARD_STOP.title,
-    SEND_GATE_COPY.blocker("data_trust", "insurer").what,
-  );
-  check(
-    "data trust \u00b7 the 24-hour estimate exists and lives in ONE place",
-    DATA_TRUST_HARD_STOP.body.includes("24 hours") &&
-      DATA_TRUST_HARD_STOP.gateFix.includes("24 hours"),
-    [DATA_TRUST_HARD_STOP.body, DATA_TRUST_HARD_STOP.gateFix],
+    "data trust \u00b7 no blocker copy claims work we do not do",
+    !JSON.stringify(SEND_GATE_COPY).includes("24 hours") &&
+      !JSON.stringify(SEND_GATE_COPY).includes("re-checking") &&
+      !JSON.stringify(SEND_GATE_COPY).includes("Verifying"),
   );
 }
 
