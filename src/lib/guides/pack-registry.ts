@@ -1019,5 +1019,16 @@ export const CASE_RAIL = {
   regulatorFiledEarlier: (dateLabel: string, letterBand: string): string =>
     `Already filed ${dateLabel} — for your ${letterBand.toLowerCase()}`,
   regulatorFileAgainLabel: "File again",
+  /**
+   * S303 (Andrew-approved) — the fold must never HIDE outstanding work.
+   *
+   * The fold stays a judgment about the LETTERS, deliberately: three of the
+   * four collections steps carry no skip at all, so gating the collapse on
+   * step completion would deadlock those cases permanently — and the regulator
+   * card is optional, so an untouched one is the NORMAL end state, which would
+   * mean the fold almost never fired. The count keeps it honest instead: the
+   * case reads as over AND as having something left, one click away.
+   */
+  foldOpenSteps: (n: number): string => (n === 1 ? "1 step still open" : `${n} steps still open`),
   proChip: "Pro",
 } as const;

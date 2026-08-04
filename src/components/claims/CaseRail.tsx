@@ -37,8 +37,6 @@ import { ShowFullStepButton } from "@/components/claims/GuidedPhoneSteps";
 import { UnsendControl } from "@/components/disputes/UnsendControl";
 import { CASE_RAIL, COLLECTIONS_CHROME } from "@/lib/guides/pack-registry";
 import {
-  composeRailGroups,
-  type ComposeRailInput,
   type RailCaseResolution,
   type RailDoorTile,
   type RailLetterGroup,
@@ -476,11 +474,7 @@ function LetterBand({ group }: { group: RailLetterGroup }) {
 }
 
 export function CaseRail({
-  letters,
-  regulator,
-  insurerNameByDispute,
-  providerName,
-  firstNumber,
+  groups,
   claimId,
   getAuthToken,
   onLogResponse,
@@ -491,9 +485,15 @@ export function CaseRail({
   onMarkSent,
   onSaveFirstContactDate,
   onRefetch,
-}: Omit<ComposeRailInput, "insurerNameByDispute" | "providerName" | "now"> & {
-  insurerNameByDispute: Record<string, string>;
-  providerName: string | null;
+}: {
+  /**
+   * S303 — the rail arrives COMPOSED. ClaimDetail composes once (composeRail)
+   * and passes both halves down; this component used to re-compose the same
+   * inputs while ClaimDetail separately computed the fold from `letters`
+   * alone, which is exactly how a finished-looking case could collapse with
+   * steps still open. One composition, one truth.
+   */
+  groups: RailLetterGroup[];
   claimId: string;
   getAuthToken: () => Promise<string | null>;
   /** Opens the shared OutcomeReportingModal (ClaimDetail mounts it). */
@@ -551,15 +551,6 @@ export function CaseRail({
    */
   const [refiling, setRefiling] = useState<Record<string, boolean>>({});
 
-  const groups: RailLetterGroup[] = composeRailGroups({
-    letters,
-    regulator,
-    firstNumber,
-    insurerNameByDispute,
-    providerName,
-    // Client clock — calendars are the user's timezone (letter-type.ts rule).
-    now: new Date(),
-  });
   if (groups.length === 0) return null;
 
   const goToLetter = (disputeId: string) => router.push(`/disputes?dispute=${disputeId}`);

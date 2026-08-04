@@ -26,7 +26,7 @@ import { CaseRail, CaseResolvedFold, RailStep } from "@/components/claims/CaseRa
 import { OutcomeReportingModal } from "@/components/disputes/OutcomeReportingModal";
 import { CollectorModal, type CollectorSubmit } from "@/components/disputes/CollectorModal";
 import { ExhaustionAttestModal } from "@/components/disputes/ExhaustionAttestModal";
-import { railHasExtension, railCaseResolution, fmtRailDate } from "@/lib/case/rail-steps";
+import { railHasExtension, composeRail, fmtRailDate } from "@/lib/case/rail-steps";
 import {
   readUserTotalsSource,
   type UserTotalsSource,
@@ -1608,15 +1608,8 @@ export function ClaimDetail({
   // UI). Without it, a CLEAN bill that happens to carry a resolved letter — an
   // itemized-bill request, say — would fold away its own line-items table,
   // because the collapse wrapper spans the whole rail region.
-  const railResolution =
-    isFlagged && railTimeline != null
-      ? railCaseResolution({
-          letters: railTimeline.letters,
-          insurerNameByDispute: railTimeline.insurerNameByDispute,
-          providerName: providerName === "Unknown Provider" ? null : providerName,
-        })
-      : null;
-  const caseFolded = railResolution != null && !caseExpanded;
+  // S303 — the rail composition lives below, next to `guidedCtx`, because the
+  // badge numbering depends on it. See `railComposed`.
   // Stage-8 offer router (phase 1b): external_review needs the exhaustion
   // attestation (same modal + fail-closed gate as the dispute page);
   // final_notice goes direct with the prior letter's LOCAL send date
@@ -1723,6 +1716,32 @@ export function ClaimDetail({
       flaggedTotal: billTotals.potentialRecovery >= 1 ? billTotals.potentialRecovery : null,
     };
   })();
+
+  // S303 — ONE composition for the whole rail. ClaimDetail used to compute the
+  // fold from `letters` alone while CaseRail separately composed the groups, so
+  // the same rail was built TWICE per render from the same inputs — and the
+  // fold, never seeing the steps, could collapse a case whose steps were still
+  // asking (Andrew: "it was collapsed on reload even though steps 7, 14 and 17
+  // are open"). `groups` now goes down to CaseRail, and the summary counts the
+  // very steps it is folding.
+  //
+  // Placed here, after `guidedCtx`, because badge numbering reads it: the rail
+  // starts at 5 behind the guided phone step, and at railStepRecover without it.
+  const railComposed =
+    isFlagged && railTimeline != null
+      ? composeRail({
+          letters: railTimeline.letters,
+          regulator: railTimeline.regulator,
+          firstNumber: guidedCtx ? 5 : railStepRecover,
+          insurerNameByDispute: railTimeline.insurerNameByDispute,
+          providerName: providerName === "Unknown Provider" ? null : providerName,
+          // Client clock — calendars are the user's timezone (letter-type.ts rule).
+          now: new Date(),
+        })
+      : null;
+  const railResolution = railComposed?.resolution ?? null;
+  const caseFolded = railResolution != null && !caseExpanded;
+
   const guideStepsMeta =
     ((claim.metadata as Record<string, unknown>)?.guideSteps as
       | Record<string, GuideStepState>
@@ -3642,7 +3661,7 @@ export function ClaimDetail({
           it replaces has stopped rendering: guided → phone step is 4, rail
           starts at 5; flag-OFF guided → the rail starts AT railStepRecover,
           whose step no longer renders once a letter exists. */}
-      {isFlagged && railExtends && railTimeline && (
+      {isFlagged && railExtends && railTimeline && railComposed && (
         <>
           {railActionError && (
             <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
@@ -3658,13 +3677,8 @@ export function ClaimDetail({
             </div>
           )}
           <CaseRail
-            letters={railTimeline.letters}
-            // S303 — the case-level regulator complaint. Required by
-            // ComposeRailInput, so a call site cannot forget it silently.
-            regulator={railTimeline.regulator}
-            insurerNameByDispute={railTimeline.insurerNameByDispute}
-            providerName={providerName === "Unknown Provider" ? null : providerName}
-            firstNumber={guidedCtx ? 5 : railStepRecover}
+            // S303 — composed ONCE above, alongside the fold that reads it.
+            groups={railComposed.groups}
             claimId={claimId}
             getAuthToken={getAuthToken}
             onLogResponse={(id) => setRailOutcomeDisputeId(id)}

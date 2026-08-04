@@ -353,6 +353,47 @@ export interface RailCaseResolution {
   /** "Blue Cross · Oct 8 · 3 letters · $163.27 recovered" — omits what it doesn't know. */
   meta: string;
   expandLabel: string;
+  /**
+   * S303 — how many steps still ask something of the user. The fold does NOT
+   * gate on this (see CASE_RAIL.foldOpenSteps for why); it NAMES it, so a
+   * collapsed case can never silently hide outstanding work.
+   */
+  openStepCount: number;
+}
+
+/**
+ * Does this step still ask something of the user?
+ *
+ * ONE definition, read by the fold's summary — derived from the composed step
+ * the rail actually renders, never re-derived from the projection, so the
+ * count and the badges can never disagree about the same step.
+ */
+export function railStepIsOpen(s: RailStepModel): boolean {
+  switch (s.kind) {
+    case "guide-step":
+      // "skipped" is a resolution, not a completion — the user answered by
+      // declining, which is exactly the distinction S297 §3.2 protects.
+      return s.state === "open";
+    case "next-move": {
+      const reg = s.move.regulator;
+      if (!reg) return false; // offer-only: the escalation is optional, never a chore
+      return !reg.doors.some((d) => d.filedAt != null) && !(reg.skip?.declined ?? false);
+    }
+    case "send-draft":
+      return true;
+    case "wait-active":
+      // Belt and braces: an active wait means the letter is at `awaiting`, so
+      // the case cannot be resolved anyway. Counted honestly rather than
+      // assumed unreachable.
+      return true;
+    case "send-receipt":
+    case "wait-receipt":
+      return false;
+    default: {
+      const _exhaustive: never = s;
+      return _exhaustive;
+    }
+  }
 }
 
 /**
@@ -366,11 +407,12 @@ export interface RailCaseResolution {
  * UNfinished case is real server state (`case_closed` is still a RESERVED
  * event kind) and is its own unit.
  */
-export function railCaseResolution(
+function railCaseResolution(
   // Narrowed to what it actually reads — the summary has no badges and no
   // clock, so demanding the full ComposeRailInput would have meant callers
   // passing a dummy `firstNumber` and a `now` nothing looks at.
   input: Pick<ComposeRailInput, "letters" | "insurerNameByDispute" | "providerName">,
+  openStepCount: number,
 ): RailCaseResolution | null {
   const onRail = input.letters.filter(contributesSteps);
   if (onRail.length === 0) return null;
@@ -393,12 +435,14 @@ export function railCaseResolution(
     closer.outcome!.loggedAt ? fmtRailDate(closer.outcome!.loggedAt) : null,
     CASE_RAIL.foldLetterCount(onRail.length),
     recovered != null && recovered > 0 ? CASE_RAIL.foldRecovered(recovered) : null,
+    openStepCount > 0 ? CASE_RAIL.foldOpenSteps(openStepCount) : null,
   ].filter((x): x is string => x != null);
 
   return {
     headline: OUTCOME_LABELS[closer.outcome!.detail],
     meta: parts.join(" · "),
     expandLabel: CASE_RAIL.foldExpand,
+    openStepCount,
   };
 }
 
@@ -867,7 +911,7 @@ function buildLetterSteps(
  * timestamps at all — the anchor/sort machinery this replaced existed only to
  * re-derive an order the data already had.
  */
-export function composeRailGroups(input: ComposeRailInput): RailLetterGroup[] {
+function composeRailGroups(input: ComposeRailInput): RailLetterGroup[] {
   const { letters, firstNumber } = input;
   const activeWaitCount = letters.filter((l) => l.stage === "awaiting").length;
   const onRail = letters.filter(contributesSteps);
@@ -881,4 +925,27 @@ export function composeRailGroups(input: ComposeRailInput): RailLetterGroup[] {
       badge: String(n++),
     })),
   }));
+}
+
+/**
+ * THE rail composition — groups and the resolved-case summary, from one pass.
+ *
+ * S303: these were two calls on two different components (ClaimDetail computed
+ * the resolution, CaseRail composed the groups), so the same rail was composed
+ * TWICE per render from the same inputs. That duplication is also why the fold
+ * could collapse a case with work outstanding: the resolution only ever saw
+ * `letters`, never the steps, so it could not know what the rail was still
+ * asking. Composing once makes the summary read the very steps it is folding —
+ * the count and the badges derive from one object, so they cannot disagree.
+ */
+export function composeRail(input: ComposeRailInput): {
+  groups: RailLetterGroup[];
+  resolution: RailCaseResolution | null;
+} {
+  const groups = composeRailGroups(input);
+  const openStepCount = groups.reduce(
+    (n, g) => n + g.steps.filter(railStepIsOpen).length,
+    0,
+  );
+  return { groups, resolution: railCaseResolution(input, openStepCount) };
 }

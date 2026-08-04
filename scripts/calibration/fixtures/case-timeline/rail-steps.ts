@@ -26,9 +26,9 @@ import {
   type ProjectorDisputeRow,
 } from "../../../../src/lib/case/timeline-projector";
 import {
-  composeRailGroups,
-  railCaseResolution,
+  composeRail,
   railHasExtension,
+  railStepIsOpen,
   fmtRailDate,
   type RailStepModel,
 } from "../../../../src/lib/case/rail-steps";
@@ -104,7 +104,7 @@ const compose = (
     now: NOW,
     amberDays: 7,
   });
-  const groups = composeRailGroups({
+  const composed = composeRail({
     letters: t.letters,
     // S303 — the case-level regulator record, straight off the projection the
     // rail is composing. Feeding it separately here is exactly the mistake the
@@ -116,6 +116,7 @@ const compose = (
     providerName: NAMES.providerName,
     now: NOW,
   });
+  const { groups, resolution } = composed;
   return {
     t,
     groups,
@@ -123,11 +124,10 @@ const compose = (
     // and per-step shape, which grouping does not change, so they read the
     // FLATTENED steps; grouping itself is asserted on `groups` in §11.
     steps: groups.flatMap((g) => g.steps),
-    resolution: railCaseResolution({
-      letters: t.letters,
-      insurerNameByDispute,
-      providerName: NAMES.providerName,
-    }),
+    // S303 — from the SAME composition as the groups. The fold used to be
+    // computed by a second call that only ever saw `letters`, which is why it
+    // could collapse a case with steps still open.
+    resolution,
   };
 };
 
@@ -1307,6 +1307,53 @@ const compose = (
     escalated.resolution != null,
     escalated.resolution,
   );
+  // ── The fold NAMES outstanding work rather than gating on it ──────────────
+  // Andrew saw a case collapse with three regulator steps still open. Gating
+  // the fold on step completion was the obvious fix and is the wrong one:
+  // three of the four collections steps carry NO skip, so those cases could
+  // never fold at all, and the regulator card is optional — an untouched one
+  // is the normal end state, so gating would mean the fold almost never fired.
+  // It collapses, and says what is left.
+  check(
+    "fold · counts the steps still asking (both regulator cards, untouched)",
+    escalated.resolution?.openStepCount === 2,
+    escalated.resolution?.openStepCount,
+  );
+  check(
+    "fold · and names them in the summary rather than hiding them",
+    escalated.resolution?.meta.endsWith(" · 2 steps still open") === true,
+    escalated.resolution?.meta,
+  );
+  // Resolve them and the clause disappears — done and SKIPPED both count.
+  const escalatedResolved = compose(
+    [escAppeal, escReview],
+    { [escAppeal.id]: "Blue Cross Blue Shield of Wyoming", [escReview.id]: "Blue Cross Blue Shield of Wyoming" },
+    {
+      [`packD:filed:${escAppeal.id}:doi`]: { checkedAt: iso(-1), note: "DOI-1" },
+      [`packD:skip:${escReview.id}`]: { skippedAt: iso(-1) },
+    },
+  );
+  check(
+    "fold · a filing resolves one, a declination resolves the other — no clause",
+    escalatedResolved.resolution?.openStepCount === 0 &&
+      !escalatedResolved.resolution?.meta.includes("still open"),
+    escalatedResolved.resolution?.meta,
+  );
+  check(
+    "fold · singular reads «1 step still open»",
+    compose(
+      [escAppeal, escReview],
+      {},
+      { [`packD:filed:${escAppeal.id}:doi`]: { checkedAt: iso(-1) } },
+    ).resolution?.meta.endsWith(" · 1 step still open") === true,
+  );
+  // The predicate itself — receipts are not work, an open guide step is.
+  check(
+    "open · receipts never count as asking",
+    escalated.steps
+      .filter((s) => s.kind === "send-receipt" || s.kind === "wait-receipt")
+      .every((s) => railStepIsOpen(s) === false),
+  );
   check(
     "fold · the superseded appeal no longer offers a rung it already took",
     escalated.steps
@@ -1371,9 +1418,12 @@ const compose = (
     resolution?.headline,
   );
   check(
-    "fold · meta = counterparty · date · letter count · money recovered",
+    // S303 — the open-step clause rides last. The WON appeal carries no
+    // regulator card (a win is not an adverse answer); the lost external
+    // review does, and it is untouched.
+    "fold · meta = counterparty · date · letter count · money recovered · what's left",
     resolution?.meta ===
-      `Blue Cross Blue Shield of Wyoming · ${fmtRailDate(iso(-3))} · 2 letters · $163.27 recovered`,
+      `Blue Cross Blue Shield of Wyoming · ${fmtRailDate(iso(-3))} · 2 letters · $163.27 recovered · 1 step still open`,
     resolution?.meta,
   );
   check("fold · expand label", resolution?.expandLabel === "Show the full case");
@@ -1392,7 +1442,8 @@ const compose = (
   const r2 = compose([noMoney], { [noMoney.id]: "Blue Cross Blue Shield of Wyoming" }).resolution;
   check(
     "fold · unlogged recovery omits the money clause (never $0.00)",
-    r2?.meta === `Blue Cross Blue Shield of Wyoming · ${fmtRailDate(iso(-4))} · 1 letter`,
+    r2?.meta ===
+      `Blue Cross Blue Shield of Wyoming · ${fmtRailDate(iso(-4))} · 1 letter · 1 step still open`,
     r2?.meta,
   );
 
