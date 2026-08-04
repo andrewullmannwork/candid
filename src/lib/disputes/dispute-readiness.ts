@@ -78,8 +78,22 @@ export interface DisputeReadinessResult {
   evidence: DisputeEvidence | null;
   /** Null only when the computation threw — never fatal to the caller. */
   strength: StrengthResult | null;
-  /** Null when the names agree OR the user explicitly confirmed identity. */
+  /**
+   * The RAW comparison: do the bill's patient name and the account name differ?
+   *
+   * S302 round 3 — this used to be nulled once the user confirmed, conflating
+   * TWO facts into one field: "the names differ" (about the data) and "the user
+   * answered" (about the user). That is why nothing could re-ask — the verified
+   * row had no names left to re-open the question with, so its Edit pointed at
+   * the letter-body editor instead and did the wrong thing entirely.
+   *
+   * Now both facts travel. Consumers combine them explicitly:
+   *   floor / done-state → `!patientNameMismatch || patientIdentityConfirmed`
+   *   "is it outstanding" → `patientNameMismatch && !patientIdentityConfirmed`
+   */
   patientNameMismatch: PatientNameMismatch | null;
+  /** The user's EXPLICIT confirm-patient-identity answer (sticky, Block C2). */
+  patientIdentityConfirmed: boolean;
   /** users.display_name (email fallback) — the letter's attesting name. */
   accountName: string;
   /** Fetched here; returned so callers don't re-read the claim row. */
@@ -99,6 +113,7 @@ async function resolvePatientIdentity(
   dispute: ReadinessDisputeRow,
 ): Promise<{
   patientNameMismatch: PatientNameMismatch | null;
+  patientIdentityConfirmed: boolean;
   accountName: string;
   claimMetadata: Record<string, unknown> | null;
 }> {
@@ -130,10 +145,12 @@ async function resolvePatientIdentity(
   } catch (err) {
     console.warn("[dispute-readiness] patient-name compare failed (non-fatal):", err);
   }
-  if ((dispute.metadata ?? {}).patientIdentityResolved === true) {
-    patientNameMismatch = null;
-  }
-  return { patientNameMismatch, accountName, claimMetadata };
+  // Block C2 — the sticky explicit answer. NOT folded into the mismatch above:
+  // see the field docs. Once true it stays true regardless of a later profile
+  // rename, which is the whole point of storing it.
+  const patientIdentityConfirmed =
+    (dispute.metadata ?? {}).patientIdentityResolved === true;
+  return { patientNameMismatch, patientIdentityConfirmed, accountName, claimMetadata };
 }
 
 export async function resolveDisputeReadiness(
@@ -210,7 +227,9 @@ export async function resolveDisputeReadiness(
   try {
     strength = computeDisputeStrength(evidence, {
       config: await loadStrengthConfig(supabase),
-      patientIdentityResolved: !identity.patientNameMismatch,
+      // The floor is met when there is nothing to resolve OR the user resolved it.
+      patientIdentityResolved:
+        !identity.patientNameMismatch || identity.patientIdentityConfirmed,
       recipientKind: letterRecipientKind(resolvedLetterType),
       // S301 — without this the floor keeps the legacy recipient mapping, where
       // `collector` falls to the both-addresses branch and a debt-validation
@@ -227,6 +246,7 @@ export async function resolveDisputeReadiness(
     evidence,
     strength,
     patientNameMismatch: identity.patientNameMismatch,
+    patientIdentityConfirmed: identity.patientIdentityConfirmed,
     accountName: identity.accountName,
     claimMetadata: identity.claimMetadata,
   };

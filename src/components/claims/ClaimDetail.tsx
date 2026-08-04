@@ -27,7 +27,10 @@ import { OutcomeReportingModal } from "@/components/disputes/OutcomeReportingMod
 import { CollectorModal, type CollectorSubmit } from "@/components/disputes/CollectorModal";
 import { ExhaustionAttestModal } from "@/components/disputes/ExhaustionAttestModal";
 import { railHasExtension, railCaseResolution, fmtRailDate } from "@/lib/case/rail-steps";
-import { readUserTotalsSource } from "@/lib/claims/effective-totals";
+import {
+  readUserTotalsSource,
+  type UserTotalsSource,
+} from "@/lib/claims/effective-totals";
 import {
   SEND_GATE_COPY,
   type ReadinessBlocker,
@@ -554,6 +557,18 @@ export function ClaimDetail({
   // S302 — the line-items-vs-summary question. OFF = the row never renders and
   // nothing writes the answer, so decideField keeps today's header-wins rule.
   const billTotalsSourceFlag = useFeatureFlag("bill_totals_source_v1");
+  /**
+   * S302 round 3 (Andrew: "the click takes a while — use optimistic with
+   * snapback"). Every other assumption row awaits the claim refetch because the
+   * ENGINE re-derives its value server-side, so flipping early would show the
+   * pre-answer number for a beat. This row is different: the answer IS the
+   * user's click, so the client already knows the outcome and can show it now.
+   * `{ value }` wrapper so an optimistic CLEAR (value: null) is distinguishable
+   * from "no override". Dropped once the refetch lands; snapped back on failure.
+   * The double `bill_totals_adjudicated` event in the S302 E2E was this exact
+   * latency — a click with no feedback gets clicked twice.
+   */
+  const [totalsOverride, setTotalsOverride] = useState<{ value: UserTotalsSource } | null>(null);
   // S302 — resolved-case fold, expanded on demand (§2.2: no collapse in this
   // product is ever permanent, and every expanded step stays interactive).
   const [caseExpanded, setCaseExpanded] = useState(false);
@@ -974,12 +989,14 @@ export function ClaimDetail({
   const [csOverridePending, setCsOverridePending] = useState<string | null>(null);
   const [csOverrideError, setCsOverrideError] = useState<string | null>(null);
   const submitCostShareOverride = useCallback(
-    async (body: CostShareOverrideRequest, pendingKey: string) => {
+    // S302 round 3 — returns whether the write landed, so an OPTIMISTIC caller
+    // can snap back. Existing callers ignore it and are unaffected.
+    async (body: CostShareOverrideRequest, pendingKey: string): Promise<boolean> => {
       setCsOverridePending(pendingKey);
       setCsOverrideError(null);
       try {
         const token = await getAuthToken();
-        if (!token) return;
+        if (!token) return false;
         const res = await fetch(`/api/claims/${claimId}/cost-share-override`, {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -988,7 +1005,7 @@ export function ClaimDetail({
         if (!res.ok) {
           const d = await res.json().catch(() => ({}));
           setCsOverrideError(d.error || `Couldn't save your change (${res.status}).`);
-          return;
+          return false;
         }
         // S295 — the answered row's value is re-derived by the ENGINE server-side,
         // so `refetchClaim` stays awaited: unpinning before it lands would show
@@ -1000,8 +1017,10 @@ export function ClaimDetail({
         // audit inline. Fire it in the background instead.
         await refetchClaim();
         if (onClaimUpdated) void onClaimUpdated();
+        return true;
       } catch {
         setCsOverrideError("Couldn't save your change. Please try again.");
+        return false;
       } finally {
         setCsOverridePending(null);
       }
@@ -1327,7 +1346,7 @@ export function ClaimDetail({
     if (!billTotalsSourceFlag.enabled) return null;
     const eff = data.effectiveTotals;
     if (!eff) return null;
-    const answered = readUserTotalsSource(claim.metadata);
+    const answered = totalsOverride ? totalsOverride.value : readUserTotalsSource(claim.metadata);
     const FIELDS = [
       { key: "patientResponsibilitySource", label: "what you owe", header: "total_patient_responsibility", value: eff.patientResponsibility },
       { key: "patientPaidSource", label: "what you've paid", header: "total_patient_paid", value: eff.patientPaid },
@@ -1364,8 +1383,15 @@ export function ClaimDetail({
       label: worst?.label ?? "",
       lineItemsTotal: worst ? `$${fmtMoney(worst.lineSum)}` : "",
       summaryTotal: worst ? `$${fmtMoney(worst.header)}` : "",
-      onChoose: (use: "summary" | "line_items" | null) =>
-        submitCostShareOverride({ field: "totals_source", use }, "totals_source"),
+      onChoose: (use: "summary" | "line_items" | null) => {
+        setTotalsOverride({ value: use });
+        // BOTH paths clear the override, for different reasons: on success the
+        // refetch has already landed the truth, and on failure clearing IS the
+        // snap-back (the row reverts to whatever metadata still says).
+        void submitCostShareOverride({ field: "totals_source", use }, "totals_source").finally(
+          () => setTotalsOverride(null),
+        );
+      },
     };
   })();
 

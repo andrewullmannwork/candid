@@ -964,7 +964,33 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
           : "Make sure the bill's patient is you (or a family member you're disputing for)."}
       </Row>
     ) : (
-      <Row icon={UserIcon} label="Patient name" control={<DoneEdit label="Verified" onEdit={onEditLetter} />} />
+      /* S302 round 3 (Andrew: "when I go to edit patient name, it won't let me
+         click edit"). This Edit called `onEditLetter` — it opened the LETTER
+         BODY editor, not the patient question, and on a sent letter that is
+         immutable so it did nothing at all. It now reopens the SAME
+         three-choice form the unresolved row uses, which became possible only
+         once the mismatch stopped being nulled on confirmation (the names have
+         to survive for the question to be re-askable). */
+      <Row
+        icon={UserIcon}
+        label="Patient name"
+        control={<DoneEdit label="Verified" onEdit={() => setNameChoicesOpen((o) => !o)} />}
+        below={
+          nameChoicesOpen && billName && profileName ? (
+            <div className="mt-2">
+              <PatientIdentityChoices
+                billName={billName}
+                profileName={profileName}
+                onResolve={(choice, correctedName) => {
+                  onResolvePatient(choice, correctedName);
+                  setNameChoicesOpen(false);
+                }}
+                onCancel={() => setNameChoicesOpen(false)}
+              />
+            </div>
+          ) : undefined
+        }
+      />
     ),
   });
 

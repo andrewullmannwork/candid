@@ -2122,7 +2122,14 @@ function DisputesContent() {
       claimFacts={
         v3DesignOn
           ? {
-              patientName: (nameMismatch?.billName ?? nameMismatch?.profileName ?? accountName) || null,
+              // S302 round 3 — `nameMismatch` is now the RAW comparison and no
+              // longer disappears on confirmation, so this keys on the answer
+              // explicitly to reproduce today's display byte-for-byte:
+              // confirmed → the account name the letter actually uses.
+              patientName:
+                (patientIdentityResolved
+                  ? accountName
+                  : (nameMismatch?.billName ?? nameMismatch?.profileName ?? accountName)) || null,
               providerName: evidence?.claims?.[0]?.providerName ?? null,
               serviceDate: evidence?.claims?.[0]?.dateOfService ?? null,
             }

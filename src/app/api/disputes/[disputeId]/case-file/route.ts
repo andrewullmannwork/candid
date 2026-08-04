@@ -109,7 +109,12 @@ export async function GET(
   });
   const planContext = readiness.planContext;
   const evidence = readiness.evidence;
-  const patientNameMismatch = readiness.patientNameMismatch;
+  // S302 round 3 — the resolver now reports the raw comparison AND the user's
+  // answer separately. The Case File has always meant "an UNRESOLVED mismatch",
+  // so it combines them here rather than inheriting a conflated field.
+  const patientNameMismatch = readiness.patientIdentityConfirmed
+    ? null
+    : readiness.patientNameMismatch;
   const strength = readiness.strength;
 
   // 7) Data-trust HARD STOP (flag-gated; mirrors letter generation). A

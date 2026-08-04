@@ -388,6 +388,20 @@ for (const row of MATRIX) {
   );
 }
 
+// ── S302 · identity: the mismatch and the answer are TWO facts ─────────────
+// Round 3 un-conflated them (the verified row had no names left to re-ask
+// with). The risk of that change is the floor REOPENING for every user who
+// already resolved a real mismatch — which would have locked their send.
+{
+  // The rule the resolver applies: !mismatch || confirmed. Stated here so a
+  // future edit that re-nulls the mismatch has to break a named assertion.
+  const floorMet = (mismatch: boolean, confirmed: boolean) => !mismatch || confirmed;
+  check("identity · no mismatch, unconfirmed → met", floorMet(false, false));
+  check("identity · no mismatch, confirmed → met", floorMet(false, true));
+  check("identity · mismatch, unconfirmed → NOT met", !floorMet(true, false));
+  check("identity · mismatch, confirmed → met", floorMet(true, true));
+}
+
 // ── S302 · data trust is SCORED but not GATED ──────────────────────────────
 // A hold the user cannot clear is worse than no hold, and the condition cannot
 // even fire today (the flag `evidence-resolver` reads is never written). It
