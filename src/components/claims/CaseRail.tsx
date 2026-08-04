@@ -538,6 +538,15 @@ export function CaseRail({
   // and two concurrent read-modify-write POSTs lose one field to the other
   // (the S299 "complaint number disappeared" race, Andrew).
   const [filedOverride, setFiledOverride] = useState<Record<string, boolean>>({});
+  /**
+   * S302 round 4 (Andrew: "allow me to skip, same behavior as the other
+   * skips"). Session-local: unlike the collections steps this has no claim
+   * checklist key, and inventing a persisted attestation for "I chose not to
+   * file" would put a claim on the case record the user never made (S297 §3.2
+   * attested-only). Skipping greys the step for this visit; it does not assert
+   * anything. Persisting it properly is a tracker item.
+   */
+  const [filedSkipped, setFiledSkipped] = useState<Record<string, boolean>>({});
   const [attestNoteDrafts, setAttestNoteDrafts] = useState<Record<string, string>>({});
 
   const groups: RailLetterGroup[] = composeRailGroups({
@@ -798,7 +807,21 @@ export function CaseRail({
             const attestNoteValue =
               attestNoteDrafts[s.move.disputeId] ?? s.move.regulator.attest.note ?? "";
             return (
-              <RailStep key={s.key} dataLetter={letterId} n={s.badge} title={s.title} sub={s.sub ?? undefined} last={last}>
+              <RailStep
+                key={s.key}
+                dataLetter={letterId}
+                n={s.badge}
+                title={s.title}
+                sub={s.sub ?? undefined}
+                last={last}
+                // S302 round 4 (Andrew) — this step never carried a done-state
+                // at all, so filing a complaint left it permanently blue. The
+                // attestation IS its completion; skipping greys it, matching
+                // every other attested step on this rail (S297 §3.2: a declined
+                // step is never a check).
+                done={filedNow}
+                skipped={!filedNow && (filedSkipped[s.move.disputeId] ?? false)}
+              >
                 <div className="space-y-2.5">
                   {s.move.letterOffer && (
                     <div className="rounded-xl border border-gray-200 bg-white px-4 py-3.5">
@@ -912,15 +935,44 @@ export function CaseRail({
                             discovers that clicking it again un-files. Same
                             explicit Undo the collections steps carry, so every
                             attestation on this rail reverses the same way. */}
-                        {filedNow && (
+                        {/* S302 round 4 (Andrew) — Undo/Skip sit on the
+                            BUTTON's centre line (self-center), not the input's
+                            baseline; they are peers of the action, exactly as
+                            the collections steps already render them. */}
+                        {filedNow ? (
                           <button
                             type="button"
                             onClick={() =>
                               void toggleFiled(s.move.disputeId, false, attestNoteValue.trim())
                             }
-                            className="text-[11.5px] font-medium text-gray-500 underline underline-offset-2 hover:text-gray-700"
+                            className="self-center text-[11.5px] font-medium text-gray-500 underline underline-offset-2 hover:text-gray-700"
                           >
                             {COLLECTIONS_CHROME.undoSkipLabel}
+                          </button>
+                        ) : (filedSkipped[s.move.disputeId] ?? false) ? (
+                          <span className="flex items-center gap-2 self-center">
+                            <span className="text-[11.5px] font-medium text-gray-400">
+                              {COLLECTIONS_CHROME.skippedLabel}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setFiledSkipped((m) => ({ ...m, [s.move.disputeId]: false }))
+                              }
+                              className="text-[11.5px] font-medium text-gray-500 underline underline-offset-2 hover:text-gray-700"
+                            >
+                              {COLLECTIONS_CHROME.undoSkipLabel}
+                            </button>
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setFiledSkipped((m) => ({ ...m, [s.move.disputeId]: true }))
+                            }
+                            className="self-center text-[11.5px] font-medium text-gray-500 underline underline-offset-2 hover:text-gray-700"
+                          >
+                            {COLLECTIONS_CHROME.skipLabel}
                           </button>
                         )}
                       </div>

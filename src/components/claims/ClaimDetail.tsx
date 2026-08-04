@@ -1355,7 +1355,15 @@ export function ClaimDetail({
     ] as const;
     let worst: { label: string; lineSum: number; header: number; delta: number } | null = null;
     for (const f of FIELDS) {
-      if (eff.provenance[f.key] !== "claim_header") continue;
+      // S302 round 4 — keyed on the DELTA, not on provenance.
+      //
+      // Provenance was a PROXY for "the two disagree", and it stops saying
+      // `claim_header` the moment the user answers (it becomes user_summary /
+      // user_line_items). So an optimistic CLEAR produced answered=null AND
+      // worst=null, the row returned null, and it VANISHED for the length of a
+      // refetch before reappearing amber (Andrew: "it disappears for a few
+      // seconds then reappears"). The disagreement is a fact about the numbers
+      // and does not change when the user picks a side — so read the fact.
       const header = Number((claim as Record<string, unknown>)[f.header] ?? 0);
       // provenance says header WON, so eff.value IS the header; the per-line sum
       // is recoverable from the raw lines the page already holds.
