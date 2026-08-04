@@ -12,8 +12,10 @@
  */
 import {
   OUTCOME_DETAILS,
+  isAdverseOutcome,
   isOutcomeDetail,
   mapOutcomeToStatus,
+  nextRungStillOpen,
   suggestNextStep,
   type OutcomeDetail,
 } from "../../../../src/lib/disputes/outcome-taxonomy";
@@ -81,6 +83,132 @@ check("null · resolved_win", suggestNextStep("insurance_appeal", "resolved_win"
 check("null · needs_info", suggestNextStep("overcharge", "needs_info") === null);
 check("null · new_problem", suggestNextStep("overcharge", "new_problem") === null);
 check("null · no_response (Zone-2 follow-up plan owns it)", suggestNextStep("insurance_appeal", "no_response") === null);
+
+// ── isAdverseOutcome: when a regulator door is a real option (S303) ──────────
+// This replaced a LADDER-shaped proxy on the rail (stage `next`, or a resolved
+// terminal rung) which was wrong at both ends — it hid the doors on a
+// partially-paid escalated letter, and showed them after a WON external
+// review. Being a fact about the ANSWER, it is also immune to stage changes.
+check("adverse · denied_fully", isAdverseOutcome("denied_fully") === true);
+check("adverse · denied_partial (the case the ladder rule HID)", isAdverseOutcome("denied_partial") === true);
+check("adverse · denied_some_covered", isAdverseOutcome("denied_some_covered") === true);
+check("adverse · denied_counteroffer", isAdverseOutcome("denied_counteroffer") === true);
+check("adverse · collections", isAdverseOutcome("collections") === true);
+check("adverse · resolved_win is NOT (the case the ladder rule SHOWED)", isAdverseOutcome("resolved_win") === false);
+check("adverse · needs_info is NOT — nothing has been refused yet", isAdverseOutcome("needs_info") === false);
+check("adverse · no_response is NOT — the follow-up plan owns it", isAdverseOutcome("no_response") === false);
+check("adverse · new_problem is NOT — a change of subject, not a refusal", isAdverseOutcome("new_problem") === false);
+// Every outcome must have an answer: the exhaustive switch is the guarantee,
+// this is the proof that no member was skipped.
+check(
+  "adverse · exhaustive over OUTCOME_DETAILS",
+  OUTCOME_DETAILS.every((d) => typeof isAdverseOutcome(d) === "boolean"),
+);
+// The rail shows the card at stage `next` OR on an adverse outcome. Anything
+// that opens a next rung MUST also be adverse, or the two halves of that
+// condition would disagree about the same letter.
+check(
+  "adverse · every outcome that opens a next rung is adverse",
+  OUTCOME_DETAILS.filter((d) => suggestNextStep("insurance_appeal", d) != null).every(
+    isAdverseOutcome,
+  ),
+);
+
+// ── nextRungStillOpen: offered vs still-to-take (S303) ──────────────────────
+// suggestNextStep answers "does the ladder have a rung above this one".
+// That is NOT "is there one still to take", and treating them as the same
+// question is the S303 defect: an escalated case never resolved, and acting on
+// the stale offer INSERTED a duplicate letter (persistDisputeLetter's dedupe
+// excludes resolved rows by design).
+{
+  const A = { disputeId: "a", letterType: "insurance_appeal", status: "lost" };
+  const REVIEW_SENT = { disputeId: "b", letterType: "external_review", status: "lost" };
+  const REVIEW_DRAFT = { disputeId: "b", letterType: "external_review", status: "dispute_letter_drafted" };
+  const REVIEW_CANCELLED = { disputeId: "b", letterType: "external_review", status: "cancelled" };
+  const open = (caseLetters: typeof A[]) =>
+    nextRungStillOpen({
+      disputeId: "a",
+      letterType: "insurance_appeal",
+      outcomeDetail: "denied_fully",
+      caseLetters,
+    });
+
+  check("open · alone on the case → the rung is open", open([A])?.nextLetterType === "external_review");
+  check("open · the rung already SENT → not open", open([A, REVIEW_SENT]) === null);
+  check("open · the rung merely STARTED → not open (a second draft is not an escalation)", open([A, REVIEW_DRAFT]) === null);
+  check("open · a WITHDRAWN letter is not a rung taken → open again", open([A, REVIEW_CANCELLED])?.nextLetterType === "external_review");
+  check(
+    "open · no outcome logged → nothing offered, whatever the ladder says",
+    nextRungStillOpen({ disputeId: "a", letterType: "insurance_appeal", outcomeDetail: null, caseLetters: [A] }) === null,
+  );
+  check(
+    "open · a win offers nothing even with an empty case",
+    nextRungStillOpen({ disputeId: "a", letterType: "insurance_appeal", outcomeDetail: "resolved_win", caseLetters: [A] }) === null,
+  );
+  // Self-exclusion is load-bearing for exactly one case: collections suggests
+  // debt_validation, and a debt_validation letter must not suppress itself.
+  check(
+    "open · a letter never suppresses its own suggestion",
+    nextRungStillOpen({
+      disputeId: "c",
+      letterType: "debt_validation",
+      outcomeDetail: "collections",
+      caseLetters: [{ disputeId: "c", letterType: "debt_validation", status: "in_progress" }],
+    })?.nextLetterType === "debt_validation",
+  );
+  // …but ANOTHER letter's debt_validation does suppress it.
+  check(
+    "open · a sibling of the suggested type does suppress it",
+    nextRungStillOpen({
+      disputeId: "c",
+      letterType: "overcharge",
+      outcomeDetail: "collections",
+      caseLetters: [
+        { disputeId: "c", letterType: "overcharge", status: "lost" },
+        { disputeId: "d", letterType: "debt_validation", status: "filed" },
+      ],
+    }) === null,
+  );
+  // The invariant that keeps this a SUPPRESSION and not a second ladder: over
+  // every letter type × every outcome, an empty case reproduces
+  // suggestNextStep exactly, and a populated case only ever narrows it to null.
+  // It can never invent a rung the taxonomy did not offer.
+  const ALL_TYPES = [
+    "insurance_appeal", "external_review", "overcharge", "duplicate_charge",
+    "balance_billing", "itemized_request", "negotiation", "final_notice",
+    "debt_validation",
+  ] as const;
+  check(
+    "open · an empty case reproduces suggestNextStep exactly, every type × outcome",
+    ALL_TYPES.every((t) =>
+      OUTCOME_DETAILS.every(
+        (detail) =>
+          (nextRungStillOpen({ disputeId: "a", letterType: t, outcomeDetail: detail, caseLetters: [] })
+            ?.nextLetterType ?? null) === (suggestNextStep(t, detail)?.nextLetterType ?? null),
+      ),
+    ),
+  );
+  check(
+    "open · a populated case only ever NARROWS to null — never invents a rung",
+    ALL_TYPES.every((t) =>
+      OUTCOME_DETAILS.every((detail) => {
+        const raw = suggestNextStep(t, detail);
+        const got = nextRungStillOpen({
+          disputeId: "a",
+          letterType: t,
+          outcomeDetail: detail,
+          caseLetters: [
+            { disputeId: "a", letterType: t, status: "lost" },
+            { disputeId: "z", letterType: "external_review", status: "filed" },
+            { disputeId: "y", letterType: "final_notice", status: "filed" },
+            { disputeId: "w", letterType: "debt_validation", status: "filed" },
+          ],
+        });
+        return got === null || got.nextLetterType === raw?.nextLetterType;
+      }),
+    ),
+  );
+}
 
 console.log(`\noutcome-taxonomy fixture: ${pass} passed, ${fails.length} failed`);
 if (fails.length) {

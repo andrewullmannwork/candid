@@ -183,6 +183,9 @@ export async function loadCaseTimelinePayload(
     waitingCount: projected.waitingCount,
     soonestResponseDue: projected.soonestResponseDue,
     sentLetterMeta: projected.sentLetterMeta,
+    // S303 — the case-level regulator complaint. Small (one record per case),
+    // and the rail cannot compose its card without it.
+    regulator: projected.regulator,
     insurerNameByDispute,
     providerName,
   };

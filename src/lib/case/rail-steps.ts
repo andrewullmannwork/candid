@@ -43,9 +43,18 @@
  *
  * Exercised by scripts/calibration/fixtures/case-timeline/rail-steps.ts.
  */
-import type { ProjectedLetterStep } from "@/lib/case/timeline-projector";
+import {
+  regulatorFilingStepId,
+  regulatorSkipStepId,
+  type ProjectedLetterStep,
+  type ProjectedRegulatorComplaint,
+} from "@/lib/case/timeline-projector";
 import type { DisputeLetterType } from "@/lib/billing/types";
-import { OUTCOME_LABELS, suggestNextStep } from "@/lib/disputes/outcome-taxonomy";
+import {
+  OUTCOME_LABELS,
+  isAdverseOutcome,
+  suggestNextStep,
+} from "@/lib/disputes/outcome-taxonomy";
 import { letterRequiresPro } from "@/lib/disputes/letter-access";
 import {
   formatLetterDateShort,
@@ -60,7 +69,6 @@ import {
   PACK_D_STEPS,
   PACK_D_SUGGESTED_CHIP,
   PACK_D_TITLE,
-  isTerminalRung,
   suggestDoors,
   type CollectionsStepAction,
 } from "@/lib/guides/pack-registry";
@@ -89,6 +97,34 @@ export interface RailDoorTile {
   href: string;
   /** "suggested for this case" — the FIRST (track) door only, mock-literal. */
   chip: string | null;
+  /**
+   * S303 — THIS letter's own filing with this agency. Null when the user has
+   * not filed with it in response to this letter, even if they filed with it
+   * about an earlier one (see {@link earlier}).
+   */
+  filedAt: string | null;
+  /** Display date for the filed state ("Aug 4"); null while unfiled. */
+  filedAtLabel: string | null;
+  /** The confirmation number logged for THIS letter's filing. */
+  note: string | null;
+  /** claims.metadata.guideSteps key this tile writes for THIS letter. */
+  stepId: string;
+  /**
+   * A filing with this agency made about a DIFFERENT letter (Andrew, S303).
+   *
+   * The numbers are linked, the behaviour is not: the user sees that they have
+   * already been to this agency and what number it gave them, without this
+   * letter's step counting itself done on the strength of it. Rendered as a
+   * greyed-out green with the number read-only, plus a "File again" that opens
+   * a fresh entry — so a second filing is only ever recorded when a second
+   * confirmation number is actually typed.
+   */
+  earlier: {
+    /** "Already filed Aug 4 — for your appeal". */
+    label: string;
+    /** That filing's confirmation number, shown read-only. */
+    note: string | null;
+  } | null;
 }
 
 export interface RailNextMove {
@@ -104,23 +140,33 @@ export interface RailNextMove {
     proChip: string;
     cta: string;
   } | null;
+  /**
+   * S303 — the regulator card. Null until this letter has a logged response
+   * that isn't a win.
+   *
+   * The card is composed per LETTER (it belongs to the moment a response
+   * lands) but every door reads and writes ONE claim-scoped record, so the
+   * same filing shows wherever it is relevant and nothing can disagree with
+   * itself. Placement was never the bug; storage was.
+   */
   regulator: {
     title: string;
     lead: string;
+    /** Every door, always — ordered with this letter's suggestion first. */
     doors: RailDoorTile[];
-    /** The PACK_D_STEPS "packD:filed" row verbatim + the dispute's current
-     *  state — persistence is the EXISTING checklist POST (one state, shared
-     *  with the dispute-side Pack D until phase 3 retires that mount). */
-    attest: {
-      key: string;
-      title: string;
-      checkboxLabel: string;
-      notePlaceholder: string;
-      filed: boolean;
-      note: string | null;
-    };
+    /** Attest label + placeholder, from the PACK_D_STEPS row, per door. */
+    filedLabel: string;
+    notePlaceholder: string;
+    /** "File again" — opens a fresh entry on an agency filed for another letter. */
+    fileAgainLabel: string;
+    /**
+     * THIS letter's declination — offered only while this letter has nothing
+     * filed. Per letter, so declining here cannot touch what another letter
+     * recorded.
+     */
+    skip: { stepId: string; declined: boolean; declinedAtLabel: string | null } | null;
     foot: string;
-  };
+  } | null;
 }
 
 export type RailStepModel =
@@ -244,6 +290,13 @@ export interface RailLetterGroup {
 
 export interface ComposeRailInput {
   letters: ProjectedLetterStep[];
+  /**
+   * S303 — the case's regulator complaint. REQUIRED, not optional: the S301
+   * lesson was that an optional field is exactly what lets a call site forget
+   * to pass state, and every collections step then sat permanently open while
+   * the writes landed perfectly. A required prop cannot be dropped silently.
+   */
+  regulator: ProjectedRegulatorComplaint;
   /** First extension badge number (5 after the guided phone step). */
   firstNumber: number;
   /** Per-letter insurer display names (pinned plan), route-supplied. */
@@ -572,7 +625,7 @@ function buildLetterSteps(
   input: ComposeRailInput,
   activeWaitCount: number,
 ): RailStepModel[] {
-  const { letters, now } = input;
+  const { letters, now, regulator } = input;
   const steps: RailStepModel[] = [];
   const copy = letterRailCopy(l.letterType);
 
@@ -639,40 +692,44 @@ function buildLetterSteps(
               l.outcome.loggedAt ? fmtRailDate(l.outcome.loggedAt) : null,
             )
           : "",
-        undo: l.stage === "next",
+        // S303 — keyed on the FACT (a result was logged), not on the stage.
+        // Stage was a proxy that merely correlated: it meant "you can still
+        // escalate", so a letter at the END of its ladder had a logged result
+        // and no way to take it back from the rail. On the Ballard case two of
+        // three logged results were already uncorrectable here, and the fold
+        // would have made it three. Safe with no route change — the S302 send
+        // gate fires only on a genuine mark-sent (`sent_at == null`), and an
+        // undo runs on a letter that IS sent.
+        undo: l.outcome != null,
         disputeId: l.disputeId,
       });
     }
   }
-  // Stage-8 "Your next move" (phase 1b) — per letter at stage `next` (letter
-  // offer + regulator card), and doors-only at resolved TERMINAL rungs
-  // (isTerminalRung: the ladder's end is where the regulator card matters
-  // most; suggestNextStep is null there, so stage alone would never surface
-  // it). Last in the letter's block — it is what this letter's outcome opens.
+  // Stage-8 "Your next move" (phase 1b) — the letter's escalation offer, and
+  // (S303) the regulator card once this letter has been answered.
+  //
+  // The regulator trigger is the ANSWER (isAdverseOutcome), not the ladder
+  // position. The old rule — stage `next`, or a resolved terminal rung — was a
+  // proxy wrong at both ends: it HID the card on a partially-paid letter the
+  // user had escalated, and it SHOWED it after a WON external review. Keying
+  // on the outcome also makes the card immune to stage changes, which is what
+  // lets the resolved fold move stages without moving cards.
+  //
+  // ⚠ NOT simply "any outcome but a win": needs_info and no_response leave the
+  // letter at stage `awaiting`, so that reading would render an active waiting
+  // card and "take it to a regulator" side by side on the same letter.
   {
-    const terminalResolved =
-      l.stage === "resolved" &&
-      l.outcome != null &&
-      isTerminalRung({ letterType: l.letterType, status: l.outcome.status });
-    if (l.stage === "next" || terminalResolved) {
-      const snsRaw =
+    const answered = l.outcome != null && isAdverseOutcome(l.outcome.detail);
+    if (l.stage === "next" || answered) {
+      // S303 — the composer no longer decides whether the rung is open; it
+      // only fetches the CTA copy for a decision already made. `stage ===
+      // "next"` is now a true statement (the projector applies
+      // nextRungStillOpen), so this cannot disagree with it — where the
+      // composer's own copy of the suppression ran AFTER the stage it should
+      // have set, leaving the button right and the status wrong.
+      const sns =
         l.stage === "next" && l.outcome
           ? suggestNextStep(l.letterType as DisputeLetterType, l.outcome.detail)
-          : null;
-      // Offer suppression (Andrew, 1b E2E): once a letter of the suggested
-      // type EXISTS on the case it has its own rung/steps — a lingering
-      // start-offer would duplicate it. The step keeps the regulator card;
-      // the "two paths" sub retires with the offer (doors-only anatomy,
-      // same as the terminal rung).
-      const sns =
-        snsRaw &&
-        !letters.some(
-          (x) =>
-            x.disputeId !== l.disputeId &&
-            x.letterType === snsRaw.nextLetterType &&
-            x.stage !== "none",
-        )
-          ? snsRaw
           : null;
       const counterparty = counterpartyFor(l, input);
       const subRaw =
@@ -685,6 +742,13 @@ function buildLetterSteps(
               ? CASE_RAIL.nextMoveSubCounteroffer(counterparty)
               : null;
       const sub = sns ? subRaw : null;
+      // EVERY door, always (Andrew, S303) — ordered with this letter's
+      // suggestion first. suggestDoors keeps its job of naming what fits this
+      // letter; it no longer decides what the user is allowed to see. We
+      // cannot detect surprise-billing situations at all today (nsa_applicable
+      // is always UNKNOWN — tracker Item U), so filtering doors on our own
+      // signal would hide a legitimate regulator behind a detection we know is
+      // blind. The descriptions do the filtering; the chip does the steering.
       const suggested = suggestDoors({
         track: l.recipientKind === "insurer" ? "insurer" : "provider",
         hasCollections: letters.some(
@@ -692,6 +756,10 @@ function buildLetterSteps(
         ),
         grounds: l.letterType === "balance_billing" ? ["balance_billing"] : [],
       });
+      const doorOrder = [
+        ...suggested,
+        ...COMPLAINT_DOORS.map((d) => d.id).filter((id) => !suggested.includes(id)),
+      ];
       const filedStep = PACK_D_STEPS.find((s) => s.id === "packD:filed");
       steps.push({
         kind: "next-move",
@@ -716,33 +784,72 @@ function buildLetterSteps(
                 cta: CASE_RAIL.startLetterCta,
               }
             : null,
-          regulator: {
-            title: PACK_D_TITLE,
-            lead: CASE_RAIL.regulatorLead,
-            doors: suggested.flatMap((id, i) => {
-              const d = COMPLAINT_DOORS.find((x) => x.id === id);
-              return d
-                ? [
+          regulator: answered
+            ? {
+                title: PACK_D_TITLE,
+                lead: CASE_RAIL.regulatorLead,
+                doors: doorOrder.flatMap((id, i) => {
+                  const d = COMPLAINT_DOORS.find((x) => x.id === id);
+                  if (!d) return [];
+                  const mine =
+                    regulator.filings.find(
+                      (f) => f.doorId === d.id && f.disputeId === l.disputeId,
+                    ) ?? null;
+                  // The most recent filing with this agency about a DIFFERENT
+                  // letter. filings arrive ascending, so the last match is it.
+                  const other = mine
+                    ? null
+                    : (regulator.filings
+                        .filter((f) => f.doorId === d.id && f.disputeId !== l.disputeId)
+                        .at(-1) ?? null);
+                  return [
                     {
                       id: d.id,
                       name: d.name,
                       desc: d.desc,
                       href: d.href,
                       chip: i === 0 ? PACK_D_SUGGESTED_CHIP : null,
+                      filedAt: mine?.filedAt ?? null,
+                      filedAtLabel: mine ? fmtRailDate(mine.filedAt) : null,
+                      note: mine?.note ?? null,
+                      stepId: regulatorFilingStepId(l.disputeId, d.id),
+                      earlier: other
+                        ? {
+                            label: CASE_RAIL.regulatorFiledEarlier(
+                              fmtRailDate(other.filedAt),
+                              // The letter it was filed about, by its own band
+                              // noun — the same table the group headers use, so
+                              // the two can never name a letter differently.
+                              letterRailCopy(
+                                letters.find((x) => x.disputeId === other.disputeId)
+                                  ?.letterType ?? "",
+                              ).band,
+                            ),
+                            note: other.note,
+                          }
+                        : null,
                     },
-                  ]
-                : [];
-            }),
-            attest: {
-              key: "packD:filed",
-              title: filedStep?.title ?? "File it, then log the confirmation number",
-              checkboxLabel: filedStep?.checkboxLabel ?? "Complaint filed",
-              notePlaceholder: CASE_RAIL.filedNotePlaceholder,
-              filed: l.regulatorFiled,
-              note: l.regulatorFiledNote,
-            },
-            foot: CASE_RAIL.regulatorFoot,
-          },
+                  ];
+                }),
+                filedLabel: filedStep?.checkboxLabel ?? "Complaint filed",
+                notePlaceholder: CASE_RAIL.filedNotePlaceholder,
+                fileAgainLabel: CASE_RAIL.regulatorFileAgainLabel,
+                // Offered only while THIS letter has nothing filed — "I'm not
+                // filing about this letter" and "I filed about this letter"
+                // must never both be true. Per letter, so a declination here
+                // leaves every other letter's answer untouched.
+                skip: regulator.filings.some((f) => f.disputeId === l.disputeId)
+                  ? null
+                  : {
+                      stepId: regulatorSkipStepId(l.disputeId),
+                      declined: regulator.declinedByDispute[l.disputeId] != null,
+                      declinedAtLabel: regulator.declinedByDispute[l.disputeId]
+                        ? fmtRailDate(regulator.declinedByDispute[l.disputeId])
+                        : null,
+                    },
+                foot: CASE_RAIL.regulatorFoot,
+              }
+            : null,
         },
       });
     }

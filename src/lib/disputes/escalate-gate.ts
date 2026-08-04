@@ -17,6 +17,7 @@
  */
 import type { DisputeLetterType } from "@/lib/billing/types";
 import { evaluateLetterAccess } from "./letter-access";
+import type { CaseLetterRef } from "./outcome-taxonomy";
 
 /** The only letter types escalate may spawn (the ladder-advance rungs). */
 export const ESCALATION_LETTER_TYPES = [
@@ -39,11 +40,48 @@ export function checkEscalateGate(input: {
   targetLetterType: unknown;
   isPro: boolean;
   appealExhausted?: { attested?: boolean | null } | null;
+  /**
+   * S303 — every letter already on the CLAIM, plus the source dispute's id.
+   * Omitted by callers that cannot see the case (none today); when absent the
+   * rung-taken check is skipped rather than guessed at.
+   */
+  caseLetters?: CaseLetterRef[];
+  sourceDisputeId?: string;
 }): EscalateGateResult {
-  const { targetLetterType, isPro, appealExhausted } = input;
+  const { targetLetterType, isPro, appealExhausted, caseLetters, sourceDisputeId } = input;
 
   if (!isEscalationLetterType(targetLetterType)) {
     return { ok: false, status: 400, error: "unsupported_escalation_type" };
+  }
+
+  // S303 — the rung is already taken. The UI stopped OFFERING this (the
+  // projector and the letter page both run nextRungStillOpen), but a stale tab
+  // or a replayed request still could, and the consequence is a real row:
+  // persistDisputeLetter's dedupe keys on line item + type and DELIBERATELY
+  // excludes resolved statuses ("the user may legitimately open a fresh fight
+  // after a prior one closed"), so a second external review on an exhausted
+  // track sails straight past it and corrupts the per-case aggregates the
+  // flywheel reads.
+  //
+  // ⚠ A DIFFERENT question from that dedupe, which is why it lives here rather
+  // than there: dedupe asks *"is this the same letter again?"*; this asks
+  // *"is this rung already taken on this claim?"* — any status but cancelled,
+  // including a draft, and regardless of which line items it covers.
+  if (caseLetters && sourceDisputeId) {
+    const taken = caseLetters.some(
+      (x) =>
+        x.disputeId !== sourceDisputeId &&
+        x.letterType === targetLetterType &&
+        x.status !== "cancelled",
+    );
+    if (taken) {
+      return {
+        ok: false,
+        status: 409,
+        error: "escalation_rung_already_taken",
+        reason: "You already have this letter on this bill.",
+      };
+    }
   }
 
   // Tier: escalation letters are Pro; debt_validation stays free. Single source

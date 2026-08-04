@@ -4,12 +4,32 @@
  * Asserts the projector reproduces TODAY'S displayed derivations on EVERY
  * real claim in the connected DB (run against DEV; .env.local → wdpk…).
  *
- * Independence rule (calibration discipline): the "today" side is computed by
- * the SAME code paths today's surfaces use — the real getUserDisputes() server
- * payload, the real client deriveSentLetterMeta(), computeCaseStage() fed the
- * dispute page's way, and the [disputeId] GET's letterType switch copied
- * VERBATIM inline (not imported from the projector, which would compare the
- * projector to itself).
+ * Independence rule (calibration discipline): the "today" side is never
+ * imported from the projector, which would compare the projector to itself.
+ *
+ * ⚠ What each comparison PROVES is no longer uniform — S303 changed one of
+ * them, and saying so is the point:
+ *
+ *   - responseDueDate · sentLetterMeta — still true PARITY. They run the real
+ *     getUserDisputes() server payload and the real client deriveSentLetterMeta(),
+ *     i.e. the live surfaces, so a diff means the projector disagrees with what
+ *     users see today.
+ *
+ *   - stage · hasNextStep — no longer parity against a live surface, because
+ *     S303 moved the letter page onto the SHARED open-rung rule; no surface
+ *     derives a stage independently any more. It is now a DIFFERENTIAL test: a
+ *     second, hand-written implementation of the rule, run over every real
+ *     claim in the DB. Still worth its keep (it catches projector regressions
+ *     on real data, which synthetic fixtures cannot), but it is a regression
+ *     detector, not a contract with a legacy surface. Do not "simplify" it by
+ *     importing nextRungStillOpen — that would make it assert nothing.
+ *
+ * S303 intentional diffs, recorded before the today-side was updated (run at
+ * 2026-08-04, 17 claims / 14 disputes): exactly TWO letters moved next →
+ * resolved, both correctly — dispute 289b2f0c (appeal denied, its external
+ * review exists and is itself lost → the case now folds) and f73262a5 (appeal
+ * partially paid, its external review already drafted → the appeal is finished,
+ * the case does not fold). No other stage moved.
  *
  * Compared per dispute: stage · hasNextStep · responseDueDate.
  * Compared per claim:  sentLetterMeta (responseDueDate, daysRemaining, amber).
@@ -129,9 +149,21 @@ import { resolveLetterTypeFromDispute as todayLetterType } from "../src/lib/disp
       checkedDisputes++;
       const md = (d.metadata as Record<string, unknown> | null) ?? {};
       const detail = isOutcomeDetail(md.outcomeDetail) ? md.outcomeDetail : null;
-      const todayHasNext = detail
-        ? suggestNextStep(todayLetterType(d) as DisputeLetterType, detail) != null
-        : false;
+      // S303 — the open-rung rule, hand-written here rather than imported, so
+      // this stays a second independent implementation rather than a comparison
+      // of the projector to itself. Mirrors nextRungStillOpen: the ladder must
+      // offer a rung AND no other live letter on the claim may already be it.
+      const rawNext = detail
+        ? suggestNextStep(todayLetterType(d) as DisputeLetterType, detail)
+        : null;
+      const todayHasNext =
+        rawNext != null &&
+        !claimDisputes.some(
+          (x) =>
+            x.id !== d.id &&
+            todayLetterType(x) === rawNext.nextLetterType &&
+            x.status !== "cancelled",
+        );
       const todayStage = computeCaseStage({
         status: d.status as string,
         isSent: d.sent_at != null,

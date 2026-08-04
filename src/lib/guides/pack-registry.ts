@@ -521,6 +521,9 @@ export const COLLECTIONS_CHROME = {
   skipLabel: "Skip",
   skippedLabel: "skipped",
   undoSkipLabel: "Undo",
+  /** S303 — lifted out of the guide-step JSX so the regulator tiles say the
+   *  same thing on the same failure, from one string. */
+  saveFailed: "That didn't save — please try again.",
 } as const;
 
 /** @deprecated S301 — superseded by COLLECTIONS_STEPS. Reachable only with
@@ -996,5 +999,25 @@ export const CASE_RAIL = {
   /** Rail-side filed-note placeholder (Andrew verbatim, S299 1b E2E) — the
    *  dispute-side PACK_D_STEPS row keeps its own until phase 3 retires it. */
   filedNotePlaceholder: "Enter your confirmation number",
+  /**
+   * S303 (Andrew-approved from the mock) — this letter's declination. The
+   * bare "Skip" the collections steps use no longer says what is being
+   * skipped once the card carries four separate filing actions, so this one
+   * names it. PACK_D_STEPS' "File it, then log the confirmation number" header
+   * retires with the same change (Andrew): each agency now carries its own
+   * action, and the foot line above already gives the instruction.
+   */
+  regulatorSkipLabel: "Skip — I'm not filing a complaint",
+  /**
+   * S303 (Andrew-approved) — an agency already filed about an EARLIER letter.
+   * The numbers are linked, the behaviour is not: this names the letter the
+   * filing belonged to so the user can see it without this letter's step
+   * counting itself done, and can still go again if the new wrong warrants it.
+   * `letterBand` is the same noun the group header uses ("Appeal", "Debt
+   * validation"), lowercased mid-sentence.
+   */
+  regulatorFiledEarlier: (dateLabel: string, letterBand: string): string =>
+    `Already filed ${dateLabel} — for your ${letterBand.toLowerCase()}`,
+  regulatorFileAgainLabel: "File again",
   proChip: "Pro",
 } as const;

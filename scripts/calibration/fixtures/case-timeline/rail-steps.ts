@@ -106,6 +106,11 @@ const compose = (
   });
   const groups = composeRailGroups({
     letters: t.letters,
+    // S303 — the case-level regulator record, straight off the projection the
+    // rail is composing. Feeding it separately here is exactly the mistake the
+    // S301 collections bug was (state beside the projection instead of through
+    // it), and it is what let the fixture stay green while production broke.
+    regulator: t.regulator,
     firstNumber: 5,
     insurerNameByDispute,
     providerName: NAMES.providerName,
@@ -510,31 +515,48 @@ const compose = (
       nm.move.letterOffer?.sub,
     );
     check("next-move · start CTA", nm.move.letterOffer?.cta === "Start the letter");
+    // S303 (Andrew) — EVERY door, always. suggestDoors keeps naming what fits
+    // this letter; it no longer decides what the user may see. We cannot
+    // detect surprise billing at all today (nsa_applicable is always UNKNOWN),
+    // so filtering on our own signal would hide a real regulator behind a
+    // detection we know is blind.
     check(
-      "next-move · doors DOI+CFPB (collections active)",
-      nm.move.regulator.doors.map((d) => d.id).join(",") === "doi,cfpb",
-      nm.move.regulator.doors.map((d) => d.id),
+      "next-move · all four doors, suggestion first (DOI+CFPB here)",
+      nm.move.regulator!.doors.map((d) => d.id).join(",") === "doi,cfpb,ag,cms",
+      nm.move.regulator!.doors.map((d) => d.id),
     );
     check(
       "next-move · chip on the track door only (mock-literal)",
-      nm.move.regulator.doors[0].chip === "suggested for this case" &&
-        nm.move.regulator.doors[1].chip === null,
+      nm.move.regulator!.doors[0].chip === "suggested for this case" &&
+        nm.move.regulator!.doors.slice(1).every((d) => d.chip === null),
     );
     check(
       "next-move · regulator lead (ruling 3 FINAL)",
-      nm.move.regulator.lead === "Choose the regulator(s) based on which party wronged you.",
+      nm.move.regulator!.lead === "Choose the regulator(s) based on which party wronged you.",
     );
     check(
-      "next-move · filed attest row (registry label + Andrew's rail placeholder)",
-      nm.move.regulator.attest.key === "packD:filed" &&
-        nm.move.regulator.attest.checkboxLabel === "Complaint filed" &&
-        nm.move.regulator.attest.notePlaceholder === "Enter your confirmation number" &&
-        nm.move.regulator.attest.filed === false &&
-        nm.move.regulator.attest.note === null,
+      "next-move · per-agency attest row (registry label + Andrew's rail placeholder)",
+      nm.move.regulator!.filedLabel === "Complaint filed" &&
+        nm.move.regulator!.notePlaceholder === "Enter your confirmation number",
+    );
+    check(
+      "s303 · every door carries its own per-LETTER step id",
+      nm.move.regulator!.doors.map((d) => d.stepId).join(",") ===
+        ["doi", "cfpb", "ag", "cms"].map((x) => `packD:filed:${appeal.id}:${x}`).join(","),
+      nm.move.regulator!.doors.map((d) => d.stepId),
+    );
+    check(
+      "s303 · nothing filed → every door open, and THIS letter's declination is offered",
+      nm.move.regulator!.doors.every(
+        (d) => d.filedAt === null && d.note === null && d.earlier === null,
+      ) &&
+        nm.move.regulator!.skip?.stepId === `packD:skip:${appeal.id}` &&
+        nm.move.regulator!.skip?.declined === false,
+      nm.move.regulator!.skip,
     );
     check(
       "next-move · foot",
-      nm.move.regulator.foot ===
+      nm.move.regulator!.foot ===
         "Gather your paper trail → file it → log the confirmation number. Your letters make the case.",
     );
   }
@@ -556,9 +578,10 @@ const compose = (
     pNm?.kind === "next-move" && pNm.move.letterOffer?.targetLetterType === "final_notice",
   );
   check(
-    "next-move · provider doors AG only",
-    pNm?.kind === "next-move" && pNm.move.regulator.doors.map((d) => d.id).join(",") === "ag",
-    pNm?.kind === "next-move" ? pNm.move.regulator.doors.map((d) => d.id) : pNm?.kind,
+    "next-move · provider track leads with AG, then the rest",
+    pNm?.kind === "next-move" &&
+      pNm.move.regulator!.doors.map((d) => d.id).join(",") === "ag,cfpb,cms,doi",
+    pNm?.kind === "next-move" ? pNm.move.regulator!.doors.map((d) => d.id) : pNm?.kind,
   );
 
   // (c) TERMINAL rung: a lost external review (suggestNextStep null → stage
@@ -584,10 +607,15 @@ const compose = (
     tNm?.kind === "next-move" && tNm.sub === null,
     tNm?.kind === "next-move" ? tNm.sub : tNm?.kind,
   );
+  // S303 — INVERTED deliberately. Undo used to key on stage `next`, i.e. "you
+  // can still escalate", so the one letter you could never correct was the one
+  // at the END of its ladder. It keys on the fact now: a logged result is a
+  // result you can take back, wherever the letter sits.
   const tReceipt = tSteps.find((s) => s.kind === "wait-receipt");
   check(
-    "terminal · receipt has no undo at stage resolved",
-    tReceipt?.kind === "wait-receipt" && tReceipt.undo === false,
+    "s303 · a resolved letter's logged result can still be undone",
+    tReceipt?.kind === "wait-receipt" && tReceipt.undo === true,
+    tReceipt?.kind === "wait-receipt" ? tReceipt.undo : tReceipt?.kind,
   );
 
   // (d) balance_billing ground → CMS door second (determinism).
@@ -603,12 +631,16 @@ const compose = (
   const { steps: bbSteps } = compose([bb], {});
   const bbNm = bbSteps.find((s) => s.kind === "next-move");
   check(
-    "next-move · balance_billing → AG + CMS doors",
-    bbNm?.kind === "next-move" && bbNm.move.regulator.doors.map((d) => d.id).join(",") === "ag,cms",
-    bbNm?.kind === "next-move" ? bbNm.move.regulator.doors.map((d) => d.id) : bbNm?.kind,
+    "next-move · balance_billing surfaces CMS in the suggestion, not at the tail",
+    bbNm?.kind === "next-move" &&
+      bbNm.move.regulator!.doors.map((d) => d.id).join(",") === "ag,cms,cfpb,doi",
+    bbNm?.kind === "next-move" ? bbNm.move.regulator!.doors.map((d) => d.id) : bbNm?.kind,
   );
 
-  // (e) Filed attest passthrough (projector → model).
+  // (e) S303 — per-agency filings come from the CLAIM's guided steps, and each
+  // agency carries its own confirmation number. The dispute-side packD:filed
+  // boolean below is deliberately present and deliberately ignored: it is the
+  // stale shape the storage move retires.
   const filed = mkDispute({
     status: "lost",
     sent_at: iso(-6),
@@ -617,16 +649,197 @@ const compose = (
       outcomeDetail: "denied_fully",
       outcomeReportedAt: iso(-1),
       checklist: { "packD:filed": true },
-      checklistNotes: { "packD:filed": "DOI #4417" },
+      checklistNotes: { "packD:filed": "STALE — dispute-scoped" },
     },
   });
-  const { steps: fSteps } = compose([filed], {});
+  const { steps: fSteps } = compose([filed], {}, {
+    [`packD:filed:${filed.id}:doi`]: { checkedAt: iso(-1), note: "DOI-2026-4417" },
+  });
   const fNm = fSteps.find((s) => s.kind === "next-move");
+  const fDoors = fNm?.kind === "next-move" ? fNm.move.regulator!.doors : [];
   check(
-    "next-move · filed attest passthrough",
-    fNm?.kind === "next-move" &&
-      fNm.move.regulator.attest.filed === true &&
-      fNm.move.regulator.attest.note === "DOI #4417",
+    "s303 · the filed agency carries its own date + confirmation number",
+    fDoors.find((d) => d.id === "doi")?.filedAt === iso(-1) &&
+      fDoors.find((d) => d.id === "doi")?.note === "DOI-2026-4417" &&
+      fDoors.find((d) => d.id === "doi")?.filedAtLabel === fmtRailDate(iso(-1)),
+    fDoors.find((d) => d.id === "doi"),
+  );
+  check(
+    "s303 · the other agencies stay open — filing one is not filing all",
+    fDoors.filter((d) => d.id !== "doi").every((d) => d.filedAt === null && d.note === null),
+    fDoors.map((d) => ({ id: d.id, filedAt: d.filedAt })),
+  );
+  check(
+    "s303 · the stale DISPUTE-scoped attest is ignored entirely",
+    fDoors.every((d) => d.note !== "STALE — dispute-scoped"),
+  );
+  check(
+    "s303 · once THIS letter has a filing its declination is withdrawn — the two can never both be true",
+    fNm?.kind === "next-move" && fNm.move.regulator!.skip === null,
+    fNm?.kind === "next-move" ? fNm.move.regulator!.skip : fNm?.kind,
+  );
+
+  // (e2) The declination itself, and the S297 §3.2 line it protects.
+  const { steps: dSteps } = compose([filed], {}, {
+    [`packD:skip:${filed.id}`]: { skippedAt: iso(-1) },
+  });
+  const dNm = dSteps.find((s) => s.kind === "next-move");
+  check(
+    "s303 · a declination is recorded as declined, never as filed",
+    dNm?.kind === "next-move" &&
+      dNm.move.regulator!.skip?.declined === true &&
+      dNm.move.regulator!.skip?.declinedAtLabel === fmtRailDate(iso(-1)) &&
+      dNm.move.regulator!.doors.every((d) => d.filedAt === null),
+    dNm?.kind === "next-move" ? dNm.move.regulator!.skip : dNm?.kind,
+  );
+
+  // (e2b) Declined FIRST, then changed their mind and filed. Both acts are
+  // true and both stay on the record with their own stamps — a declination is
+  // not erased, it is SUPERSEDED. The composer resolves the current reading:
+  // this letter has produced a complaint, so its declination is no longer
+  // offered and cannot be mistaken for its answer.
+  const { steps: bothSteps } = compose([filed], {}, {
+    [`packD:skip:${filed.id}`]: { skippedAt: iso(-3) },
+    [`packD:filed:${filed.id}:ag`]: { checkedAt: iso(-1), note: "AG-99" },
+  });
+  const bothNm = bothSteps.find((s) => s.kind === "next-move");
+  check(
+    "s303 · a filing supersedes an earlier declination without erasing it",
+    bothNm?.kind === "next-move" &&
+      bothNm.move.regulator!.skip === null &&
+      bothNm.move.regulator!.doors.find((d) => d.id === "ag")?.note === "AG-99",
+    bothNm?.kind === "next-move" ? bothNm.move.regulator!.skip : bothNm?.kind,
+  );
+
+  // (e2c) ── THE CORE OF S303: linked numbers, independent behaviour ─────────
+  // The appeal was answered and the user filed with the insurance department.
+  // The collector letter is then answered too, and its card must NOT arrive
+  // pre-completed on the strength of a complaint about the insurer.
+  const answeredAppeal = mkDispute({
+    status: "lost",
+    sent_at: iso(-9),
+    metadata: {
+      letterType: "insurance_appeal",
+      outcomeDetail: "denied_fully",
+      outcomeReportedAt: iso(-8),
+    },
+  });
+  const answeredCollector = mkDispute({
+    status: "lost",
+    created_at: iso(-7),
+    sent_at: iso(-6),
+    metadata: {
+      letterType: "debt_validation",
+      collector: { name: "Cascade Recovery", address: null, originalCreditor: null },
+      outcomeDetail: "denied_fully",
+      outcomeReportedAt: iso(-2),
+    },
+  });
+  const { groups: xGroups } = compose([answeredAppeal, answeredCollector], {}, {
+    [`packD:filed:${answeredAppeal.id}:doi`]: { checkedAt: iso(-7), note: "DOI-2026-4417" },
+  });
+  const appealMove = xGroups[0].steps.find((s) => s.kind === "next-move");
+  const collectorMove = xGroups[1].steps.find((s) => s.kind === "next-move");
+  const appealDoi =
+    appealMove?.kind === "next-move"
+      ? appealMove.move.regulator!.doors.find((d) => d.id === "doi")
+      : undefined;
+  const collectorDoi =
+    collectorMove?.kind === "next-move"
+      ? collectorMove.move.regulator!.doors.find((d) => d.id === "doi")
+      : undefined;
+
+  check(
+    "s303 · the letter it was filed FROM shows a plain filing",
+    appealDoi?.filedAt === iso(-7) &&
+      appealDoi?.note === "DOI-2026-4417" &&
+      appealDoi?.earlier === null,
+    appealDoi,
+  );
+  check(
+    "s303 · a LATER letter does NOT count that filing as its own",
+    collectorDoi?.filedAt === null && collectorDoi?.note === null,
+    collectorDoi,
+  );
+  check(
+    "s303 · …but it DOES show the number, named to the letter it belonged to",
+    collectorDoi?.earlier?.note === "DOI-2026-4417" &&
+      collectorDoi?.earlier?.label === `Already filed ${fmtRailDate(iso(-7))} — for your appeal`,
+    collectorDoi?.earlier,
+  );
+  check(
+    "s303 · the later letter's step is still OPEN — its declination is offered",
+    collectorMove?.kind === "next-move" &&
+      collectorMove.move.regulator!.skip?.stepId === `packD:skip:${answeredCollector.id}` &&
+      collectorMove.move.regulator!.skip?.declined === false,
+    collectorMove?.kind === "next-move" ? collectorMove.move.regulator!.skip : collectorMove?.kind,
+  );
+  check(
+    "s303 · agencies untouched on either letter carry no earlier filing",
+    collectorMove?.kind === "next-move" &&
+      collectorMove.move.regulator!.doors
+        .filter((d) => d.id !== "doi")
+        .every((d) => d.earlier === null && d.filedAt === null),
+  );
+  // The S302 bug in one assertion: one skip for the whole bill greyed every
+  // card. Declining the COLLECTOR must leave the appeal exactly as it was.
+  const { groups: skipGroups } = compose([answeredAppeal, answeredCollector], {}, {
+    [`packD:skip:${answeredCollector.id}`]: { skippedAt: iso(-1) },
+  });
+  const aSkip = skipGroups[0].steps.find((s) => s.kind === "next-move");
+  const cSkip = skipGroups[1].steps.find((s) => s.kind === "next-move");
+  check(
+    "s303 · declining one letter leaves every other letter's answer untouched",
+    aSkip?.kind === "next-move" &&
+      aSkip.move.regulator!.skip?.declined === false &&
+      cSkip?.kind === "next-move" &&
+      cSkip.move.regulator!.skip?.declined === true,
+    [
+      aSkip?.kind === "next-move" ? aSkip.move.regulator!.skip?.declined : null,
+      cSkip?.kind === "next-move" ? cSkip.move.regulator!.skip?.declined : null,
+    ],
+  );
+
+  // (e3) The defect the old ladder-shaped rule produced: winning your external
+  // review used to surface "choose a regulator to complain to".
+  const won = mkDispute({
+    status: "won",
+    sent_at: iso(-9),
+    metadata: {
+      letterType: "external_review",
+      outcomeDetail: "resolved_win",
+      outcomeReportedAt: iso(-2),
+    },
+  });
+  const wNm = compose([won], {}).steps.find((s) => s.kind === "next-move");
+  check(
+    "s303 · a WON letter offers no regulator card",
+    wNm === undefined || (wNm.kind === "next-move" && wNm.move.regulator === null),
+    wNm?.kind,
+  );
+
+  // (e4) The other half of that defect: a partial payment IS an adverse answer,
+  // so its doors stay even though neither old condition held.
+  const partial = mkDispute({
+    status: "settled",
+    sent_at: iso(-9),
+    metadata: {
+      letterType: "insurance_appeal",
+      outcomeDetail: "denied_partial",
+      outcomeReportedAt: iso(-2),
+    },
+  });
+  const startedAfterPartial = mkDispute({
+    created_at: iso(0, -1000),
+    metadata: { letterType: "external_review" },
+  });
+  const ppNm = compose([partial, startedAfterPartial], {}).steps.find(
+    (s) => s.kind === "next-move",
+  );
+  check(
+    "s303 · a partially-paid, already-escalated letter keeps its regulator card",
+    ppNm?.kind === "next-move" && ppNm.move.regulator != null,
+    ppNm?.kind,
   );
 
   // (g) Offer suppression (Andrew, 1b E2E): once the suggested letter EXISTS
@@ -655,7 +868,10 @@ const compose = (
     "suppression · two-paths sub retires with the offer",
     gNm?.kind === "next-move" && gNm.sub === null,
   );
-  check("suppression · doors remain", gNm?.kind === "next-move" && gNm.move.regulator.doors.length > 0);
+  check(
+    "suppression · doors remain",
+    gNm?.kind === "next-move" && (gNm.move.regulator?.doors.length ?? 0) > 0,
+  );
   check(
     "suppression · the started letter gets its own draft step",
     gSteps.some((s) => s.kind === "send-draft"),
@@ -1053,6 +1269,72 @@ const compose = (
   check(
     "fold · stage `next` (a move is still open) does NOT fold",
     compose([nextRung]).resolution === null,
+  );
+
+  // ── S303 · the defect this whole unit exists to close ─────────────────────
+  // Escalated to the END of the ladder: appeal denied, external review taken
+  // AND denied. Every letter is finished, so the case folds. Before S303 the
+  // appeal kept `hasNextStep` forever — the taxonomy still named a rung that
+  // the case had already taken — so it sat at `next` and the fold could NEVER
+  // fire, no matter what the user logged. Observed exactly this way on the
+  // Ballard case: three terminal outcomes, no collapse.
+  const escAppeal = mkDispute({
+    status: "lost",
+    sent_at: iso(-20),
+    metadata: {
+      letterType: "insurance_appeal",
+      outcomeDetail: "denied_fully",
+      outcomeReportedAt: iso(-12),
+    },
+  });
+  const escReview = mkDispute({
+    dispute_type: "external_appeal",
+    status: "lost",
+    created_at: iso(-10),
+    sent_at: iso(-9),
+    metadata: {
+      letterType: "external_review",
+      outcomeDetail: "denied_fully",
+      outcomeReportedAt: iso(-2),
+    },
+  });
+  const escalated = compose([escAppeal, escReview], {
+    [escAppeal.id]: "Blue Cross Blue Shield of Wyoming",
+    [escReview.id]: "Blue Cross Blue Shield of Wyoming",
+  });
+  check(
+    "fold · an escalated-to-the-end case FOLDS (the S303 defect)",
+    escalated.resolution != null,
+    escalated.resolution,
+  );
+  check(
+    "fold · the superseded appeal no longer offers a rung it already took",
+    escalated.steps
+      .filter((s) => s.kind === "next-move")
+      .every((s) => s.kind === "next-move" && s.move.letterOffer === null),
+    escalated.steps.filter((s) => s.kind === "next-move").length,
+  );
+  check(
+    "fold · both letters keep an undo for the result each logged",
+    escalated.steps.filter((s) => s.kind === "wait-receipt").length === 2 &&
+      escalated.steps
+        .filter((s) => s.kind === "wait-receipt")
+        .every((s) => s.kind === "wait-receipt" && s.undo === true),
+  );
+  // …but only once the ladder is genuinely spent. A STARTED-but-unsent next
+  // letter finishes its parent without finishing the case.
+  const draftedNext = compose([
+    escAppeal,
+    mkDispute({
+      dispute_type: "external_appeal",
+      created_at: iso(-10),
+      metadata: { letterType: "external_review" },
+    }),
+  ]);
+  check(
+    "fold · a started-but-unsent next letter does NOT fold the case",
+    draftedNext.resolution === null,
+    draftedNext.resolution,
   );
 
   // external_review + denied_fully is the ladder's end: terminal, no next rung.

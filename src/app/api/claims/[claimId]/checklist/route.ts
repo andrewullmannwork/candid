@@ -44,13 +44,29 @@ export async function POST(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  let body: { stepId?: unknown; checked?: unknown; skipped?: unknown; note?: unknown };
+  let body: {
+    stepId?: unknown;
+    checked?: unknown;
+    skipped?: unknown;
+    note?: unknown;
+    disputeId?: unknown;
+  };
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
   const stepId = typeof body.stepId === "string" ? body.stepId : null;
+  /**
+   * S303 — the letter this act answered, used ONLY to stamp the emitted ledger
+   * event. Deliberately not persisted into guideSteps: for the regulator steps
+   * the key already carries it, and storing it twice is two truths. Without it
+   * the spine records "a complaint was filed" with no link to the letter it
+   * followed, and the Case File would have to parse a step id to rebuild the
+   * sequence. Additive and optional — every existing caller omits it.
+   */
+  const eventDisputeId =
+    typeof body.disputeId === "string" && body.disputeId.length > 0 ? body.disputeId : null;
   const checked = typeof body.checked === "boolean" ? body.checked : null;
   const skipped = typeof body.skipped === "boolean" ? body.skipped : null;
   const note = typeof body.note === "string" ? body.note : null;
@@ -179,19 +195,35 @@ export async function POST(
     } else if (checked === true) {
       events.push({
         claimId: claim.id as string,
+        disputeId: eventDisputeId ?? undefined,
         kind: "guide_step_attested",
         payload: { stepId, hasNote: typeof next.note === "string" && next.note.length > 0 },
       });
     } else if (checked === false) {
-      events.push({ claimId: claim.id as string, kind: "guide_step_unchecked", payload: { stepId } });
+      events.push({
+        claimId: claim.id as string,
+        disputeId: eventDisputeId ?? undefined,
+        kind: "guide_step_unchecked",
+        payload: { stepId },
+      });
     } else if (skipped === true) {
       // S301 — its own kind. The ledger records that the user DECLINED this
       // step; nothing downstream may read it as having been done.
-      events.push({ claimId: claim.id as string, kind: "guide_step_skipped", payload: { stepId } });
+      events.push({
+        claimId: claim.id as string,
+        disputeId: eventDisputeId ?? undefined,
+        kind: "guide_step_skipped",
+        payload: { stepId },
+      });
     } else if (skipped === false) {
       // Un-skipping returns the step to OPEN, not to done — same kind the
       // un-attest path uses, since both mean "this is unresolved again".
-      events.push({ claimId: claim.id as string, kind: "guide_step_unchecked", payload: { stepId } });
+      events.push({
+        claimId: claim.id as string,
+        disputeId: eventDisputeId ?? undefined,
+        kind: "guide_step_unchecked",
+        payload: { stepId },
+      });
     }
     await emitCaseEvents(supabase, user.id, events);
   }

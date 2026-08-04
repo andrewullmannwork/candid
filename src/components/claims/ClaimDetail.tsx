@@ -35,7 +35,10 @@ import {
   SEND_GATE_COPY,
   type ReadinessBlocker,
 } from "@/lib/disputes/dispute-readiness";
-import type { ProjectedLetterStep } from "@/lib/case/timeline-projector";
+import type {
+  ProjectedLetterStep,
+  ProjectedRegulatorComplaint,
+} from "@/lib/case/timeline-projector";
 import { letterRecipientKind } from "@/lib/disputes";
 import {
   markSentPayload,
@@ -222,6 +225,9 @@ interface ClaimData {
     waitingCount: number;
     soonestResponseDue: { date: string; disputeId: string } | null;
     sentLetterMeta: { responseDueDate: string | null; daysRemaining: number | null; amber: boolean } | null;
+    /** S303 — the case-level regulator complaint (per-agency filings + the
+     *  declination). Never null: an empty record IS "nothing filed yet". */
+    regulator: ProjectedRegulatorComplaint;
     /** Per-letter insurer display names (pinned plan), for wait titles. */
     insurerNameByDispute: Record<string, string>;
   };
@@ -3653,6 +3659,9 @@ export function ClaimDetail({
           )}
           <CaseRail
             letters={railTimeline.letters}
+            // S303 — the case-level regulator complaint. Required by
+            // ComposeRailInput, so a call site cannot forget it silently.
+            regulator={railTimeline.regulator}
             insurerNameByDispute={railTimeline.insurerNameByDispute}
             providerName={providerName === "Unknown Provider" ? null : providerName}
             firstNumber={guidedCtx ? 5 : railStepRecover}

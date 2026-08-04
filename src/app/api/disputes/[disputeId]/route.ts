@@ -704,7 +704,12 @@ export async function GET(
         | Record<string, boolean>
         | undefined) ?? {}),
     // Guided Steps v1 (S297) — short per-row notes beside the booleans
-    // (packC:receipt tracking number, packD:filed confirmation number).
+    // (packC:receipt tracking number). ⚠ S303: the regulator complaint's
+    // confirmation number is NO LONGER here — filing with a regulator is an
+    // act against the BILL, so it moved to the claim's guided steps, per
+    // agency (`packD:filed:<doorId>`). Any `packD:filed` still sitting in a
+    // dispute's checklist/checklistNotes is pre-S303 residue and is read by
+    // nothing.
     checklistNotes:
       (((dispute.metadata as Record<string, unknown> | null)?.checklistNotes as
         | Record<string, string>

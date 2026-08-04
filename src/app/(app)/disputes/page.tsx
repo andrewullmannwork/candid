@@ -38,7 +38,7 @@ import { ProviderAddressModal } from "@/components/disputes/ProviderAddressModal
 import { OutcomeReportingModal } from "@/components/disputes/OutcomeReportingModal";
 import { CollectorModal } from "@/components/disputes/CollectorModal";
 import { ExhaustionAttestModal } from "@/components/disputes/ExhaustionAttestModal";
-import { suggestNextStep, isOutcomeDetail, mapOutcomeToStatus, type NextStepSuggestion } from "@/lib/disputes/outcome-taxonomy";
+import { isOutcomeDetail, mapOutcomeToStatus, nextRungStillOpen, type NextStepSuggestion } from "@/lib/disputes/outcome-taxonomy";
 import {
   CaseNeedsPanel,
   isClaimDetailsConfirmed,
@@ -645,11 +645,32 @@ function DisputesContent() {
       lastServerLetterRef.current = data.letterContent;
       // Zone-3 (S266) — re-derive the advisory next rung from the persisted outcome so
       // the stage-action bar's escalate CTA survives a refresh (not just in-session).
+      //
+      // S303 — through the SHARED open-rung test, so this page cannot offer a
+      // rung the case has already taken. Fed from `siblings`, which the GET
+      // returns UNGATED and builds with the same letter-type resolver the
+      // projector uses. Deliberately not read off `caseTimeline`: that payload
+      // is gated on `case_rail_v1`, which is OFF in production, and the offer
+      // this suppresses is not cosmetic — acting on it inserts a duplicate
+      // letter, because persistDisputeLetter's dedupe excludes resolved rows.
+      // `siblings` is [] only for a dispute with no claim, where there are no
+      // other letters and no suppression to apply.
       const persistedOutcome = data.outcomeDetail;
+      const sibs = Array.isArray(data.siblings) ? (data.siblings as SiblingLetter[]) : [];
       setSuggestedNextStep(
-        isOutcomeDetail(persistedOutcome)
-          ? suggestNextStep(resolvedLetterType, persistedOutcome)
-          : null,
+        nextRungStillOpen({
+          // The FETCHED id, not the state one: state can lag a navigation, and
+          // self-exclusion is what stops a debt_validation letter suppressing
+          // its own collections suggestion.
+          disputeId: id,
+          letterType: resolvedLetterType,
+          outcomeDetail: isOutcomeDetail(persistedOutcome) ? persistedOutcome : null,
+          caseLetters: sibs.map((s) => ({
+            disputeId: s.id,
+            letterType: s.letterType,
+            status: s.status,
+          })),
+        }),
       );
     }
   }, [user]);
@@ -2958,7 +2979,24 @@ function DisputesContent() {
           // updates instantly (no lingering button); reconcile in the background.
           mutationGenRef.current += 1;
           setDisputeStatus(mapOutcomeToStatus(detail));
-          setSuggestedNextStep(suggestNextStep(letter.letterType, detail));
+          // S303 — the OPTIMISTIC set runs the same open-rung test the fetch
+          // does. It used to call suggestNextStep raw, so for the seconds before
+          // the reconcile landed this bar could offer a rung the case had
+          // already taken — the exact window in which someone clicks. An
+          // optimistic path that derives differently from the settled one is
+          // just the two-derivations bug with a shorter lifetime.
+          setSuggestedNextStep(
+            nextRungStillOpen({
+              disputeId: letter.id,
+              letterType: letter.letterType,
+              outcomeDetail: detail,
+              caseLetters: siblings.map((s) => ({
+                disputeId: s.id,
+                letterType: s.letterType,
+                status: s.status,
+              })),
+            }),
+          );
           if (disputeId) {
             void fetchDispute(disputeId);
           }
