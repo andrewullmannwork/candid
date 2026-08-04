@@ -318,14 +318,20 @@ export const SEND_GATE_COPY = {
 export const SEND_GATE_ERROR = SEND_GATE_COPY.error;
 
 export function sendBlockers(
-  strength: StrengthResult | null,
+  /**
+   * S302 — the READINESS, not the whole StrengthResult, so the letter page can
+   * pass an optimistically-corrected copy the instant it writes a floor item
+   * (patient identity) rather than waiting on a server reconcile for the gate
+   * to open.
+   */
+  readiness: StrengthResult["readiness"] | null,
   letterRequirementsOn: boolean,
 ): ReadinessBlocker[] {
   if (!letterRequirementsOn) return [];
-  // No strength → the computation threw. Fail OPEN: a monitoring failure must
+  // No readiness → the computation threw. Fail OPEN: a monitoring failure must
   // never become a wall between the user and their own letter.
-  if (!strength) return [];
-  const r = strength.readiness.required;
+  if (!readiness) return [];
+  const r = readiness.required;
   const out: ReadinessBlocker[] = [];
   // dataTrustPass is scored but NOT gated — see ReadinessBlocker above.
   if (!r.backedClaim) out.push("backed_claim");

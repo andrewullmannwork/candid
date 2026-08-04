@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useState, useEffect, useRef, useCallback } from "react";
+import { Suspense, useState, useEffect, useRef, useCallback, useMemo} from "react";
 import { useSearchParams } from "next/navigation";
 import type { DisputeLetter } from "@/lib/billing/types";
 import { useAuth } from "@/lib/auth/auth-context";
@@ -46,6 +46,7 @@ import {
 } from "@/components/disputes/CaseNeedsPanel";
 import { UnifiedTodo, type CaseLetterSummary } from "@/components/disputes/UnifiedTodo";
 import { sendBlockers as computeSendBlockers } from "@/lib/disputes/dispute-readiness";
+import { deriveReadinessState } from "@/lib/disputes/strength-scoring";
 import { CaseSummary } from "@/components/disputes/CaseSummary";
 import { AddPlanDetailsModal } from "@/components/claims/AddPlanDetailsModal";
 import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
@@ -738,6 +739,31 @@ function DisputesContent() {
    * persisted through confirm-patient-identity; the letter name-fill runs only
    * when the write lands (S293 #13 optimistic pattern preserved).
    */
+  /**
+   * S302 round 2 (Andrew: "the flip took so long I thought it was an error").
+   *
+   * `patientIdentityResolved` already flips optimistically, but the PILL and the
+   * SEND GATE read `strength.readiness`, which only refreshes on the debounced
+   * server reconcile — so the user answered the question and watched nothing
+   * happen for seconds. This applies the one floor item the client just wrote
+   * and re-derives the rung with `deriveReadinessState`, the SAME rule the
+   * server uses. Snap-back is free: the reconcile overwrites `strength`.
+   */
+  const effectiveReadiness = useMemo(() => {
+    const r = strength?.readiness ?? null;
+    if (!r || !patientIdentityResolved || r.required.patientIdentity) return r;
+    const required = { ...r.required, patientIdentity: true };
+    const requiredMet = Object.values(required).filter(Boolean).length;
+    const mvdlMet = requiredMet === r.requiredTotal;
+    return {
+      ...r,
+      required,
+      requiredMet,
+      mvdlMet,
+      state: deriveReadinessState(mvdlMet, r.optionalOpen),
+    };
+  }, [strength, patientIdentityResolved]);
+
   const resolvePatientChoice = useCallback(
     async (choice: "me" | "dependent" | "wrong", correctedName?: string) => {
       const mismatch = nameMismatch;
@@ -2342,11 +2368,11 @@ function DisputesContent() {
       // S302 (tracker Item AB) — ONE readiness signal, at the top of the
       // spine. Same `strength.readiness` the panel used to consume: the
       // server's MVDL floor, which is what actually scores the letter.
-      readiness={strength?.readiness ?? null}
+      readiness={effectiveReadiness}
       // S302 — the SAME list the outcome route refuses the mark-sent
       // transition on, from the same shared helper. The screen and the
       // server cannot disagree about what is missing.
-      sendBlockers={computeSendBlockers(strength, letterRequirementsOn)}
+      sendBlockers={computeSendBlockers(effectiveReadiness, letterRequirementsOn)}
       letterOnly={letterViewOn}
       sentDateLabel={sentDateLabel}
       responseDueLabel={responseDueLabel}

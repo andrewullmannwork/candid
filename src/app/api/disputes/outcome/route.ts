@@ -194,7 +194,7 @@ export async function POST(req: NextRequest) {
             new Set([existing.claim_line_item_id, ...extraLineIds].filter(Boolean)),
           ) as string[],
         });
-        const blockers = sendBlockers(readiness.strength, letterRequirementsOn);
+        const blockers = sendBlockers(readiness.strength?.readiness ?? null, letterRequirementsOn);
         if (blockers.length > 0) {
           return NextResponse.json(
             { error: SEND_GATE_ERROR, blockers },

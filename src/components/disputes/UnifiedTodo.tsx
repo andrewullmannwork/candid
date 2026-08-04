@@ -615,19 +615,12 @@ export function UnifiedTodo({
       },
       checkable: true,
     },
-    {
-      id: "mailcert",
-      title: "Mail it certified",
-      sub: "USPS Form 3811 (return receipt) — your proof of delivery.",
-      state: lockIfGated(sent || effChecks.mailcert ? "done" : "todo"),
-      required: true,
-      cta: "Done — I mailed it",
-      onDo: () => {
-        if (gateBlocked) return;
-        toggleCheck("mailcert");
-      },
-      checkable: true,
-    },
+    // S302 round 2 (Andrew): "Mail it certified / Done — I mailed it" and "Mark
+    // it as sent" were TWO rows for ONE act. They are two FACTS — the method
+    // (certified mail is delivery evidence the letter and Case File cite) and
+    // the event (sent, which starts the clock) — but the user performs them
+    // together, so the method is now asked ON the confirm that already exists
+    // rather than as a row of its own. One row, one act, method still captured.
     {
       id: "marksent",
       title: "Mark it as sent",
@@ -1181,28 +1174,51 @@ export function UnifiedTodo({
 
                 {/* Inline confirm — Mark as sent */}
                 {row.id === "marksent" && asking && !sent && (
-                  <div className="animate-fade-in mt-2 mb-2 flex flex-wrap items-center justify-between gap-2.5 rounded-[10px] border border-blue-200 bg-blue-50 px-3 py-2.5 text-[12.5px] font-semibold text-blue-900">
-                    <span>Did you actually mail it?</span>
-                    <span className="flex gap-2">
+                  <div className="animate-fade-in mt-2 mb-2 rounded-[10px] border border-blue-200 bg-blue-50 px-3 py-2.5 text-[12.5px] text-blue-900">
+                    {/* S302 — the METHOD, asked where the send is confirmed.
+                        `mailcert` is still the stored fact (the receipts and the
+                        Case File cite "certified mail"); only the extra ROW is
+                        gone. Choosing a method IS the confirmation, so there is
+                        no second click to lose. */}
+                    <div className="font-semibold">How did you send it?</div>
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      {(
+                        [
+                          ["certified", "USPS certified mail"],
+                          ["mail", "Regular mail"],
+                          ["portal", "Insurer portal or email"],
+                        ] as const
+                      ).map(([kind, label]) => (
+                        <button
+                          key={kind}
+                          type="button"
+                          disabled={markingSent}
+                          onClick={() => {
+                            setAsking(false);
+                            // Certified is the only method that is evidence, so
+                            // it is the only one that sets the flag — and an
+                            // earlier answer must be cleared if they change it.
+                            setCheck("mailcert", kind === "certified");
+                            onMarkSent();
+                          }}
+                          className="rounded-lg border border-blue-200 bg-white px-3 py-1.5 font-semibold text-blue-800 hover:bg-blue-50 disabled:opacity-50"
+                        >
+                          {label}
+                        </button>
+                      ))}
                       <button
                         type="button"
                         onClick={() => setAsking(false)}
-                        className="rounded-lg border border-gray-200 bg-white px-3 py-1.5 font-semibold text-gray-700 hover:bg-gray-50"
+                        className="rounded-lg px-2 py-1.5 font-semibold text-gray-500 hover:text-gray-700"
                       >
                         Not yet
                       </button>
-                      <button
-                        type="button"
-                        disabled={markingSent}
-                        onClick={() => {
-                          setAsking(false);
-                          onMarkSent();
-                        }}
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
-                      >
-                        <CheckIcon size={12} /> {markingSent ? "Saving…" : "Yes — start the clock"}
-                      </button>
-                    </span>
+                    </div>
+                    <div className="mt-1.5 text-[11.5px] font-normal text-blue-800/80">
+                      {markingSent
+                        ? "Saving…"
+                        : "Certified mail (USPS Form 3811) is your proof of delivery — we cite it in your letter and Case File."}
+                    </div>
                   </div>
                 )}
               </div>

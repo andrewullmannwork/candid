@@ -243,9 +243,10 @@ function WaitCardBody({
           </span>
         )}
       </div>
-      {/* S302 — the elapsed-% countdown BAR is gone (Andrew: "the number is
-          enough if it updates daily"). mt-3.5 keeps the chips-to-actions gap
-          the bar used to provide. */}
+      {/* S302 — the elapsed-% countdown BAR is gone in EVERY state (Andrew:
+          "the number is enough if it updates daily"; and on round 2, "keep the
+          bar away"). Urgency is the chip's colour alone. mt-3.5 keeps the
+          chips-to-actions gap the bar used to provide. */}
       <div className="mt-3.5 flex flex-wrap items-center gap-3">
         <button
           type="button"

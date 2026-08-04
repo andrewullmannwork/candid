@@ -277,27 +277,31 @@ for (const row of MATRIX) {
 
 // ── S302 · the send gate — one definition, screen and server ────────────────
 {
+  // S302 round 2 — `sendBlockers` takes the READINESS, not the whole strength,
+  // so the letter page can hand it an optimistically-corrected copy the moment
+  // it writes a floor item instead of waiting on a server reconcile.
   const floor = (over: Partial<Record<
     "dataTrustPass" | "backedClaim" | "recipientAddress" | "patientIdentity",
     boolean
-  >> = {}) =>
-    ({
-      readiness: {
-        state: "attention" as const,
-        mvdlMet: false,
-        required: {
-          dataTrustPass: true,
-          backedClaim: true,
-          recipientAddress: true,
-          patientIdentity: true,
-          ...over,
-        },
-        requiredMet: 4,
-        requiredTotal: 4,
-        recipientKind: "insurer" as const,
-        optionalOpen: [],
-      },
-    }) as unknown as Parameters<typeof sendBlockers>[0];
+  >> = {}) => {
+    const required = {
+      dataTrustPass: true,
+      backedClaim: true,
+      recipientAddress: true,
+      patientIdentity: true,
+      ...over,
+    };
+    const requiredMet = Object.values(required).filter(Boolean).length;
+    return {
+      state: "attention" as const,
+      mvdlMet: requiredMet === 4,
+      required,
+      requiredMet,
+      requiredTotal: 4,
+      recipientKind: "insurer" as const,
+      optionalOpen: [] as string[],
+    };
+  };
 
   check("gate · a met floor blocks nothing", sendBlockers(floor(), true).length === 0);
   check(

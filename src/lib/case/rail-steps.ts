@@ -404,6 +404,9 @@ function buildWaitCard(
   const dated = daysRemaining != null;
   const dateLabel = dated ? fmtRailDate(l.responseDueDate!) : null;
   const overdue = dated && daysRemaining < 0;
+  // S302 (Andrew) — the elapsed-% BAR is GONE, in every state. The number is
+  // the signal; urgency is carried by the chip's colour alone.
+  const urgent = dated && daysRemaining <= CASE_RAIL.deadlineUrgentDays;
   const whnRows =
     l.letterType === "insurance_appeal"
       ? CASE_RAIL.whnAppeal(dated && !overdue ? dateLabel : null)
@@ -416,11 +419,7 @@ function buildWaitCard(
     chipDeadline: dated ? CASE_RAIL.chipDeadline(dateLabel!, daysRemaining) : null,
     chipPause:
       !dated && l.letterType === "debt_validation" ? CASE_RAIL.chipCollectionPause : null,
-    deadlineTone: !dated
-      ? null
-      : daysRemaining <= CASE_RAIL.deadlineUrgentDays
-        ? "red"
-        : "amber",
+    deadlineTone: !dated ? null : urgent ? "red" : "amber",
     ctaLogResponse: CASE_RAIL.ctaLogResponse,
     door:
       l.letterType === "debt_validation"

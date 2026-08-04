@@ -921,6 +921,21 @@ const compose = (
     return w?.kind === "wait-active" ? w.card.deadlineTone : "MISSING";
   };
   check("tone · comfortably ahead → amber", at(30) === "amber", at(30));
+  // The BAR is gone in every state (Andrew, round 2: "keep the bar away") —
+  // asserted by the model no longer carrying a percentage at all.
+  const anyWait = (() => {
+    const d = mkDispute({
+      status: "filed",
+      sent_at: iso(-3),
+      governing_deadline_date: dateOnly(2),
+      deadline_type: "plan_response",
+    });
+    return compose([d]).steps.find((s) => s.kind === "wait-active");
+  })();
+  check(
+    "bar · no countdown percentage on the model, even at 2 days out",
+    anyWait?.kind === "wait-active" && !("countdownPct" in anyWait.card),
+  );
   check(
     `tone · one day OVER the threshold (${CASE_RAIL.deadlineUrgentDays + 1}) is still amber`,
     at(CASE_RAIL.deadlineUrgentDays + 1) === "amber",

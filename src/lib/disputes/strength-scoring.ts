@@ -406,6 +406,23 @@ const ADDRESS_GAP_KINDS = new Set<string>([
   "insurer_address_missing",
 ]);
 
+/**
+ * The readiness RUNG, from the floor plus the open optional strengtheners.
+ *
+ * S302 — exported so the CLIENT can re-derive it after optimistically applying
+ * a floor item it just wrote (patient identity, today), instead of waiting on a
+ * full server reconcile before the pill and the send gate move. One rule, two
+ * callers: the alternative was a second copy of this ternary in the browser,
+ * which is how the two readiness ladders diverged in the first place.
+ */
+export function deriveReadinessState(
+  mvdlMet: boolean,
+  optionalOpen: readonly string[],
+): ReadinessState {
+  if (!mvdlMet) return "attention";
+  return optionalOpen.length === 0 ? "airtight" : "ready_to_send";
+}
+
 export interface ReadinessResult {
   state: ReadinessState;
   mvdlMet: boolean;
@@ -545,11 +562,7 @@ export function computeDisputeStrength(
   const optionalOpen = Array.from(gapKinds).filter((k) =>
     OPTIONAL_GAP_KINDS.has(k),
   );
-  const state: ReadinessState = !mvdlMet
-    ? "attention"
-    : optionalOpen.length === 0
-      ? "airtight"
-      : "ready_to_send";
+  const state: ReadinessState = deriveReadinessState(mvdlMet, optionalOpen);
 
   return {
     dataTrust,
