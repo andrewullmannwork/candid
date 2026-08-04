@@ -27,6 +27,7 @@ import { OutcomeReportingModal } from "@/components/disputes/OutcomeReportingMod
 import { CollectorModal, type CollectorSubmit } from "@/components/disputes/CollectorModal";
 import { ExhaustionAttestModal } from "@/components/disputes/ExhaustionAttestModal";
 import { railHasExtension, railCaseResolution, fmtRailDate } from "@/lib/case/rail-steps";
+import { readUserTotalsSource } from "@/lib/claims/effective-totals";
 import {
   SEND_GATE_COPY,
   type ReadinessBlocker,
@@ -550,6 +551,9 @@ export function ClaimDetail({
   // S299 phase 1a — the extended rail's UI flag (the event spine is gated
   // separately by case_timeline_v1; see mig 222).
   const caseRailFlag = useFeatureFlag("case_rail_v1");
+  // S302 — the line-items-vs-summary question. OFF = the row never renders and
+  // nothing writes the answer, so decideField keeps today's header-wins rule.
+  const billTotalsSourceFlag = useFeatureFlag("bill_totals_source_v1");
   // S302 — resolved-case fold, expanded on demand (§2.2: no collapse in this
   // product is ever permanent, and every expanded step stays interactive).
   const [caseExpanded, setCaseExpanded] = useState(false);
@@ -1305,6 +1309,66 @@ export function ClaimDetail({
   // §5 banner chips + W3 override calls need (lineId + service label/slug). Over
   // primaryLineItems only — zero-charge reporting codes carry no cost-share stake
   // (the engine resolves them `confident`/no-assumptions), so they never chip here.
+  /**
+   * S302 — the line-items-vs-summary disagreement, assembled from
+   * `effectiveTotals.provenance`, which the claim GET has always sent and
+   * nothing has ever read. A `claim_header` source MEANS the line items did not
+   * sum to the bill's own summary on that field.
+   *
+   * ONE question, not four rows: a bill is internally consistent on paper, so a
+   * mismatch is one parser error of ours, not four independent ones — and the
+   * answer applies to every disagreeing total on the bill. We ask on the field
+   * with the largest delta (deterministic, and the biggest problem first).
+   *
+   * Null once answered (`userTotalsSource` set) — the row is the question, and a
+   * question that has been answered is not pending.
+   */
+  const totalsSourceRow = (() => {
+    if (!billTotalsSourceFlag.enabled) return null;
+    const eff = data.effectiveTotals;
+    if (!eff) return null;
+    const answered = readUserTotalsSource(claim.metadata);
+    const FIELDS = [
+      { key: "patientResponsibilitySource", label: "what you owe", header: "total_patient_responsibility", value: eff.patientResponsibility },
+      { key: "patientPaidSource", label: "what you've paid", header: "total_patient_paid", value: eff.patientPaid },
+      { key: "insurancePaidSource", label: "what your insurer paid", header: "total_insurance_paid", value: eff.insurancePaid },
+      { key: "insuranceAdjustedSource", label: "the insurer's adjustments", header: "total_insurance_adjusted", value: eff.insuranceAdjusted },
+    ] as const;
+    let worst: { label: string; lineSum: number; header: number; delta: number } | null = null;
+    for (const f of FIELDS) {
+      if (eff.provenance[f.key] !== "claim_header") continue;
+      const header = Number((claim as Record<string, unknown>)[f.header] ?? 0);
+      // provenance says header WON, so eff.value IS the header; the per-line sum
+      // is recoverable from the raw lines the page already holds.
+      const lineSum = primaryLineItems.reduce((acc, li) => {
+        const raw = li as unknown as Record<string, unknown>;
+        const k =
+          f.header === "total_patient_responsibility" ? "patient_owes"
+          : f.header === "total_patient_paid" ? "patient_paid_amount"
+          : f.header === "total_insurance_paid" ? "insurance_paid"
+          : "insurance_adjusted_amount";
+        return acc + (raw[k] != null ? Number(raw[k]) : 0);
+      }, 0);
+      const delta = Math.abs(lineSum - header);
+      if (delta > 0.01 && (worst == null || delta > worst.delta)) {
+        worst = { label: f.label, lineSum, header, delta };
+      }
+    }
+    // Answered → the row STAYS, in its confirmed state, because the copy
+    // promises the answer can be changed at any time. (Once answered the
+    // provenance is user_*, so `worst` is null — the numbers are carried only
+    // for the open question.)
+    if (!worst && !answered) return null;
+    return {
+      answered,
+      label: worst?.label ?? "",
+      lineItemsTotal: worst ? `$${fmtMoney(worst.lineSum)}` : "",
+      summaryTotal: worst ? `$${fmtMoney(worst.header)}` : "",
+      onChoose: (use: "summary" | "line_items" | null) =>
+        submitCostShareOverride({ field: "totals_source", use }, "totals_source"),
+    };
+  })();
+
   const bannerAssumptions: BannerAssumption[] = primaryLineItems.flatMap((li) =>
     (li.costShareAssumptions ?? []).map((a) => ({
       ...a,
@@ -1456,6 +1520,9 @@ export function ClaimDetail({
           acaRowVisible:
             bannerAssumptions.some((a) => a.field === "aca_preventive") && !acaDismissed,
         },
+        // S302 — same object the banner renders from, so the badge and the row
+        // can never disagree about whether the question is outstanding.
+        totalsSourceRow?.answered == null ? totalsSourceRow : null,
       )
     : new Set<string>();
   const assumptionsPending = assumptionsPendingFields.size;
@@ -2118,6 +2185,7 @@ export function ClaimDetail({
                 onOverride={submitCostShareOverride}
                 onConfirmDefaults={confirmAssumptionDefaults}
                 pendingFields={assumptionsPendingFields}
+                totalsSource={totalsSourceRow}
                 planIdentity={
                   planCandidates
                     ? {

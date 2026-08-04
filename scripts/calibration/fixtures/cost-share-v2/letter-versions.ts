@@ -105,6 +105,7 @@ const baseBasis: CostShareBasis = {
     totalPatientResponsibility: 163.27,
     insurancePlanId: "plan-1",
     userPatientPaid: null,
+    userTotalsSource: null,
   },
   lines: [
     { lineNumber: 1, billedAmount: 221, insuranceAdjustedAmount: 57.73, insurancePaid: 0, patientPaidAmount: 163.27, patientOwes: 163.27, amountStillOutstanding: 0, memberAppliedToDeductible: 163.27, memberCoinsurance: 0, memberCopay: 0, deniedAmount: 0, networkStatus: "in_network", billingCode: "99213", billingCodeType: "CPT", coverageUserConfirmed: false, coverageUserRejected: false },

@@ -93,7 +93,7 @@ check("read · rounds to cents", readUserPatientPaidOverride({ userPatientPaid: 
   const claim = { total_patient_paid: 500, total_billed: 400 };
   const lines = [{ billed_amount: 100, patient_paid_amount: 999 }, { billed_amount: 300, patient_paid_amount: 999 }];
   applyUserPatientPaidOverride(claim, lines, 200);
-  const eff = resolveEffectiveClaimTotals({ claim, lineItems: lines });
+  const eff = resolveEffectiveClaimTotals({ claim, lineItems: lines, userTotalsSource: null });
   check("guard · effective patientPaid == override (NOT stale 500)", near(eff.patientPaid, 200), eff.patientPaid);
   check("guard · source is per_line_sum (header==sum)", eff.provenance.patientPaidSource === "per_line_sum", eff.provenance.patientPaidSource);
 }
@@ -102,7 +102,7 @@ check("read · rounds to cents", readUserPatientPaidOverride({ userPatientPaid: 
   const claim = { total_patient_paid: 500, total_billed: 400 };
   const lines = [{ billed_amount: 100, patient_paid_amount: 120 }, { billed_amount: 300, patient_paid_amount: 380 }];
   const ov = readUserPatientPaidOverride({ someOtherKey: 1 });
-  const eff = resolveEffectiveClaimTotals({ claim, lineItems: lines });
+  const eff = resolveEffectiveClaimTotals({ claim, lineItems: lines, userTotalsSource: null });
   check("absent · no override read", ov === null);
   check("absent · effective == header 500 (byte-identical path)", near(eff.patientPaid, 500), eff.patientPaid);
 }

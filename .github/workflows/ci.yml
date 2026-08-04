@@ -117,6 +117,8 @@ jobs:
         # a value the user typed on another bill must never render as a Candid
         # verification with a date belonging to a different claim.
         run: npx tsx scripts/calibration/fixtures/dispute-grounds/letter-needs.ts
+      - name: Bill totals source fixture (S302 line-items vs summary)
+        run: npx tsx scripts/calibration/fixtures/cost-share-v2/totals-source.ts
 
       - name: Canonical link is a pair (S292 / mig 218)
         # Fails the build if any code writes insurance_plans.canonical_plan_id

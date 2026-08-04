@@ -27,6 +27,7 @@ import { normalizeCoinsurancePct, normalizeCoinsuranceDecimal, normalizeCoinsura
 import type { ClaimLevelFindingMeta, NetworkTier } from "@/lib/billing/types";
 import {
   resolveEffectiveClaimTotals,
+  readUserTotalsSource,
   type EffectiveClaimTotals,
 } from "@/lib/claims/effective-totals";
 import { resolveCoverageForLine, type CoverageDecision } from "@/lib/claims/coverage-decision";
@@ -852,6 +853,8 @@ export async function resolveEvidence(
       effectiveTotals: resolveEffectiveClaimTotals({
         claim: c,
         lineItems: claimLineItems,
+        // The select above already pulls `metadata` (see the dataTrust read below).
+        userTotalsSource: readUserTotalsSource(c.metadata),
       }),
       // Block A — read the S142 PR4 verdict flags mirrored onto claims.metadata
       // by claims/persist.ts. Absent key (clean bill) → false (pass).

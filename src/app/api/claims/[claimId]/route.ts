@@ -36,6 +36,7 @@ import {
 } from "@/lib/claims/resolve-cost-share";
 import {
   resolveEffectiveClaimTotals,
+  readUserTotalsSource,
   resolvePerLineInsurancePaid,
   resolvePerLineBilledToYou,
   readUserPatientPaidOverride,
@@ -322,6 +323,8 @@ export async function GET(
   const effectiveTotals = resolveEffectiveClaimTotals({
     claim,
     lineItems: lineItems || [],
+    // S302 — the user's adjudication of a line-items-vs-summary disagreement.
+    userTotalsSource: readUserTotalsSource(claim.metadata),
   });
 
   // Cost-Share v2 — load the per-claim engine context ONCE (plan params, the

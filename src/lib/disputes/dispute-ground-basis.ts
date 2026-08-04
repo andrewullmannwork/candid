@@ -41,6 +41,7 @@ import {
 } from "../claims/cost-share-loader";
 import {
   resolveEffectiveClaimTotals,
+  readUserTotalsSource,
   readUserPatientPaidOverride,
   applyUserPatientPaidOverride,
 } from "../claims/effective-totals";
@@ -317,7 +318,11 @@ async function loadClaimBasisBundle(
       : claim.total_patient_responsibility != null
         ? Number(claim.total_patient_responsibility)
         : null;
-  const effectiveTotals = resolveEffectiveClaimTotals({ claim, lineItems: rawLines });
+  const effectiveTotals = resolveEffectiveClaimTotals({
+    claim,
+    lineItems: rawLines,
+    userTotalsSource: readUserTotalsSource(claim.metadata),
+  });
 
   const prep: ClaimCostSharePrep = {
     coverageMap,

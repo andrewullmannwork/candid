@@ -13,6 +13,10 @@ import type { AuditFinding } from "../billing/types";
 import { userScoped, selectOwnedChildren } from "@/lib/security/user-scoped";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import {
+  readUserTotalsSource,
+  type UserTotalsSource,
+} from "@/lib/claims/effective-totals";
+import {
   loadPlanCostShareParams,
   loadCostShareOverrides,
   mapRawAccumulator,
@@ -105,6 +109,8 @@ export interface CostShareBasis {
      * input the letter is a function of — hash it like the raw columns.
      */
     userPatientPaid: number | null;
+    /** S302 — "summary" | "line_items" | null. See the hash below. */
+    userTotalsSource: UserTotalsSource;
   };
   lines: CostShareBasisLine[];
   accumulators: Array<{
@@ -372,6 +378,12 @@ async function loadCostShareBasis(
       totalPatientResponsibility: num(claim, "total_patient_responsibility"),
       insurancePlanId: planId,
       userPatientPaid,
+      // S302 — the user's line-items-vs-summary answer changes which totals every
+      // citation reads, so the letter IS a function of it. Hashed for the same
+      // reason userPatientPaid is: without this the correction lands on the
+      // claim page and the letter keeps quoting the old number, with no staleness
+      // banner to tell anyone.
+      userTotalsSource: readUserTotalsSource(claim.metadata),
     },
     lines,
     accumulators,
@@ -436,6 +448,7 @@ function canonicalizeCostShareBasis(b: CostShareBasis) {
       total_pr: fpCents(b.claim.totalPatientResponsibility),
       plan_id: b.claim.insurancePlanId ?? null,
       user_pt_paid: fpCents(b.claim.userPatientPaid),
+      user_totals_src: b.claim.userTotalsSource,
     },
     lines: b.lines
       .map((l) => ({

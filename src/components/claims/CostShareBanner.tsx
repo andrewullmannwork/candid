@@ -35,15 +35,12 @@ export interface BannerAssumption extends CostShareAssumption {
   serviceSlug: string | null;
 }
 
-export type CostShareOverrideRequest =
-  | { field: "network"; value: "in_network" | "out_of_network" }
-  | { field: "deductible_met"; met: boolean; asOf: string | null }
-  | { field: "oop_met"; met: boolean; asOf: string | null }
-  | { field: "aca"; status: "confirmed" | "non_aca" }
-  /** S291 — "I checked the service list" (guided rail step 2), persisted to claims.metadata. */
-  | { field: "services_confirmed"; confirmed: boolean }
-  /** S291 — re-pin the bill to another plan the user owns. */
-  | { field: "claim_plan"; insurancePlanId: string };
+// S302 — the client's parallel copy of this union is DELETED. It had already
+// drifted from the server's (missing `service_cost` and `patient_paid`), so two
+// real corrections were unrepresentable on the surface that sends them. One
+// type, re-exported here so existing importers of this module keep working.
+import type { CostShareOverrideRequest } from "@/lib/claims/cost-share-override";
+export type { CostShareOverrideRequest };
 
 interface CostShareBannerProps {
   verdict: CostShareVerdict;
@@ -86,6 +83,26 @@ interface CostShareBannerProps {
    * pinned bill look broken. `label` null = we have no plan for that period, the
    * honest zero-match state: we ask rather than silently borrowing a plan.
    */
+  /**
+   * S302 — the line-items-vs-summary disagreement. Claim-level, so it arrives
+   * as its own prop rather than through `assumptions[]` (the plan_identity
+   * pattern); null when the totals agree, the user has already answered, or
+   * `bill_totals_source_v1` is OFF.
+   */
+  totalsSource?: {
+    /**
+     * The user's standing answer, or null while the question is still open.
+     * The row does NOT disappear once answered — the copy promises "you can
+     * change it any time", and a row that vanishes makes that untrue.
+     */
+    answered: "summary" | "line_items" | null;
+    /** "what you owe" / "what you've paid" — the field with the largest delta. */
+    label: string;
+    lineItemsTotal: string;
+    summaryTotal: string;
+    /** null clears the answer, reopening the question. */
+    onChoose: (use: "summary" | "line_items" | null) => void;
+  } | null;
   planIdentity?: {
     label: string | null;
     year: number | null;
@@ -222,6 +239,9 @@ export const ASSUMPTION_ANSWERABILITY = {
   aca_preventive: "input",
   service_cost: "input",
   plan_identity: "input",
+  // S302 — answered by picking one of two already-parsed numbers, so it is an
+  // "input" row like plan_identity: "Done" cannot answer it on the user's behalf.
+  totals_source: "input",
   // Emitted for transparency only — never gates the step. `denial` states what
   // the insurer said; `plan_provenance` names WHY a verdict was degraded and is
   // resolved by uploading a plan document, not by answering a row.
@@ -267,6 +287,15 @@ export function pendingAssumptionFields(
     /** the ACA question block renders (exists and not "Not sure"-dismissed). */
     acaRowVisible?: boolean;
   },
+  /**
+   * S302 — an unanswered line-items-vs-summary disagreement. Truthy only while
+   * the question is live (the caller passes null once answered), so it enters
+   * the pending set through the SAME path every other row does, rather than a
+   * second independent amber condition — the S292 lesson on this exact component.
+   * APPENDED, never inserted: a new positional arg in the middle silently
+   * re-maps every existing caller's arguments.
+   */
+  totalsSource?: unknown,
 ): Set<string> {
   const has = (field: string) => assumptions.some((a) => a.field === field);
   const pending = new Set<string>();
@@ -345,6 +374,10 @@ export function pendingAssumptionFields(
   // this step open forever on a bill the engine considers fully answered —
   // which is what produced a green badge sitting above an amber row.
   if (planIdentity && planIdentity.label == null) pending.add("plan_identity");
+  // S302 — an unanswered totals disagreement is PENDING: it changes which
+  // numbers every downstream citation reads, so the step is not done until the
+  // user has adjudicated it.
+  if (totalsSource) pending.add("totals_source");
   for (const a of assumptions) {
     if (a.field === "service_cost") pending.add(`service_cost:${a.serviceSlug ?? a.serviceLabel}`);
   }
@@ -428,6 +461,7 @@ export function CostShareBanner({
   onConfirmDefaults,
   pendingFields,
   planIdentity,
+  totalsSource = null,
   flagUnanswered = false,
   errorMsg,
   onShouldBeCovered,
@@ -688,7 +722,7 @@ export function CostShareBanner({
       ((oopExists && !oopResolved) ? 1 : 0) +
       serviceCostChips.length +
       (showAca ? 1 : 0);
-  const rawSectionHasRows = !!planIdentity || showNetwork || showDeductible || showOop || hasServiceCostGap || showAca || hasEditableCost;
+  const rawSectionHasRows = !!totalsSource || !!planIdentity || showNetwork || showDeductible || showOop || hasServiceCostGap || showAca || hasEditableCost;
   // Section is OPEN unless the user dismissed it via "Done"; when closed but
   // assumptions exist, "Update assumptions" brings it back.
   const sectionOpen = !dismissed && rawSectionHasRows;
@@ -789,6 +823,53 @@ export function CostShareBanner({
           >
             {!assumptionsOnly && (
               <div className="border-t border-gray-100 pt-3 text-[11px] font-semibold uppercase tracking-[0.1em] text-gray-400">What we assumed</div>
+            )}
+
+            {/* S302 — a bill is internally consistent on paper, so a mismatch
+                means one of OUR parses is wrong. Both candidates below are real
+                parsed numbers; the user only picks which to trust. */}
+            {totalsSource && (
+              <Row
+                flagged={flagRow("totals_source")}
+                icon={DocIcon}
+                label={
+                  totalsSource.answered
+                    ? "Which numbers we're using"
+                    : "These numbers don't match"
+                }
+                control={
+                  totalsSource.answered ? (
+                    <button
+                      type="button"
+                      onClick={() => totalsSource.onChoose(null)}
+                      className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-[13px] font-medium text-gray-700 hover:bg-gray-50"
+                    >
+                      Change
+                    </button>
+                  ) : (
+                    <span className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => totalsSource.onChoose("summary")}
+                        className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-[13px] font-medium text-gray-700 hover:bg-gray-50"
+                      >
+                        Use the summary
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => totalsSource.onChoose("line_items")}
+                        className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-[13px] font-medium text-gray-700 hover:bg-gray-50"
+                      >
+                        Use the line items
+                      </button>
+                    </span>
+                  )
+                }
+              >
+                {totalsSource.answered
+                  ? `You told us the bill's ${totalsSource.answered === "summary" ? "summary" : "line items"} is right, so we're using it for this bill's totals.`
+                  : `Adding up the line items on this bill gives ${totalsSource.lineItemsTotal} for ${totalsSource.label}, but the bill's own summary says ${totalsSource.summaryTotal}. Which is right? We'll use the same answer for the other totals on this bill, and you can change it any time.`}
+              </Row>
             )}
 
             {planIdentity && (

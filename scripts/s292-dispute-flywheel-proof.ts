@@ -70,7 +70,7 @@ async function main() {
   console.log(`dispute.metadata.serviceAttestationReviewed = ${disputeAttested}`);
   console.log(`→ BEFORE: "Confirm the services" RE-ASKED (panel read only the dispute flag): ${!disputeAttested}`);
   const override = readUserPatientPaidOverride(claim.metadata);
-  const eff = resolveEffectiveClaimTotals({ claim, lineItems: lines ?? [] });
+  const eff = resolveEffectiveClaimTotals({ claim, lineItems: lines ?? [], userTotalsSource: null });
   console.log(`claims.metadata.userPatientPaid = ${override} | bill effectiveTotals.patientPaid = ${eff.patientPaid} (${eff.provenance.patientPaidSource})`);
   console.log(`→ BEFORE: "Amount you paid" ASKED blank (no prefill): ${override == null}`);
   const hist = (dm.letterVersionHistory as Array<{ content: string; savedAt: string }> | undefined) ?? [];

@@ -28,7 +28,45 @@
  * NULL → trust per-line by default (nothing better to compare against).
  */
 
-export type EffectiveTotalsSource = "per_line_sum" | "claim_header";
+export type EffectiveTotalsSource =
+  | "per_line_sum"
+  | "claim_header"
+  /**
+   * S302 — the user adjudicated. A bill is internally consistent on paper, so
+   * when our line-item parse and our header parse disagree, one of OURS is
+   * wrong; these two sources record which one the user says to trust. They are
+   * a CHOICE between two already-parsed numbers, never a new value — no
+   * per-line writes, no redistribution, no imputation.
+   */
+  | "user_line_items"
+  | "user_summary";
+
+/** The user's answer, or null when they have not been asked / have cleared it. */
+export type UserTotalsSource = "summary" | "line_items" | null;
+
+/**
+ * Read the durable answer from `claims.metadata` (Rule #9 JSONB-first,
+ * re-parse-proof — mirrors `userPatientPaid`). ONE reader, so all five
+ * `resolveEffectiveClaimTotals` call sites read the same key the same way.
+ */
+export function readUserTotalsSource(metadata: unknown): UserTotalsSource {
+  if (!metadata || typeof metadata !== "object") return null;
+  const v = (metadata as Record<string, unknown>).userTotalsSource;
+  return v === "summary" || v === "line_items" ? v : null;
+}
+
+/**
+ * Is this source safe to cite PER LINE?
+ *
+ * The per-line resolvers below prorate the header whenever the raw line values
+ * are untrustworthy. `user_line_items` must count as trustworthy — the user
+ * just told us the line items are right — or choosing "the line items" would
+ * keep prorating and the choice would do nothing visible. ONE predicate, so a
+ * new source kind cannot be added to some resolvers and forgotten in others.
+ */
+export function isPerLineCiteGrade(source: EffectiveTotalsSource): boolean {
+  return source === "per_line_sum" || source === "user_line_items";
+}
 
 export interface EffectiveClaimTotals {
   patientPaid: number;
@@ -69,7 +107,16 @@ function toNumber(v: number | null | undefined): number {
 function decideField(
   perLineSum: number,
   header: number | null,
+  userChoice: UserTotalsSource,
 ): { value: number; source: EffectiveTotalsSource } {
+  // S302 — the user's answer OUTRANKS the default rule. It is a choice between
+  // the two numbers already computed below, so nothing else changes shape.
+  if (userChoice === "line_items") {
+    return { value: perLineSum, source: "user_line_items" };
+  }
+  if (userChoice === "summary" && header != null) {
+    return { value: header, source: "user_summary" };
+  }
   // Header absent → trust per-line sum (no other signal to compare against).
   if (header == null) {
     return { value: perLineSum, source: "per_line_sum" };
@@ -90,8 +137,19 @@ function decideField(
 export function resolveEffectiveClaimTotals(args: {
   claim: EffectiveTotalsClaimInput;
   lineItems: EffectiveTotalsLineInput[];
+  /**
+   * S302 — REQUIRED, deliberately. Five production call sites feed this
+   * (claims list, claim detail, dispute-ground-basis, evidence-resolver,
+   * accumulator-loader); an optional param would let one of them silently keep
+   * the old answer, so the claim page would show the corrected total while the
+   * LETTER still cited the old one. Making it required means the compiler names
+   * every site — the S301 lesson, where `letterRequirementsOn` shipped optional
+   * with zero callers and the readiness floor quietly never moved.
+   * Pass `readUserTotalsSource(claim.metadata)`; `null` = today's rule.
+   */
+  userTotalsSource: UserTotalsSource;
 }): EffectiveClaimTotals {
-  const { claim, lineItems } = args;
+  const { claim, lineItems, userTotalsSource } = args;
 
   // Per-line sums — treat NULL as 0 within the sum (sparse rows contribute
   // nothing). This is the value the comparison gate is checking AGAINST
@@ -127,13 +185,10 @@ export function resolveEffectiveClaimTotals(args: {
         ? Number(claim.amount_still_outstanding)
         : null;
 
-  const patientPaid = decideField(sumPatientPaid, headerPatientPaid);
-  const insurancePaid = decideField(sumInsurancePaid, headerInsurancePaid);
-  const insuranceAdjusted = decideField(
-    sumInsuranceAdjusted,
-    headerInsuranceAdjusted,
-  );
-  const patientResponsibility = decideField(sumPatientResp, headerPatientResp);
+  const patientPaid = decideField(sumPatientPaid, headerPatientPaid, userTotalsSource);
+  const insurancePaid = decideField(sumInsurancePaid, headerInsurancePaid, userTotalsSource);
+  const insuranceAdjusted = decideField(sumInsuranceAdjusted, headerInsuranceAdjusted, userTotalsSource);
+  const patientResponsibility = decideField(sumPatientResp, headerPatientResp, userTotalsSource);
 
   return {
     patientPaid: patientPaid.value,
@@ -169,8 +224,7 @@ export function resolvePerLinePatientPaid(args: {
   effectiveClaimPatientPaid: EffectiveClaimTotals;
 }): ResolvedPerLineValue {
   const citeGradeOk =
-    args.effectiveClaimPatientPaid.provenance.patientPaidSource ===
-      "per_line_sum" && args.linePatientPaid != null;
+    isPerLineCiteGrade(args.effectiveClaimPatientPaid.provenance.patientPaidSource) && args.linePatientPaid != null;
   if (citeGradeOk) {
     return { value: args.linePatientPaid as number, source: "per_line" };
   }
@@ -206,8 +260,7 @@ export function resolvePerLineInsurancePaid(args: {
   effectiveClaimInsurancePaid: EffectiveClaimTotals;
 }): ResolvedPerLineValue {
   const citeGradeOk =
-    args.effectiveClaimInsurancePaid.provenance.insurancePaidSource ===
-      "per_line_sum" && args.lineInsurancePaid != null;
+    isPerLineCiteGrade(args.effectiveClaimInsurancePaid.provenance.insurancePaidSource) && args.lineInsurancePaid != null;
   if (citeGradeOk) {
     return { value: args.lineInsurancePaid as number, source: "per_line" };
   }
@@ -242,9 +295,9 @@ export function resolvePerLineInsuranceAdjusted(args: {
   effectiveClaimInsuranceAdjusted: EffectiveClaimTotals;
 }): ResolvedPerLineValue {
   const citeGradeOk =
-    args.effectiveClaimInsuranceAdjusted.provenance
-      .insuranceAdjustedSource === "per_line_sum" &&
-    args.lineInsuranceAdjusted != null;
+    isPerLineCiteGrade(
+      args.effectiveClaimInsuranceAdjusted.provenance.insuranceAdjustedSource,
+    ) && args.lineInsuranceAdjusted != null;
   if (citeGradeOk) {
     return {
       value: args.lineInsuranceAdjusted as number,

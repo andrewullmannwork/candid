@@ -236,6 +236,7 @@ const claimRows = [
 const effectiveTotals = resolveEffectiveClaimTotals({
   claim: { total_billed: 392.41, total_patient_paid: 372.41, total_insurance_paid: 0, total_patient_responsibility: 0 },
   lineItems: claimRows,
+  userTotalsSource: null,
 });
 
 const prep: ClaimCostSharePrep = {
@@ -296,7 +297,8 @@ function citePrep(raw: Record<string, unknown>): ClaimCostSharePrep {
     lineItems: [
       { billed_amount: billed, patient_paid_amount: pp, insurance_paid: 0, insurance_adjusted_amount: ia, patient_owes: po },
     ],
-  });
+    userTotalsSource: null,
+});
   return { ...prep, claimTotalBilled: billed, claimStillOutstanding: po, effectiveTotals: et };
 }
 {

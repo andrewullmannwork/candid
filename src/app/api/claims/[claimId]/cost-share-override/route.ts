@@ -17,6 +17,7 @@ import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { userScoped, upsertOwnedChildren } from "@/lib/security/user-scoped";
+import { emitCaseEvents } from "@/lib/case/case-events";
 import { parseCostShareOverride } from "@/lib/claims/cost-share-override";
 import { PLAN_COVERED_ONCONFLICT } from "@/lib/plan/coverage-targeting";
 import { buildDirectEntryProvenance } from "@/lib/parser/provenance-builders";
@@ -115,6 +116,39 @@ export async function POST(
       .update({ metadata: nextMeta })
       .eq("id", claimId);
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ ok: true, field: ov.field, applied: true });
+  }
+
+  // ── Which of OUR TWO PARSES to trust (per-claim; plan-independent) ───────
+  // S302 — a bill is internally consistent on paper, so when its line items do
+  // not sum to its own summary, one of OUR parses is wrong. The user tells us
+  // which. Durable in claims.metadata (Rule #9 JSONB-first, re-parse-proof,
+  // mirroring userPatientPaid); null clears back to the default header-wins
+  // rule. Records a CHOICE between two already-parsed numbers — no per-line
+  // writes, no redistribution, no invented values.
+  if (ov.field === "totals_source") {
+    const baseMeta = (claim.metadata as Record<string, unknown> | null) ?? {};
+    const nextMeta: Record<string, unknown> = { ...baseMeta };
+    if (ov.use === null) {
+      delete nextMeta.userTotalsSource;
+      delete nextMeta.userTotalsSourceUpdatedAt;
+    } else {
+      nextMeta.userTotalsSource = ov.use;
+      nextMeta.userTotalsSourceUpdatedAt = new Date().toISOString();
+    }
+    const { error } = await userScoped(supabase, user.id)
+      .table("claims")
+      .update({ metadata: nextMeta })
+      .eq("id", claimId);
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    // The case-ledger emit obligation (candid CLAUDE.md Rule #10): a NEW
+    // mutation site emits fail-soft, references-only. This one also carries
+    // flywheel weight — a human telling us which of our two parses was wrong is
+    // precision-oracle signal for parser calibration, and the claim row keeps
+    // only the answer, never the history of asking.
+    await emitCaseEvents(supabase, user.id, [
+      { claimId, kind: "bill_totals_adjudicated", payload: { chose: ov.use } },
+    ]);
     return NextResponse.json({ ok: true, field: ov.field, applied: true });
   }
 
