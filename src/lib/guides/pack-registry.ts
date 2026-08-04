@@ -900,19 +900,6 @@ export const CASE_RAIL = {
           ? `Their deadline: ${dateLabel} · 1 day left`
           : `Their deadline: ${dateLabel} · ${daysRemaining} days left`,
   chipCollectionPause: "Collection must pause until they prove the debt",
-  /**
-   * S302 (Andrew) — the deadline chip turns RED at or under this many days.
-   *
-   * ⚠ This OVERRIDES the long-standing style fence ("caution amber, NEVER red"
-   * — CaseSummary.tsx:7). Andrew's call at the S302 E2E: the countdown BAR is
-   * gone, so the number is now the only urgency signal and it has to carry the
-   * weight the bar used to. Deliberate, not drift.
-   *
-   * Lives here beside the chip copy it governs. Follow-up: config-back it like
-   * `guided_steps_v1.config.sent_countdown_amber_days` if it needs tuning
-   * without a deploy.
-   */
-  deadlineUrgentDays: 5,
 
   // Card actions + doors.
   ctaLogResponse: "Log their response",

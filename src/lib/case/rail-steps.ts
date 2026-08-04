@@ -73,13 +73,6 @@ export interface RailWaitCard {
   chipDeadline: string | null;
   /** Slate pill — undated §1692g wait ("Collection must pause…"). */
   chipPause: string | null;
-  /**
-   * S302 — how to tone the deadline chip. The elapsed-% countdown BAR is gone
-   * (Andrew: "the number is enough if it updates daily"), so the chip alone
-   * carries urgency: `red` at or under CASE_RAIL.deadlineUrgentDays, and once
-   * the deadline has passed. Null when there is no dated deadline.
-   */
-  deadlineTone: "amber" | "red" | null;
   ctaLogResponse: string;
   door:
     | { kind: "something_else"; label: string }
@@ -404,9 +397,13 @@ function buildWaitCard(
   const dated = daysRemaining != null;
   const dateLabel = dated ? fmtRailDate(l.responseDueDate!) : null;
   const overdue = dated && daysRemaining < 0;
-  // S302 (Andrew) — the elapsed-% BAR is GONE, in every state. The number is
-  // the signal; urgency is carried by the chip's colour alone.
-  const urgent = dated && daysRemaining <= CASE_RAIL.deadlineUrgentDays;
+  // S302 (Andrew) — the elapsed-% BAR is GONE, in every state. The number in
+  // the chip is the whole signal.
+  //
+  // The chip STAYS AMBER at every distance, including overdue. A red urgency
+  // tone shipped briefly this session and Andrew removed it: "caution amber,
+  // NEVER red" is a deliberate style fence (CaseSummary.tsx:7), and the override
+  // is reverted rather than left as an exception nobody remembers agreeing to.
   const whnRows =
     l.letterType === "insurance_appeal"
       ? CASE_RAIL.whnAppeal(dated && !overdue ? dateLabel : null)
@@ -419,7 +416,6 @@ function buildWaitCard(
     chipDeadline: dated ? CASE_RAIL.chipDeadline(dateLabel!, daysRemaining) : null,
     chipPause:
       !dated && l.letterType === "debt_validation" ? CASE_RAIL.chipCollectionPause : null,
-    deadlineTone: !dated ? null : urgent ? "red" : "amber",
     ctaLogResponse: CASE_RAIL.ctaLogResponse,
     door:
       l.letterType === "debt_validation"

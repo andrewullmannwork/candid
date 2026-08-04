@@ -238,8 +238,7 @@ const compose = (
       s7.card.chipDeadline,
     );
     check("ballard · no pause chip when dated", s7.card.chipPause === null);
-    // S302 — the elapsed-% BAR is gone; the chip alone carries urgency.
-    check("ballard · 19 days out → amber, not red", s7.card.deadlineTone === "amber", s7.card.deadlineTone);
+    // S302 — no bar, no tone field: the chip is amber at every distance.
     check(
       "ballard · reminder foot",
       s7.card.foot === `We'll remind you before ${fmtRailDate(dateOnly(19))} if nothing arrives.`,
@@ -316,7 +315,7 @@ const compose = (
       w.card.chipDeadline === `Their deadline: ${fmtRailDate(dateOnly(-2))} · passed`,
       w.card.chipDeadline,
     );
-    check("overdue · a passed deadline is RED", w.card.deadlineTone === "red", w.card.deadlineTone);
+    check("overdue · still amber, never red (style fence)", !("deadlineTone" in w.card));
     check("overdue · foot hidden", w.card.foot === null);
     check(
       "overdue · whn drops the Nothing-by promise",
@@ -344,7 +343,7 @@ const compose = (
     // null, so NO deadline is asserted (the fallback never becomes a claim).
     check("undated · no deadline chip", w.card.chipDeadline === null, w.card.chipDeadline);
     check("undated · pause chip", w.card.chipPause === CASE_RAIL.chipCollectionPause);
-    check("undated · no deadline tone at all", w.card.deadlineTone === null, w.card.deadlineTone);
+    check("undated · no deadline chip furniture at all", w.card.chipDeadline === null);
     check("undated · no foot", w.card.foot === null);
   }
 }
@@ -905,49 +904,26 @@ const compose = (
   );
 }
 
-// ── 10b · S302 — the deadline chip's urgency tone ───────────────────────────
-// ⚠ RED here OVERRIDES the "caution amber, NEVER red" style fence
-// (CaseSummary.tsx:7). Andrew's call at the S302 E2E: with the countdown bar
-// removed, the number is the only urgency signal left and must carry the weight.
+// ── 10b · S302 — the deadline chip stays AMBER at every distance ───────────
+// A red urgency tone shipped briefly and was REMOVED (Andrew): "caution amber,
+// NEVER red" is a deliberate style fence (CaseSummary.tsx:7). Asserted as the
+// absence of a tone field so the override cannot quietly return.
 {
-  const at = (days: number) => {
+  const w = (() => {
     const d = mkDispute({
       status: "filed",
       sent_at: iso(-3),
-      governing_deadline_date: dateOnly(days),
-      deadline_type: "plan_response",
-    });
-    const w = compose([d]).steps.find((s) => s.kind === "wait-active");
-    return w?.kind === "wait-active" ? w.card.deadlineTone : "MISSING";
-  };
-  check("tone · comfortably ahead → amber", at(30) === "amber", at(30));
-  // The BAR is gone in every state (Andrew, round 2: "keep the bar away") —
-  // asserted by the model no longer carrying a percentage at all.
-  const anyWait = (() => {
-    const d = mkDispute({
-      status: "filed",
-      sent_at: iso(-3),
-      governing_deadline_date: dateOnly(2),
+      governing_deadline_date: dateOnly(-4),
       deadline_type: "plan_response",
     });
     return compose([d]).steps.find((s) => s.kind === "wait-active");
   })();
   check(
-    "bar · no countdown percentage on the model, even at 2 days out",
-    anyWait?.kind === "wait-active" && !("countdownPct" in anyWait.card),
+    "style fence · even an OVERDUE wait carries no red tone and no bar",
+    w?.kind === "wait-active" &&
+      !("deadlineTone" in w.card) &&
+      !("countdownPct" in w.card),
   );
-  check(
-    `tone · one day OVER the threshold (${CASE_RAIL.deadlineUrgentDays + 1}) is still amber`,
-    at(CASE_RAIL.deadlineUrgentDays + 1) === "amber",
-    at(CASE_RAIL.deadlineUrgentDays + 1),
-  );
-  check(
-    `tone · AT the threshold (${CASE_RAIL.deadlineUrgentDays}) turns red`,
-    at(CASE_RAIL.deadlineUrgentDays) === "red",
-    at(CASE_RAIL.deadlineUrgentDays),
-  );
-  check("tone · due today → red", at(0) === "red", at(0));
-  check("tone · overdue → red", at(-4) === "red", at(-4));
 }
 
 // ── 11 · S302 phase 3 — letter grouping, bands, and the resolved fold ───────
