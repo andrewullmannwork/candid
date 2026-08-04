@@ -73,8 +73,13 @@ export interface RailWaitCard {
   chipDeadline: string | null;
   /** Slate pill — undated §1692g wait ("Collection must pause…"). */
   chipPause: string | null;
-  /** 2–100 elapsed % of the send→deadline window; null = no bar (undated). */
-  countdownPct: number | null;
+  /**
+   * S302 — how to tone the deadline chip. The elapsed-% countdown BAR is gone
+   * (Andrew: "the number is enough if it updates daily"), so the chip alone
+   * carries urgency: `red` at or under CASE_RAIL.deadlineUrgentDays, and once
+   * the deadline has passed. Null when there is no dated deadline.
+   */
+  deadlineTone: "amber" | "red" | null;
   ctaLogResponse: string;
   door:
     | { kind: "something_else"; label: string }
@@ -399,15 +404,6 @@ function buildWaitCard(
   const dated = daysRemaining != null;
   const dateLabel = dated ? fmtRailDate(l.responseDueDate!) : null;
   const overdue = dated && daysRemaining < 0;
-  let countdownPct: number | null = null;
-  if (dated && daysSinceSent != null) {
-    if (overdue) countdownPct = 100;
-    else {
-      const span = daysSinceSent + daysRemaining;
-      const pct = span <= 0 ? 100 : Math.round((daysSinceSent / span) * 100);
-      countdownPct = Math.min(100, Math.max(2, pct));
-    }
-  }
   const whnRows =
     l.letterType === "insurance_appeal"
       ? CASE_RAIL.whnAppeal(dated && !overdue ? dateLabel : null)
@@ -420,7 +416,11 @@ function buildWaitCard(
     chipDeadline: dated ? CASE_RAIL.chipDeadline(dateLabel!, daysRemaining) : null,
     chipPause:
       !dated && l.letterType === "debt_validation" ? CASE_RAIL.chipCollectionPause : null,
-    countdownPct,
+    deadlineTone: !dated
+      ? null
+      : daysRemaining <= CASE_RAIL.deadlineUrgentDays
+        ? "red"
+        : "amber",
     ctaLogResponse: CASE_RAIL.ctaLogResponse,
     door:
       l.letterType === "debt_validation"
@@ -595,7 +595,9 @@ function buildLetterSteps(
       badge: "",
       title: copy.sendTitle,
       disputeId: l.disputeId,
-      openLetterLabel: CASE_RAIL.ctaOpenLetter,
+      // The DRAFT variant names the act; the sent one below stays a plain
+      // "Open this letter" because there is nothing left to send.
+      openLetterLabel: CASE_RAIL.ctaOpenLetterToSend,
     });
   } else {
     steps.push({

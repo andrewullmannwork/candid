@@ -226,7 +226,14 @@ function WaitCardBody({
           </span>
         )}
         {card.chipDeadline && (
-          <span className="inline-flex items-center rounded-full bg-amber-50 px-2.5 py-[3px] text-[12px] font-semibold text-amber-800 ring-1 ring-inset ring-amber-200">
+          <span
+            className={
+              "inline-flex items-center rounded-full px-2.5 py-[3px] text-[12px] font-semibold ring-1 ring-inset " +
+              (card.deadlineTone === "red"
+                ? "bg-red-50 text-red-800 ring-red-200"
+                : "bg-amber-50 text-amber-800 ring-amber-200")
+            }
+          >
             {card.chipDeadline}
           </span>
         )}
@@ -236,16 +243,10 @@ function WaitCardBody({
           </span>
         )}
       </div>
-      {card.countdownPct != null && (
-        <div className="mb-1 mt-2.5 h-1 overflow-hidden rounded-full bg-slate-100">
-          <i
-            className="block h-full rounded-full bg-amber-500"
-            style={{ width: `${card.countdownPct}%` }}
-            aria-hidden
-          />
-        </div>
-      )}
-      <div className="mt-3 flex flex-wrap items-center gap-3">
+      {/* S302 — the elapsed-% countdown BAR is gone (Andrew: "the number is
+          enough if it updates daily"). mt-3.5 keeps the chips-to-actions gap
+          the bar used to provide. */}
+      <div className="mt-3.5 flex flex-wrap items-center gap-3">
         <button
           type="button"
           onClick={onLogResponse}

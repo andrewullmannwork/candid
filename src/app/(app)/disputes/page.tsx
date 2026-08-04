@@ -326,9 +326,6 @@ function DisputesContent() {
   const [providerAddressOpen, setProviderAddressOpen] = useState(false);
   // S74 — Mark-sent button state + transient toast.
   const [markingSent, setMarkingSent] = useState(false);
-  // Surface 4 (clarity redesign) — the letter-card footer "I've sent this"
-  // inline confirm; shares the same mark-sent flow as the UnifiedTodo row.
-  const [footerConfirming, setFooterConfirming] = useState(false);
   const [markSentToast, setMarkSentToast] = useState<string | null>(null);
   // S74.6 D5 §E.2 — outcome reporting modal state.
   const [outcomeModalOpen, setOutcomeModalOpen] = useState(false);
@@ -1852,69 +1849,24 @@ function DisputesContent() {
           Legal basis referenced: <span className="text-slate-700">{letter.legalBasis}</span>
         </div>
       ) : null}
-      {/* Surface 4 — letter footer bar (v3 only): download + "I've sent this"
-          sharing the same sent state as the UnifiedTodo. No draft lock —
-          editing stays available post-send (existing behavior preserved). */}
-      {v3DesignOn && (
+      {/* Surface 4 — letter footer.
+          S302 (Andrew, E2E): its "Download letter" and "I've sent this" buttons
+          are GONE. They were a THIRD path to two acts the spine above already
+          owns ("Download & sign the letter", "Mark it as sent"), with their own
+          duplicate confirm — and, once the send gate landed, a way around it:
+          the spine could be locked for a letter missing its floor while these
+          two sat unlocked at the bottom of the page.
+          The sent RECEIPT stays: it is information, not an action, and it is
+          genuinely useful at the foot of a long letter. */}
+      {v3DesignOn && alreadySent && (
         <div className="border-t border-slate-100 bg-slate-50/50 px-6 py-4 md:px-8">
-          {alreadySent ? (
-            <div className="flex flex-wrap items-center gap-2.5 text-xs text-slate-500">
-              <span className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[12px] font-semibold text-emerald-700">
-                <SentCheckIcon />
-                Marked as sent{(disputeSentAt ?? disputeFiledDate) ? ` · ${formatFiledDate((disputeSentAt ?? disputeFiledDate) as string)}` : ""}
-              </span>
-              <span>Track the response and report the outcome in &ldquo;The case&rdquo; above.</span>
-            </div>
-          ) : footerConfirming ? (
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <span className="text-[13px] text-slate-600">
-                <strong className="font-semibold text-slate-900">Did you actually mail it?</strong>{" "}
-                Confirming starts the response clock and your follow-up reminders.
-              </span>
-              <span className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => setFooterConfirming(false)}
-                  className="rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-[13px] font-semibold text-slate-700 hover:bg-slate-50"
-                >
-                  Not yet
-                </button>
-                <button
-                  type="button"
-                  disabled={markingSent}
-                  onClick={() => {
-                    setFooterConfirming(false);
-                    handleMarkSent();
-                  }}
-                  className="rounded-lg bg-blue-600 px-3.5 py-2 text-[13px] font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
-                >
-                  {markingSent ? "Saving…" : "Yes — start the clock"}
-                </button>
-              </span>
-            </div>
-          ) : (
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <span className="text-xs text-slate-500">
-                Send by certified mail (USPS Form 3811) so you keep a paper trail.
-              </span>
-              <span className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={handleDownload}
-                  className="rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-[13px] font-semibold text-slate-700 hover:bg-slate-50"
-                >
-                  Download letter
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setFooterConfirming(true)}
-                  className="rounded-lg bg-blue-600 px-3.5 py-2 text-[13px] font-semibold text-white shadow-sm hover:bg-blue-700"
-                >
-                  I&rsquo;ve sent this
-                </button>
-              </span>
-            </div>
-          )}
+          <div className="flex flex-wrap items-center gap-2.5 text-xs text-slate-500">
+            <span className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[12px] font-semibold text-emerald-700">
+              <SentCheckIcon />
+              Marked as sent{(disputeSentAt ?? disputeFiledDate) ? ` · ${formatFiledDate((disputeSentAt ?? disputeFiledDate) as string)}` : ""}
+            </span>
+            <span>Track the response and report the outcome on your claim.</span>
+          </div>
         </div>
       )}
     </article>

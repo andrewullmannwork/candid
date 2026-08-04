@@ -25,7 +25,23 @@ export function useFeatureFlag(flagKey: string): { enabled: boolean; loading: bo
     // setState-in-effect-body triggers cascading renders (react-hooks lint).
     let cancelled = false;
     fetch(`/api/feature-flags/${flagKey}`)
-      .then((r) => r.json())
+      .then(async (r) => {
+        // S302 — a key missing from EXPOSED_FLAGS answers 404 → { enabled:false },
+        // indistinguishable from a flag that is genuinely off. That cost a full
+        // E2E round: `bill_totals_source_v1` was ON in the database, the row was
+        // built and tested, and it rendered nowhere because the allowlist entry
+        // was missing. Graceful degradation is right in PRODUCTION and wrong in
+        // development, where a silent 404 is always a wiring bug. Dev-only, so
+        // production behaviour is unchanged.
+        if (r.status === 404 && process.env.NODE_ENV !== "production") {
+          console.error(
+            `[useFeatureFlag] "${flagKey}" is not in EXPOSED_FLAGS ` +
+              "(src/app/api/feature-flags/[flagKey]/route.ts). It will read as OFF " +
+              "no matter what the database says.",
+          );
+        }
+        return r.json();
+      })
       .then((d) => {
         if (!cancelled) setEnabled(!!d?.enabled);
       })

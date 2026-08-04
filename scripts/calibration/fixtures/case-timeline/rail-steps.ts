@@ -238,7 +238,8 @@ const compose = (
       s7.card.chipDeadline,
     );
     check("ballard · no pause chip when dated", s7.card.chipPause === null);
-    check("ballard · countdown 4/(4+19) → 17%", s7.card.countdownPct === 17, s7.card.countdownPct);
+    // S302 — the elapsed-% BAR is gone; the chip alone carries urgency.
+    check("ballard · 19 days out → amber, not red", s7.card.deadlineTone === "amber", s7.card.deadlineTone);
     check(
       "ballard · reminder foot",
       s7.card.foot === `We'll remind you before ${fmtRailDate(dateOnly(19))} if nothing arrives.`,
@@ -315,7 +316,7 @@ const compose = (
       w.card.chipDeadline === `Their deadline: ${fmtRailDate(dateOnly(-2))} · passed`,
       w.card.chipDeadline,
     );
-    check("overdue · bar pinned 100", w.card.countdownPct === 100);
+    check("overdue · a passed deadline is RED", w.card.deadlineTone === "red", w.card.deadlineTone);
     check("overdue · foot hidden", w.card.foot === null);
     check(
       "overdue · whn drops the Nothing-by promise",
@@ -343,7 +344,7 @@ const compose = (
     // null, so NO deadline is asserted (the fallback never becomes a claim).
     check("undated · no deadline chip", w.card.chipDeadline === null, w.card.chipDeadline);
     check("undated · pause chip", w.card.chipPause === CASE_RAIL.chipCollectionPause);
-    check("undated · no countdown", w.card.countdownPct === null);
+    check("undated · no deadline tone at all", w.card.deadlineTone === null, w.card.deadlineTone);
     check("undated · no foot", w.card.foot === null);
   }
 }
@@ -363,7 +364,13 @@ const compose = (
   const { steps } = compose([appeal, draftValidation], {});
   const draftStep = steps.find((s) => s.kind === "send-draft");
   check("draft · escalated draft renders an open-letter step", draftStep != null);
-  check("draft · open-letter label", draftStep?.kind === "send-draft" && draftStep.openLetterLabel === "Open this letter");
+  // S302 — the DRAFT variant names the act (sending happens on the letter page).
+  check(
+    "draft · the button names the act, not just the destination",
+    draftStep?.kind === "send-draft" &&
+      draftStep.openLetterLabel === "Open the letter to send it",
+    draftStep?.kind === "send-draft" ? draftStep.openLetterLabel : draftStep?.kind,
+  );
   check("draft · no wait step for an unsent letter", steps.filter((s) => s.kind.startsWith("wait")).length === 1);
   const fallbackWait = steps.find((s) => s.kind === "wait-active");
   check(
@@ -896,6 +903,36 @@ const compose = (
     "collections · 'skipped' is in the vocabulary (not folded into 'checked')",
     CLIENT_KEYS.includes("skipped") && ROUTE_KEYS.includes("skipped"),
   );
+}
+
+// ── 10b · S302 — the deadline chip's urgency tone ───────────────────────────
+// ⚠ RED here OVERRIDES the "caution amber, NEVER red" style fence
+// (CaseSummary.tsx:7). Andrew's call at the S302 E2E: with the countdown bar
+// removed, the number is the only urgency signal left and must carry the weight.
+{
+  const at = (days: number) => {
+    const d = mkDispute({
+      status: "filed",
+      sent_at: iso(-3),
+      governing_deadline_date: dateOnly(days),
+      deadline_type: "plan_response",
+    });
+    const w = compose([d]).steps.find((s) => s.kind === "wait-active");
+    return w?.kind === "wait-active" ? w.card.deadlineTone : "MISSING";
+  };
+  check("tone · comfortably ahead → amber", at(30) === "amber", at(30));
+  check(
+    `tone · one day OVER the threshold (${CASE_RAIL.deadlineUrgentDays + 1}) is still amber`,
+    at(CASE_RAIL.deadlineUrgentDays + 1) === "amber",
+    at(CASE_RAIL.deadlineUrgentDays + 1),
+  );
+  check(
+    `tone · AT the threshold (${CASE_RAIL.deadlineUrgentDays}) turns red`,
+    at(CASE_RAIL.deadlineUrgentDays) === "red",
+    at(CASE_RAIL.deadlineUrgentDays),
+  );
+  check("tone · due today → red", at(0) === "red", at(0));
+  check("tone · overdue → red", at(-4) === "red", at(-4));
 }
 
 // ── 11 · S302 phase 3 — letter grouping, bands, and the resolved fold ───────
