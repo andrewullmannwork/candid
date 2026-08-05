@@ -148,9 +148,70 @@ export interface LetterTrack {
   party: "insurer" | "provider";
   /** Why the track exists. Distinct sources, so a rung can say what it rests on. */
   basis: "obligated_finding" | "insurer_underpaid";
+  /**
+   * S305 — the template this track's FIRST letter renders.
+   *
+   * Not a per-party constant: a `balance_billing` finding obligates the
+   * provider AND has its own provider-directed template, so hardcoding
+   * `provider → overcharge` would silently downgrade the letter the fallback
+   * picks today. Derived instead by running the SHIPPED dominant-type
+   * heuristic over this party's own findings — one template heuristic, not a
+   * second one invented here — and falling to the party default whenever that
+   * heuristic lands on a template addressed to somebody else.
+   */
+  letterType: DisputeLetterType;
 }
 
 const FINDING_TO_PARTIES = deriveFindingToParties();
+
+/**
+ * The letter a track falls back to when its findings name no template of their
+ * own. `overcharge` and `insurance_appeal` are the first-contact rungs of the
+ * two tracks (escalate-gate's `isFirstContactLetterType`).
+ */
+const PARTY_DEFAULT_LETTER: Record<LetterTrack["party"], DisputeLetterType> = {
+  insurer: "insurance_appeal",
+  provider: "overcharge",
+};
+
+/**
+ * Dominant finding type wins; mixed falls back to insurance_appeal.
+ *
+ * MOVED here from ClaimDetail (S305), where it was a private function inside a
+ * UI component deciding which legal template a letter renders. It has two
+ * consumers now — the single-letter fallback and the per-track derivation
+ * below — and both must pick templates the same way or the rung offers one
+ * letter while the fallback drafts another.
+ */
+export function letterTypeHintFromTypes(types: readonly string[]): DisputeLetterType {
+  const counts = new Map<string, number>();
+  for (const t of types) counts.set(t, (counts.get(t) ?? 0) + 1);
+  const dominantType = Array.from(counts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+  if (!dominantType) return "insurance_appeal";
+  if (dominantType === "balance_billing") return "balance_billing";
+  if (dominantType === "duplicate") return "duplicate_charge";
+  if (dominantType === "overcharge") return "overcharge";
+  return "insurance_appeal";
+}
+
+/**
+ * The template for ONE track, from the findings that obligate THAT party.
+ *
+ * The recipient test is what makes this safe: `unallocated_balance` is not in
+ * the heuristic's table, so it yields `insurance_appeal` — an INSURER template
+ * on a provider track. Rather than special-casing the finding, the mismatch
+ * itself is the signal to fall to the party default.
+ */
+function letterTypeForTrack(
+  party: LetterTrack["party"],
+  findingTypes: readonly string[],
+): DisputeLetterType {
+  const own = findingTypes.filter((t) =>
+    (FINDING_TO_PARTIES[t as FindingType] ?? []).includes(party),
+  );
+  const hint = letterTypeHintFromTypes(own);
+  return letterRecipientKind(hint) === party ? hint : PARTY_DEFAULT_LETTER[party];
+}
 
 /**
  * Which parties this claim has evidence against.
@@ -195,7 +256,13 @@ export function deriveLetterTracks(input: {
   // that expires (plan appeal windows), while a provider billing dispute has no
   // statutory clock.
   const order: Array<LetterTrack["party"]> = ["insurer", "provider"];
-  return order.filter((p) => parties.has(p)).map((p) => ({ party: p, basis: parties.get(p)! }));
+  return order
+    .filter((p) => parties.has(p))
+    .map((p) => ({
+      party: p,
+      basis: parties.get(p)!,
+      letterType: letterTypeForTrack(p, input.findingTypes),
+    }));
 }
 
 export type RecipientAddressGapKind =

@@ -64,6 +64,7 @@ import {
 import {
   CASE_RAIL,
   COLLECTIONS_STEPS,
+  GUIDE_4B,
   letterRailCopy,
   COMPLAINT_DOORS,
   PACK_D_STEPS,
@@ -72,6 +73,44 @@ import {
   suggestDoors,
   type CollectionsStepAction,
 } from "@/lib/guides/pack-registry";
+
+/**
+ * S305 — a letter this claim WARRANTS but the user has not written yet.
+ *
+ * The parallel-track offer. An insurer appeal and a provider billing dispute
+ * are independent wrongs against independent parties, so a claim can be owed
+ * two first letters at once; `deriveLetterTracks` says which parties are
+ * obligated, and the caller passes through only the tracks with no letter yet.
+ *
+ * Deliberately NOT a `ProjectedLetterStep`: the projection describes what has
+ * happened, and this has not happened. It carries no stage, no clock and no
+ * outcome, because none of those exist before a letter does.
+ */
+export interface RailLetterOffer {
+  party: "insurer" | "provider";
+  letterType: DisputeLetterType;
+  /**
+   * Why this letter is owed, in the finding's OWN words — the same title and
+   * description the claim-level issues list shows. Null when the track rests on
+   * the cost-share engine's `insurerDiscrepancy` rather than on a finding
+   * (plan math, which is not a finding and never will be).
+   */
+  reason: { title: string; detail: string | null } | null;
+  /** The user's stored decline (`skippedAt`), else null. */
+  declinedAt: string | null;
+}
+
+/**
+ * The `claims.metadata.guideSteps` key for declining a track's offer.
+ *
+ * ONE definition, like `regulatorSkipStepId`: the composer stamps it into the
+ * step and the caller reads the stored state back with it, so the key that is
+ * written can never drift from the key that is read. Claim-scoped and keyed on
+ * the PARTY — the offer belongs to a track, not to a letter (there isn't one).
+ */
+export function letterOfferSkipStepId(party: RailLetterOffer["party"]): string {
+  return `track:skip:${party}`;
+}
 
 export interface RailWaitCard {
   disputeId: string;
@@ -265,6 +304,38 @@ export type RailStepModel =
        * or a stored date (clear the date). Explicit so the card cannot guess.
        */
       doneSource: "attestation" | "send" | "date";
+    }
+  /**
+   * S305 — the parallel-track offer: a letter this claim is owed that has not
+   * been written.
+   *
+   * TWO states, not three. It is never "done": the moment the letter exists the
+   * offer stops being composed and that letter's own group takes its place, so
+   * a stale done-state cannot survive (the structural cure S302 applied to 4b,
+   * whose done-flag went green on a mere draft and stayed green through an
+   * unsend). Declining is a real answer and greys it, exactly as it does on
+   * every other declinable step here — never a check, because a declined step
+   * must not read as a performed one (S297 §3.2).
+   */
+  | {
+      kind: "letter-offer";
+      key: string;
+      badge: string;
+      title: string;
+      sub: string | null;
+      offer: {
+        party: RailLetterOffer["party"];
+        /** The template the draft action must request. */
+        letterType: DisputeLetterType;
+        /** The finding's own words — the reason this letter is owed. */
+        reasonTitle: string | null;
+        reasonDetail: string | null;
+        /** claims.metadata.guideSteps key this step writes. */
+        stepId: string;
+        declined: boolean;
+        /** Display date for the declined state ("Aug 5"); null while open. */
+        declinedAtLabel: string | null;
+      };
     };
 
 /**
@@ -277,7 +348,12 @@ export type RailStepModel =
  * is gone).
  */
 export interface RailLetterGroup {
-  disputeId: string;
+  /** React identity + the group's stable handle. Never null — an offer group
+   *  has no dispute yet, and `disputeId` is not a place to keep a stand-in. */
+  key: string;
+  /** Null on an OFFER group: the letter does not exist, so there is no id and
+   *  no deep-link anchor to give its steps (S305). */
+  disputeId: string | null;
   /** "Letter 2 of 3". */
   eyebrow: string;
   /** "Debt validation — Cascade Recovery". */
@@ -297,6 +373,13 @@ export interface ComposeRailInput {
    * the writes landed perfectly. A required prop cannot be dropped silently.
    */
   regulator: ProjectedRegulatorComplaint;
+  /**
+   * S305 — letters this claim is owed but has not written, one per obligated
+   * party with no letter yet. Ordered by the caller (insurer first, whose
+   * deadline is the one that expires); rendered AFTER every letter that does
+   * exist, because a letter in flight outranks one not yet started.
+   */
+  offers: RailLetterOffer[];
   /** First extension badge number (5 after the guided phone step). */
   firstNumber: number;
   /** Per-letter insurer display names (pinned plan), route-supplied. */
@@ -332,13 +415,24 @@ function contributesWaitStep(l: ProjectedLetterStep): boolean {
 }
 
 /**
- * True when the rail extends past the prep steps — ClaimDetail uses this to
- * decide whether the prep rail still owns the first letter's send step
- * (S302: it does not, once any letter exists). Same predicate the composer
- * uses, so the two can never disagree.
+ * True when the rail extends past the prep steps — i.e. when the RAIL owns the
+ * letter step and the prep rail's create step (4b, and the flag-OFF "Recover
+ * the money") must stand down. Same predicate the composer uses, so the two can
+ * never disagree.
+ *
+ * S302: a letter that exists takes its send step onto the rail.
+ * S305: so does a letter the claim is OWED. An offer is a rung the user can
+ * act on, and it renders with the rail's anatomy, so leaving 4b up beside it
+ * would put two doors on the same act — the duplication the S302 collapse
+ * removed. ClaimDetail reads this at THREE places (4b's gate, the phone step's
+ * 4-vs-4a badge, the flag-OFF recover gate); a second hand-rolled condition at
+ * any of them is exactly how 4b's stale done-state survived.
  */
-export function railHasExtension(letters: ProjectedLetterStep[]): boolean {
-  return letters.some(contributesSteps);
+export function railHasExtension(input: {
+  letters: ProjectedLetterStep[];
+  offers: RailLetterOffer[];
+}): boolean {
+  return input.letters.some(contributesSteps) || input.offers.length > 0;
 }
 
 /** The resolved-case summary (agenda §2.2 / mock Panel D). */
@@ -379,6 +473,11 @@ export function railStepIsOpen(s: RailStepModel): boolean {
       if (!reg) return false; // offer-only: the escalation is optional, never a chore
       return !reg.doors.some((d) => d.filedAt != null) && !(reg.skip?.declined ?? false);
     }
+    case "letter-offer":
+      // Declining is an ANSWER, so a declined offer stops asking — the same
+      // rule "skipped" gets above. An open offer is genuinely outstanding work
+      // and the fold must name it rather than collapse over it (S303).
+      return !s.offer.declined;
     case "send-draft":
       return true;
     case "wait-active":
@@ -629,7 +728,7 @@ function buildBand(
   input: ComposeRailInput,
   position: number,
   total: number,
-): Omit<RailLetterGroup, "steps" | "disputeId"> {
+): Omit<RailLetterGroup, "steps" | "disputeId" | "key"> {
   const copy = letterRailCopy(l.letterType);
   const counterparty = counterpartyFor(l, input);
   let status: RailLetterGroup["status"] = null;
@@ -912,19 +1011,75 @@ function buildLetterSteps(
  * re-derive an order the data already had.
  */
 function composeRailGroups(input: ComposeRailInput): RailLetterGroup[] {
-  const { letters, firstNumber } = input;
+  const { letters, offers, firstNumber } = input;
   const activeWaitCount = letters.filter((l) => l.stage === "awaiting").length;
   const onRail = letters.filter(contributesSteps);
+  // Written and unwritten letters share ONE count (Andrew, S305): the point of
+  // the parallel track is that the claim is owed two letters, and "Letter 1 of
+  // 1" beside a second band would deny it.
+  const total = onRail.length + offers.length;
 
   let n = firstNumber;
-  return onRail.map((l, i) => ({
+  const groups: RailLetterGroup[] = onRail.map((l, i) => ({
+    key: l.disputeId,
     disputeId: l.disputeId,
-    ...buildBand(l, input, i + 1, onRail.length),
+    ...buildBand(l, input, i + 1, total),
     steps: buildLetterSteps(l, input, activeWaitCount).map((s) => ({
       ...s,
       badge: String(n++),
     })),
   }));
+
+  // Offers come LAST, and the numbering simply continues — flat, no a/b. Those
+  // badges stay reserved for §0.9a rule 1's same-trigger sibling letters; an
+  // appeal and a provider dispute answer DIFFERENT triggers against different
+  // parties, so they are not siblings under that rule (Andrew, S304).
+  for (const o of offers) {
+    const copy = letterRailCopy(o.letterType);
+    groups.push({
+      key: `offer:${o.party}`,
+      disputeId: null,
+      eyebrow: CASE_RAIL.bandEyebrow(groups.length + 1, total),
+      title: CASE_RAIL.bandTitle(copy.band, offerCounterparty(o, input)),
+      // No chip. The status vocabulary describes a letter's progress, and this
+      // letter has none — an absent chip, never a guess (the rule the band
+      // already applies to a closed letter with no logged outcome).
+      status: null,
+      steps: [
+        {
+          kind: "letter-offer",
+          key: `offer:${o.party}`,
+          badge: String(n++),
+          title: copy.sendTitle,
+          sub: GUIDE_4B.sub,
+          offer: {
+            party: o.party,
+            letterType: o.letterType,
+            reasonTitle: o.reason?.title ?? null,
+            reasonDetail: o.reason?.detail ?? null,
+            stepId: letterOfferSkipStepId(o.party),
+            declined: o.declinedAt != null,
+            declinedAtLabel: o.declinedAt ? fmtRailDate(o.declinedAt) : null,
+          },
+        },
+      ],
+    });
+  }
+
+  return groups;
+}
+
+/**
+ * The counterparty an offered letter would be addressed to.
+ *
+ * The insurer branch deliberately has no lookup: `insurerNameByDispute` is
+ * resolved from each LETTER's own pinned plan, and mid-year plan changes mean
+ * two letters on one claim can pin different plans — so borrowing another
+ * letter's insurer for a letter that does not exist would be a guess. "your
+ * plan" is the shipped fallback for exactly that, and it is never wrong.
+ */
+function offerCounterparty(o: RailLetterOffer, input: CounterpartyNames): string {
+  return o.party === "provider" ? (input.providerName ?? "the provider") : "your plan";
 }
 
 /**

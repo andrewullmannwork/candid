@@ -230,6 +230,24 @@ export interface ProjectedRegulatorComplaint {
   declinedByDispute: Record<string, string>;
 }
 
+/**
+ * The regulator record's ZERO VALUE — "nothing filed, nothing declined".
+ *
+ * S305. `loadCaseProjection` returns null for a claim with no letters, by
+ * design: there is no case timeline before a case exists. But the rail can now
+ * carry a letter that has NOT been written yet (a parallel-track offer), and
+ * that rung must render on exactly those letterless claims. Rather than force a
+ * projection into existence for a case that hasn't started — or let the caller
+ * hand-roll an empty — the type owns its own zero, defined once, here.
+ *
+ * Provably inert where it is used: `regulator` is read only inside a letter's
+ * steps, and this value is passed only when there are no letters.
+ */
+export const EMPTY_PROJECTED_REGULATOR: ProjectedRegulatorComplaint = {
+  filings: [],
+  declinedByDispute: {},
+};
+
 export interface ProjectedCaseTimeline {
   claimId: string;
   /** Chronological (startAt ascending; stable on ties by disputeId). */

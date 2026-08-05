@@ -30,7 +30,20 @@ import {
   type ScriptSegment,
 } from "@/lib/guides/pack-registry";
 
-export type GuideStepState = { checkedAt: string | null; note?: string };
+/**
+ * One row of `claims.metadata.guideSteps`, as the checklist route stores it.
+ *
+ * S305 — `skippedAt` added. The route has always written it (S301 made
+ * declining its own state so a skipped step can never read as a performed one)
+ * and the projector has always read it; this type just never said so, because
+ * the phone pack is the one consumer that has no skippable step. Optional, so
+ * every existing reader is unchanged.
+ */
+export type GuideStepState = {
+  checkedAt: string | null;
+  skippedAt?: string | null;
+  note?: string;
+};
 
 /** 4a's rail-chrome state, derived from the persisted/live step map. */
 export interface PhonePackState {

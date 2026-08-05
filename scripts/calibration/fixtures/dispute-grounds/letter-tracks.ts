@@ -106,6 +106,83 @@ const parties = (t: ReturnType<typeof deriveLetterTracks>) => t.map((x) => x.par
   check("obligated grounds are present", (p["unallocated_balance" as never] as unknown as string[])?.[0] === "provider");
 }
 
+// ── S305 · the template each track's first letter renders ──────────────────
+//
+// Not a per-party constant. `balance_billing` obligates the provider AND has
+// its own provider-directed template, so `provider → overcharge` would silently
+// downgrade the letter today's single-letter fallback already picks. Derived by
+// running the SHIPPED dominant-type heuristic over the party's own findings —
+// one template heuristic in the codebase, not two — and falling to the party
+// default whenever it lands on a template addressed to somebody else.
+{
+  const typeFor = (t: ReturnType<typeof deriveLetterTracks>, party: string) =>
+    t.find((x) => x.party === party)?.letterType;
+
+  const unalloc = deriveLetterTracks({ findingTypes: ["unallocated_balance"], insurerUnderpaid: true });
+  check(
+    "letterType · unallocated_balance → the provider's first-contact rung",
+    typeFor(unalloc, "provider") === "overcharge",
+    typeFor(unalloc, "provider"),
+  );
+  check(
+    "letterType · the insurer track's first rung is the appeal",
+    typeFor(unalloc, "insurer") === "insurance_appeal",
+    typeFor(unalloc, "insurer"),
+  );
+
+  // The regression this exists to prevent.
+  const bb = deriveLetterTracks({ findingTypes: ["balance_billing"], insurerUnderpaid: false });
+  check(
+    "letterType · balance_billing keeps its own template on the provider track",
+    typeFor(bb, "provider") === "balance_billing",
+    typeFor(bb, "provider"),
+  );
+  check(
+    "letterType · and does NOT leak that provider template onto the insurer track",
+    typeFor(bb, "insurer") === "insurance_appeal",
+    typeFor(bb, "insurer"),
+  );
+
+  // The three findings `autoLetterType` misroutes: insurer-obligated, but every
+  // one of their templates is provider-directed, so all three must fall to the
+  // party default rather than address the wrong recipient.
+  for (const f of ["insurance_underpayment", "missing_adjustment", "zero_cost_share_overcharge"]) {
+    const t = deriveLetterTracks({ findingTypes: [f], insurerUnderpaid: false });
+    check(
+      `letterType · ${f} → insurance_appeal (its own template points at the provider)`,
+      typeFor(t, "insurer") === "insurance_appeal",
+      typeFor(t, "insurer"),
+    );
+  }
+
+  // A track derived from plan math alone still names a letter.
+  const engineOnly = deriveLetterTracks({ findingTypes: [], insurerUnderpaid: true });
+  check(
+    "letterType · the engine-only insurer track still resolves a template",
+    typeFor(engineOnly, "insurer") === "insurance_appeal",
+    typeFor(engineOnly, "insurer"),
+  );
+
+  // Every derived track resolves to a letter addressed to its OWN party. This
+  // is the invariant; the cases above are the instances.
+  for (const findingTypes of [
+    ["unallocated_balance"],
+    ["balance_billing"],
+    ["insurance_underpayment"],
+    ["zero_cost_share_overcharge"],
+    ["unallocated_balance", "balance_billing"],
+    ["overcharge", "unallocated_balance"],
+  ]) {
+    for (const t of deriveLetterTracks({ findingTypes, insurerUnderpaid: true })) {
+      check(
+        `letterType · [${findingTypes.join("+")}] ${t.party} letter is addressed to the ${t.party}`,
+        letterRecipientKind(t.letterType) === t.party,
+        { letterType: t.letterType, recipient: letterRecipientKind(t.letterType) },
+      );
+    }
+  }
+}
+
 console.log(`\nletter-tracks fixture: ${pass} passed, ${fails.length} failed`);
 if (fails.length) {
   console.log(fails.join("\n"));

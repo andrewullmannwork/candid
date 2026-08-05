@@ -5,7 +5,19 @@ import type { AuditFinding, ParsedBill, DisputeLetterType } from "../billing/typ
 import type { PlanContext, ProviderContact, AppealsAddress } from "./plan-context";
 import type { DisputeEvidence, LineItemEvidence } from "./evidence-resolver";
 import { groundFindingsForEvidence, type GroundFinding, type LineRecovery, type LetterRecoveryResult } from "./dispute-grounds";
-import type { RequestBucket } from "./dispute-ground-catalog";
+import { DISPUTE_GROUND_CATALOG, type RequestBucket } from "./dispute-ground-catalog";
+
+/**
+ * The findings that license Medicare language in a letter (S305).
+ *
+ * DERIVED from the catalog's `benchmark` ground — the one ground defined as a
+ * measurement against a public reference rate. `chargemaster` measures against
+ * a provider's PUBLISHED charge and `zero_cost_share_overcharge` carries a
+ * literal 0, so a benchmark number existing is not the same question.
+ */
+const MEDICARE_BENCHMARK_FINDING_TYPES: ReadonlySet<string> = new Set(
+  DISPUTE_GROUND_CATALOG.benchmark.fromFindings,
+);
 import { buildObligationContext, renderObligationClauses } from "./obligation-render";
 import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
 
@@ -1517,14 +1529,49 @@ const overchargeTemplate: LetterTemplate = {
     // f.description ?? "" is a no-op there — AuditFinding.description is a required string).
     const effectiveFindings: Array<AuditFinding | GroundFinding> =
       disputeGroundsOn && evidence ? groundFindingsForEvidence(evidence) : findings;
+    // S305 — the letter may only claim a Medicare comparison it actually made.
+    //
+    // The opening clause asserts the charges were "compared to publicly
+    // available Medicare payment data" and the closing line quotes a total
+    // "above the Medicare benchmark". Both were UNCONDITIONAL, so a provider
+    // letter whose grounds are not benchmark-based said so anyway — and on a
+    // claim whose only ground is CLAIM-scoped (`unallocated_balance`, whose
+    // dollars are a deliberately disjoint pool and never reach the per-line
+    // ground findings) it announced discrepancies, listed NONE, and quoted
+    // $0.00 as the amount in dispute, three paragraphs above a $33.85 demand.
+    //
+    // Licensed by the benchmark's SOURCE, not by a benchmark number existing:
+    // chargemaster measures against a provider's published charge and
+    // zero-cost-share carries a literal 0. Same fail-closed rule
+    // `renderEvidenceBlock` applies — an unsupported clause is omitted, never
+    // softened, because asserting what the evidence doesn't carry hands the
+    // provider a one-line rebuttal (the S304 lesson on the claim-tier sentence).
+    // Which findings license it comes from the CATALOG, not a literal here: the
+    // `benchmark` ground is defined as the public-reference-rate ground
+    // (§18.10.A, "public reference rate (Medicare), no obligated party"), and
+    // its `fromFindings` is the list. A second reference-rate finding added
+    // there brings the letter with it; a list retyped here would not.
+    //
+    // ⚠ NOT the benchmarkSource string. That was the first cut and it is
+    // brittle free text — today's rule writes "CMS PPL" while legacy rows and
+    // the golden corpus say "Medicare", so an exact match silently stripped the
+    // paragraph from letters that had genuinely earned it (caught by the golden
+    // corpus, not by reasoning).
+    const isMedicareBenchmarked = (f: AuditFinding | GroundFinding) =>
+      MEDICARE_BENCHMARK_FINDING_TYPES.has(f.type) && f.benchmarkAmount != null;
+    const medicareFindings = effectiveFindings.filter(isMedicareBenchmarked);
+    const comparedToMedicare = medicareFindings.length > 0;
+
     const findingDetails = effectiveFindings
       .map(
         (f, i) =>
-          `${i + 1}. ${f.title}\n   Billed amount: ${formatCurrency(f.billedAmount)}${f.benchmarkAmount ? `\n   Medicare national average: ${formatCurrency(f.benchmarkAmount)}` : ""}\n   Amount above the Medicare benchmark: ${formatCurrency(f.estimatedOvercharge)}\n   ${f.description ?? ""}`
+          `${i + 1}. ${f.title}\n   Billed amount: ${formatCurrency(f.billedAmount)}${isMedicareBenchmarked(f) ? `\n   Medicare national average: ${formatCurrency(f.benchmarkAmount!)}\n   Amount above the Medicare benchmark: ${formatCurrency(f.estimatedOvercharge)}` : ""}\n   ${f.description ?? ""}`
       )
       .join("\n\n");
 
-    const totalOvercharge = effectiveFindings.reduce(
+    // Sums the BENCHMARKED findings only — the old total swept in duplicate and
+    // balance-billing dollars and called them a Medicare overage.
+    const totalOvercharge = medicareFindings.reduce(
       (sum, f) => sum + f.estimatedOvercharge,
       0
     );
@@ -1560,12 +1607,16 @@ ${patientRefBlock}${renderGated(accountNumber, (a) => `\nAccount #: ${a}`)}
 
 To Whom It May Concern:
 
-I am writing to formally dispute charges on my medical bill for services rendered on ${formatDate(serviceDate)}. After reviewing my bill and comparing the charges to publicly available Medicare payment data and standard billing practices, I have identified the following potential discrepancies:
-
-${findingDetails}
-
-The total amount billed above the Medicare benchmark across these items is ${formatCurrency(totalOvercharge)}.
-${evidenceBlock ? `\n${evidenceBlock}` : ""}
+I am writing to formally dispute charges on my medical bill for services rendered on ${formatDate(serviceDate)}. ${
+      comparedToMedicare
+        ? `After reviewing my bill and comparing the charges to publicly available Medicare payment data and standard billing practices, I have identified the following potential discrepancies:`
+        : `After reviewing this bill against my plan's coverage and the bill's own figures, I have identified the problems described below.`
+    }
+${findingDetails ? `\n${findingDetails}\n` : ""}${
+      comparedToMedicare
+        ? `\nThe total amount billed above the Medicare benchmark across these items is ${formatCurrency(totalOvercharge)}.\n`
+        : ""
+    }${evidenceBlock ? `\n${evidenceBlock}` : ""}
 ${planEvidence && planEvidence.length > 0 ? `
 Additionally, according to my insurance plan documents, the following services are covered under my plan:
 

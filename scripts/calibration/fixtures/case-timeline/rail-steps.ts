@@ -28,6 +28,8 @@ import {
 import {
   composeRail,
   railHasExtension,
+  letterOfferSkipStepId,
+  type RailLetterOffer,
   railStepIsOpen,
   fmtRailDate,
   type RailStepModel,
@@ -96,6 +98,7 @@ const compose = (
     string,
     { checkedAt?: string | null; skippedAt?: string | null; note?: string }
   > = {},
+  offers: RailLetterOffer[] = [],
 ) => {
   const t = projectCaseTimeline({
     claim: { ...claimRow, metadata: { ...(claimRow.metadata ?? {}), guideSteps } },
@@ -111,6 +114,9 @@ const compose = (
     // S301 collections bug was (state beside the projection instead of through
     // it), and it is what let the fixture stay green while production broke.
     regulator: t.regulator,
+    // S305 — letters the claim is OWED but has not written. Default [] keeps
+    // every pre-existing assertion in this file byte-identical.
+    offers,
     firstNumber: 5,
     insurerNameByDispute,
     providerName: NAMES.providerName,
@@ -191,7 +197,9 @@ const compose = (
         ? s.card.disputeId === id
         : s.kind === "next-move"
           ? s.move.disputeId === id
-          : s.disputeId === id,
+          : s.kind === "letter-offer"
+            ? false
+            : s.disputeId === id,
     );
   const byKind = <K extends RailStepModel["kind"]>(id: string, kind: K) =>
     forLetter(id).find((s): s is Extract<RailStepModel, { kind: K }> => s.kind === kind);
@@ -441,7 +449,7 @@ const compose = (
   // the prep rail stops owning any letter's send.
   const draftPrimary = mkDispute({});
   const { t, steps } = compose([draftPrimary]);
-  check("predicate · a lone DRAFT extends the rail", railHasExtension(t.letters) === true);
+  check("predicate · a lone DRAFT extends the rail", railHasExtension({ letters: t.letters, offers: [] }) === true);
   check(
     "S302 · the first letter renders its own send step (4b retired)",
     steps.length === 1 && steps[0].kind === "send-draft" && steps[0].badge === "5",
@@ -451,11 +459,11 @@ const compose = (
   const { t: t2, steps: s2 } = compose([cancelled]);
   check(
     "predicate · cancelled contributes nothing",
-    railHasExtension(t2.letters) === false && s2.length === 0,
+    railHasExtension({ letters: t2.letters, offers: [] }) === false && s2.length === 0,
   );
   const sentPrimary = mkDispute({ status: "filed", sent_at: iso(-3) });
   const { t: t3, steps: s3 } = compose([sentPrimary]);
-  check("predicate · sent letter → extension", railHasExtension(t3.letters) === true);
+  check("predicate · sent letter → extension", railHasExtension({ letters: t3.letters, offers: [] }) === true);
   check(
     "S302 · a sent first letter renders send-receipt THEN its wait",
     s3.map((s) => s.kind).join(",") === "send-receipt,wait-active",
@@ -1188,7 +1196,9 @@ const compose = (
           ? s.card.disputeId === g.disputeId
           : s.kind === "next-move"
             ? s.move.disputeId === g.disputeId
-            : s.disputeId === g.disputeId,
+            : s.kind === "letter-offer"
+              ? g.disputeId === null
+              : s.disputeId === g.disputeId,
       ),
     ),
   );
@@ -1450,6 +1460,141 @@ const compose = (
   // A case of nothing but cancelled letters is not a resolution.
   const onlyCancelled = mkDispute({ status: "cancelled", sent_at: iso(-5) });
   check("fold · cancelled-only case does not fold", compose([onlyCancelled]).resolution === null);
+}
+
+// ── S305 · parallel-track offers ───────────────────────────────────────────
+//
+// A letter the claim is OWED but has not written. The unit that matters most is
+// the LETTERLESS one: `loadCaseProjection` returns null before the first letter,
+// so a rung that could only compose alongside an existing letter would be dead
+// on every fresh bill — which is exactly the bill it exists for.
+{
+  const providerOffer: RailLetterOffer = {
+    party: "provider",
+    letterType: "overcharge",
+    reason: { title: "Unallocated balance: $33.85", detail: "The bill's own numbers don't add up." },
+    declinedAt: null,
+  };
+  const insurerOffer: RailLetterOffer = {
+    party: "insurer",
+    letterType: "insurance_appeal",
+    // The insurer track can rest on the cost-share engine rather than a
+    // finding, and then there is no prose to show. Absent, never invented.
+    reason: null,
+    declinedAt: null,
+  };
+
+  // 1. No letters at all — the offer stands alone and the rail extends on it.
+  {
+    const { t, steps, groups } = compose([], {}, {}, [providerOffer]);
+    check(
+      "offer · a letterless claim still extends the rail (the fresh-bill case)",
+      railHasExtension({ letters: t.letters, offers: [providerOffer] }) === true,
+    );
+    check(
+      "offer · one group, one step, numbered from firstNumber",
+      groups.length === 1 && steps.length === 1 && steps[0].badge === "5",
+      steps.map((s) => `${s.kind}:${s.badge}`),
+    );
+    check("offer · the step is a letter-offer", steps[0].kind === "letter-offer");
+    check(
+      "offer · the group carries NO disputeId — the letter does not exist",
+      groups[0].disputeId === null && groups[0].key === "offer:provider",
+      { disputeId: groups[0].disputeId, key: groups[0].key },
+    );
+    check(
+      "offer · no status chip on an unwritten letter (absent, never a guess)",
+      groups[0].status === null,
+    );
+    check(
+      "offer · band names the letter and its counterparty",
+      groups[0].title === `Dispute letter — ${NAMES.providerName}` &&
+        groups[0].eyebrow === "Letter 1 of 1",
+      { title: groups[0].title, eyebrow: groups[0].eyebrow },
+    );
+    const o = steps[0].kind === "letter-offer" ? steps[0].offer : null;
+    check(
+      "offer · carries the finding's own words as the reason",
+      o?.reasonTitle === "Unallocated balance: $33.85",
+      o?.reasonTitle,
+    );
+    check("offer · stepId is the shared key builder", o?.stepId === letterOfferSkipStepId("provider"));
+    check("offer · an un-declined offer is OPEN work", railStepIsOpen(steps[0]) === true);
+  }
+
+  // 2. Alongside a real letter — offers come LAST and the numbering is FLAT.
+  //    ⛔ Not 4c, not 5a/5b: a/b stays reserved for same-trigger siblings.
+  {
+    const draft = mkDispute({});
+    const { steps, groups } = compose([draft], {}, {}, [providerOffer]);
+    check(
+      "offer · flat numbering continues past the letter's steps",
+      steps.map((s) => `${s.kind}:${s.badge}`).join(",") === "send-draft:5,letter-offer:6",
+      steps.map((s) => `${s.kind}:${s.badge}`),
+    );
+    check(
+      "offer · written and unwritten letters share ONE count",
+      groups.map((g) => g.eyebrow).join(",") === "Letter 1 of 2,Letter 2 of 2",
+      groups.map((g) => g.eyebrow),
+    );
+    check(
+      "offer · the letter that exists still reads first",
+      groups[0].disputeId === draft.id && groups[1].disputeId === null,
+    );
+  }
+
+  // 3. Declining. Grey, still in the case, no longer asking — never a check.
+  {
+    const declined: RailLetterOffer = { ...providerOffer, declinedAt: iso(-1) };
+    const { steps, groups } = compose([], {}, {}, [declined]);
+    const o = steps[0].kind === "letter-offer" ? steps[0].offer : null;
+    check("offer · a declined offer says so", o?.declined === true);
+    check("offer · with the date it was declined", o?.declinedAtLabel === fmtRailDate(iso(-1)));
+    check("offer · a declined offer stops asking", railStepIsOpen(steps[0]) === false);
+    check("offer · and stays in the case", groups.length === 1 && steps.length === 1);
+  }
+
+  // 4. Order: insurer first — its deadline is the one that expires.
+  {
+    const { groups } = compose([], {}, {}, [insurerOffer, providerOffer]);
+    check(
+      "offer · insurer reads before provider",
+      groups.map((g) => g.title).join(" | ") ===
+        `Appeal — your plan | Dispute letter — ${NAMES.providerName}`,
+      groups.map((g) => g.title),
+    );
+    check(
+      "offer · an insurer offer with no finding shows no reason prose",
+      groups[0].steps[0].kind === "letter-offer" && groups[0].steps[0].offer.reasonTitle === null,
+    );
+  }
+
+  // 5. An outstanding offer cannot be silently folded away (S303's rule).
+  {
+    const won = mkDispute({
+      status: "won",
+      sent_at: iso(-20),
+      metadata: { letterType: "insurance_appeal", outcomeDetail: "resolved_win", outcomeReportedAt: iso(-2) },
+    });
+    const withOffer = compose([won], { [won.id]: "Blue Cross Blue Shield of Wyoming" }, {}, [providerOffer]).resolution;
+    const without = compose([won], { [won.id]: "Blue Cross Blue Shield of Wyoming" }).resolution;
+    check(
+      "offer · the fold NAMES an outstanding offer rather than hiding it",
+      (withOffer?.openStepCount ?? 0) === (without?.openStepCount ?? 0) + 1,
+      { withOffer: withOffer?.openStepCount, without: without?.openStepCount },
+    );
+  }
+
+  // 6. Empty offers change nothing — the whole flag-off / no-track world.
+  {
+    const draft = mkDispute({});
+    const a = compose([draft]);
+    const b = compose([draft], {}, {}, []);
+    check(
+      "offer · [] composes byte-identically to not passing offers at all",
+      JSON.stringify(a.groups) === JSON.stringify(b.groups),
+    );
+  }
 }
 
 console.log(`\ncase-timeline rail-steps fixture: ${pass} passed, ${fails.length} failed`);

@@ -481,6 +481,7 @@ export function CaseRail({
   onSomethingElse,
   onUndoResult,
   onStartNextLetter,
+  renderOfferAction,
   escalating,
   onMarkSent,
   onSaveFirstContactDate,
@@ -506,6 +507,20 @@ export function CaseRail({
    *  external_review via the shared ExhaustionAttestModal, final_notice
    *  direct, debt_validation via the shared CollectorModal. */
   onStartNextLetter: (disputeId: string, targetLetterType: string) => void;
+  /**
+   * S305 — the draft control for a parallel-track offer, supplied by the owner
+   * of the claim data.
+   *
+   * A NODE rather than a callback, deliberately. Drafting a first letter is not
+   * one request: it is a cached feature-flag read, a plans-by-year fetch, the
+   * plan-pinning chooser, the persistent draft overlay, an inline error and the
+   * navigation on success — all of which `BulkDisputeButton` already owns.
+   * Taking a callback here would mean re-implementing five behaviours; taking
+   * the button means the same component renders in a second place with a
+   * different letter type, and nothing is duplicated. The rail still knows
+   * nothing about claims, findings or auth.
+   */
+  renderOfferAction: (letterType: string) => React.ReactNode;
   /** Escalate in flight (ClaimDetail state) — disables the offer buttons. */
   escalating: boolean;
   /** S301 — mark-as-sent / unsend for the collections "Mail it certified" step.
@@ -752,8 +767,12 @@ export function CaseRail({
    * was reaching the id through `card`/`move`). The anchor semantics are
    * unchanged: still one attribute per step, so claim/page.tsx's "last match
    * is the most recent step" still lands on the actionable card.
+   *
+   * S305 — null on an OFFER group. There is no letter, so there is nothing for
+   * an emailed deep link to point at; `RailStep` already omits the attribute
+   * rather than emitting an empty one.
    */
-  const renderStep = (s: RailStepModel, last: boolean, letterId: string) => {
+  const renderStep = (s: RailStepModel, last: boolean, letterId: string | null) => {
     {
         switch (s.kind) {
           case "wait-active":
@@ -1115,6 +1134,83 @@ export function CaseRail({
                 )}
               </RailStep>
             );
+          case "letter-offer": {
+            const o = s.offer;
+            // Optimistic state rides the SAME map every other declinable step
+            // on this rail uses, keyed by the same stepId the write uses — so
+            // the decline paints in the click's own render and reconciles from
+            // the claim, exactly like the regulator doors and the collections
+            // steps (S303).
+            const declined = (guideOverride[o.stepId] ?? (o.declined ? "skipped" : "open")) === "skipped";
+            return (
+              <RailStep
+                key={s.key}
+                dataLetter={letterId}
+                n={s.badge}
+                title={s.title}
+                sub={s.sub ?? undefined}
+                last={last}
+                // Never `done`: the moment the letter exists this step stops
+                // being composed and the letter's own group replaces it.
+                skipped={declined}
+              >
+                <div className={`rounded-xl border border-gray-200 px-4 py-3.5 ${declined ? "bg-gray-50" : "bg-white"}`}>
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="min-w-[14rem] flex-1">
+                      {/* The finding's OWN words — the reason this letter is
+                          owed. Absent on an insurer track raised by the
+                          cost-share engine, which is plan math, not a finding. */}
+                      {o.reasonTitle && (
+                        <div className={`text-[14px] font-bold ${declined ? "text-gray-400" : "text-gray-900"}`}>
+                          {o.reasonTitle}
+                        </div>
+                      )}
+                      {o.reasonDetail && (
+                        <div className={`mt-0.5 text-[12.5px] leading-[1.55] ${declined ? "text-gray-400" : "text-gray-500"}`}>
+                          {o.reasonDetail}
+                        </div>
+                      )}
+                    </div>
+                    {!declined && (
+                      <div className="flex flex-shrink-0 items-center gap-2">
+                        {renderOfferAction(o.letterType)}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div className="mt-2.5 flex flex-wrap items-center gap-2 text-[11.5px] text-gray-400">
+                  {declined ? (
+                    <>
+                      <span>
+                        {COLLECTIONS_CHROME.skippedLabel}
+                        {o.declinedAtLabel ? ` · ${o.declinedAtLabel}` : ""}
+                      </span>
+                      <button
+                        type="button"
+                        disabled={guideBusy[o.stepId] ?? false}
+                        onClick={() => void runClaimStep(o.stepId, "open", { skipped: false })}
+                        className="font-medium text-gray-500 underline underline-offset-2 hover:text-gray-700 disabled:opacity-60"
+                      >
+                        {COLLECTIONS_CHROME.undoSkipLabel}
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={guideBusy[o.stepId] ?? false}
+                      onClick={() => void runClaimStep(o.stepId, "skipped", { skipped: true })}
+                      className="font-medium text-gray-500 underline underline-offset-2 hover:text-gray-700 disabled:opacity-60"
+                    >
+                      {COLLECTIONS_CHROME.skipLabel}
+                    </button>
+                  )}
+                  {(guideError[o.stepId] ?? false) && (
+                    <span className="text-red-600">{COLLECTIONS_CHROME.saveFailed}</span>
+                  )}
+                </div>
+              </RailStep>
+            );
+          }
           case "send-draft":
             return (
               <RailStep key={s.key} dataLetter={letterId} n={s.badge} title={s.title} last={last}>
@@ -1163,7 +1259,7 @@ export function CaseRail({
   return (
     <>
       {groups.map((g) => (
-        <section key={g.disputeId}>
+        <section key={g.key}>
           <LetterBand group={g} />
           {/* The group's own spine — sits LEFT of the step badges, so the two
               lines read as hierarchy (letter, then its steps) rather than as
