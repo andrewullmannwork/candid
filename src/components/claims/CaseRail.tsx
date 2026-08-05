@@ -1259,7 +1259,10 @@ export function CaseRail({
   return (
     <>
       {groups.map((g) => (
-        <section key={g.key}>
+        // S306 (Andrew) — breathing room at every group boundary: the previous
+        // letter's last card ("Your next move", "Waiting on…") was flush
+        // against the next letter's band. First group keeps its position.
+        <section key={g.key} className="mt-6 first:mt-0">
           <LetterBand group={g} />
           {/* The group's own spine — sits LEFT of the step badges, so the two
               lines read as hierarchy (letter, then its steps) rather than as

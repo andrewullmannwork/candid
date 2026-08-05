@@ -138,6 +138,64 @@ export function LetterView(p: LetterViewProps) {
         </span>
       </div>
 
+      {/* S306 (Andrew) — the post-send cluster moved ABOVE the letter body so
+          the next action is visible without scrolling past a full page of
+          letter. Supersedes the Panel E mock's bottom placement. Same
+          controls, same copy, pure reorder. */}
+      {/* S301 — "Draft an updated letter" REMOVED from the sent view.
+          It could never work: /redraft rewrites `letter_content`, while the
+          GET serves the immutable `sent_letter` for as long as `sent_at` is
+          set (S74.5 chain-of-custody). The write landed and no code path
+          could ever display it. Drafting alongside a genuinely-mailed letter
+          is §0.9 rule-4 Case 2, which is specified but unbuilt — so the
+          honest affordance is unsend-then-redraft, and the hint says so
+          INCLUDING the consequence (Andrew, S301: unsending restarts the
+          response clock, so the user must know before they choose it). */}
+      <div className="mb-3.5 flex flex-wrap items-center justify-between gap-3">
+        {/* S301 — the SAME control the rail renders. Unsend is now ALWAYS
+            offered: a logged response is confirmed away rather than blocking
+            the action, and the route clears both in one atomic patch. Two
+            implementations of one act is how these surfaces ended up
+            disagreeing about whether unsend was even possible. */}
+        <div className="flex flex-col gap-1">
+          <UnsendControl
+            loggedOutcomeLabel={p.loggedOutcomeLabel}
+            loggedOutcomeDateLabel={p.loggedOutcomeDateLabel}
+            withEditLabel
+            onUnsend={p.onUnlock}
+          />
+          <span className="text-[11.5px] text-gray-400">
+            Need to send an updated letter? Unlock it first — that reopens it for editing and
+            restarts their response clock.
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={goClaim}
+          className="inline-flex items-center rounded-lg bg-blue-600 px-4 py-2 text-[13.5px] font-semibold text-white shadow-sm transition-colors hover:bg-blue-700"
+        >
+          Return to your claim
+        </button>
+      </div>
+
+      <div className="mb-3.5 rounded-xl border border-gray-200 bg-blue-50/30 px-4 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-3 text-[13px]">
+          <div>
+            <b>What happens next lives on your claim</b>
+            {p.waitingDueLabel
+              ? ` — waiting on ${counterparty ?? "a response"} · deadline ${p.waitingDueLabel}`
+              : ""}
+          </div>
+          <button
+            type="button"
+            onClick={goClaim}
+            className="border-none bg-transparent p-0 text-[12.5px] font-semibold text-blue-600 hover:underline"
+          >
+            Go to the waiting step →
+          </button>
+        </div>
+      </div>
+
       <div className="relative overflow-hidden rounded-xl border border-gray-200 bg-gray-50 p-5">
         <span className="absolute right-3 top-2.5 rounded-md border border-slate-200 bg-white px-2 py-[2px] text-[10.5px] font-extrabold tracking-[0.06em] text-slate-400">
           SENT · VIEW ONLY
@@ -239,64 +297,6 @@ export function LetterView(p: LetterViewProps) {
         </div>
       )}
 
-      <hr className="my-4 border-gray-200" />
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        {/* S301 — "Draft an updated letter" REMOVED from the sent view.
-            It could never work: /redraft rewrites `letter_content`, while the
-            GET serves the immutable `sent_letter` for as long as `sent_at` is
-            set (S74.5 chain-of-custody). The write landed and no code path
-            could ever display it. Drafting alongside a genuinely-mailed letter
-            is §0.9 rule-4 Case 2, which is specified but unbuilt — so the
-            honest affordance is unsend-then-redraft, and the hint says so
-            INCLUDING the consequence (Andrew, S301: unsending restarts the
-            response clock, so the user must know before they choose it).
-
-            Where a response is already logged, §0.9b withholds unsend too —
-            correctly, so it can never orphan an outcome — and the real forward
-            path is the escalation the rail offers. Nothing renders here then. */}
-        {/* S301 — the SAME control the rail renders. Unsend is now ALWAYS
-            offered: a logged response is confirmed away rather than blocking
-            the action, and the route clears both in one atomic patch. Two
-            implementations of one act is how these surfaces ended up
-            disagreeing about whether unsend was even possible. */}
-        <div className="flex flex-col gap-1">
-          <UnsendControl
-            loggedOutcomeLabel={p.loggedOutcomeLabel}
-            loggedOutcomeDateLabel={p.loggedOutcomeDateLabel}
-            withEditLabel
-            onUnsend={p.onUnlock}
-          />
-          <span className="text-[11.5px] text-gray-400">
-            Need to send an updated letter? Unlock it first — that reopens it for editing and
-            restarts their response clock.
-          </span>
-        </div>
-        <button
-          type="button"
-          onClick={goClaim}
-          className="inline-flex items-center rounded-lg bg-blue-600 px-4 py-2 text-[13.5px] font-semibold text-white shadow-sm transition-colors hover:bg-blue-700"
-        >
-          Return to your claim
-        </button>
-      </div>
-
-      <div className="mt-3.5 rounded-xl border border-gray-200 bg-blue-50/30 px-4 py-3">
-        <div className="flex flex-wrap items-center justify-between gap-3 text-[13px]">
-          <div>
-            <b>What happens next lives on your claim</b>
-            {p.waitingDueLabel
-              ? ` — waiting on ${counterparty ?? "a response"} · deadline ${p.waitingDueLabel}`
-              : ""}
-          </div>
-          <button
-            type="button"
-            onClick={goClaim}
-            className="border-none bg-transparent p-0 text-[12.5px] font-semibold text-blue-600 hover:underline"
-          >
-            Go to the waiting step →
-          </button>
-        </div>
-      </div>
     </div>
   );
 }
