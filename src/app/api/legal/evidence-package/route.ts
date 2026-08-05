@@ -15,7 +15,6 @@ import {
   compileEvidencePackage,
   formatEvidencePackageAsText,
 } from "@/lib/legal/evidence-compiler";
-import { loadServerSubscription } from "@/lib/subscription/server";
 import { requireAuthenticatedUser } from "@/lib/security/require-authenticated-user";
 import { assertOwnership } from "@/lib/security/assert-ownership";
 import { userScoped } from "@/lib/security/user-scoped";
@@ -38,19 +37,13 @@ export async function GET(req: NextRequest) {
 
   const supabase = createServerClient();
 
-  // Block B (P6) — server-side Stream-1 tier gate. Case File / evidence-package
-  // compilation is a Pro feature (FEATURE_ACCESS.documentationAggregation);
-  // closes the direct-API bypass.
-  const subscription = await loadServerSubscription(supabase, user.id);
-  if (!subscription.isPro) {
-    console.log(
-      `[legal/evidence-package] tier gate blocked: user ${user.id} tier=${subscription.tier} status=${subscription.status} → 403`,
-    );
-    return NextResponse.json(
-      { error: "subscription_required", requiredTier: "pro" },
-      { status: 403 },
-    );
-  }
+  // S305 (Andrew) — the Pro gate is OFF. The Case File is what we hand someone
+  // when their case has just died and they may leave us; gating the handoff
+  // behind a subscription was a business call, and it is reversed for now.
+  // Same posture as the S299 escalation-wall removal: the machinery
+  // (FEATURE_ACCESS.documentationAggregation, loadServerSubscription) is left
+  // intact, so re-gating later is re-adding a check rather than rebuilding one.
+  // Auth and IDOR are untouched — this opens the feature, never the resource.
 
   // B9-F02 — claimId is attacker-controlled (query param); the compiler reads
   // claim_discrepancies + claim_line_items by claim_id only (service-role bypasses

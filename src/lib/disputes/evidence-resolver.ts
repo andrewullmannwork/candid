@@ -50,8 +50,22 @@ import {
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { letterNeeds, normalizeLetterType } from "./letter-type";
 import { userScoped, selectOwnedChildren } from "@/lib/security/user-scoped";
+import { K_ANON_THRESHOLDS } from "@/lib/care/interface";
 
-const K_ANON_PRICING = 5;
+/**
+ * k-anonymity floors for community-derived statistics (S305).
+ *
+ * These were two local `= 5` literals here and a third in care/pricing-query,
+ * three definitions of ONE rule (CLAUDE.md #5: minimum 5 users before showing a
+ * statistic). They now point at the reviewed map in care/interface.ts.
+ *
+ * ⚠ Deliberately NOT flag-config-backed. That map carries "Changes require legal
+ * review — these numbers determine when a community-derived statistic about a
+ * named party is suppressed because the sample is too small to be fair"; making
+ * it tunable from an admin screen would let someone move a legally-reviewed floor
+ * without the review. One definition, still behind that gate.
+ */
+const K_ANON_PRICING = K_ANON_THRESHOLDS.unspecified_reference;
 
 // S154 — helpers for the secondary (category) coverage match in the letter.
 function humanizeSlug(slug: string): string {
@@ -135,7 +149,7 @@ function buildExactMatchPlanBenefit(
   };
 }
 
-const K_ANON_THRESHOLD = 5;
+const K_ANON_THRESHOLD = K_ANON_THRESHOLDS.unspecified_reference;
 const MIN_PLAN_BENEFIT_CONFIDENCE = 0.5;
 
 /**

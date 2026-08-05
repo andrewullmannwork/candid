@@ -37,7 +37,6 @@ import { createServerClient } from "@/lib/supabase/server";
 import { requireAuthenticatedUser } from "@/lib/security/require-authenticated-user";
 import { userScoped } from "@/lib/security/user-scoped";
 import { resolveDisputeReadiness } from "@/lib/disputes/dispute-readiness";
-import { loadServerSubscription } from "@/lib/subscription/server";
 import { getUserDisputes } from "@/lib/disputes/persist";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 
@@ -55,18 +54,12 @@ export async function GET(
 
   const supabase = createServerClient();
 
-  // 2) Tier gate (P6) — before resource load: a free caller can't probe dispute
-  // existence, and we avoid resolving evidence for someone who can't read it.
-  const subscription = await loadServerSubscription(supabase, authedUser.id);
-  if (!subscription.isPro) {
-    console.log(
-      `[disputes/case-file] tier gate blocked: user ${authedUser.id} tier=${subscription.tier} status=${subscription.status} → 403`,
-    );
-    return NextResponse.json(
-      { error: "subscription_required", requiredTier: "pro" },
-      { status: 403, headers: PRIVATE_NO_STORE },
-    );
-  }
+  // 2) S305 (Andrew) — the Pro gate is OFF here too. Both Case File surfaces
+  // gated on FEATURE_ACCESS.documentationAggregation and removing only the
+  // downloadable one would have left the structured read still walled, so the
+  // block would render for a free user and its data would 403. Machinery kept
+  // (see the header) so re-gating is re-adding a check. Ownership/IDOR below is
+  // untouched — this opens the feature, never the resource.
 
   // 3) Ownership / IDOR (P4) — scope the dispute to the authenticated user.
   const { disputeId } = await params;

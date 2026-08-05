@@ -119,6 +119,19 @@ jobs:
         run: npx tsx scripts/calibration/fixtures/dispute-grounds/letter-needs.ts
       - name: Bill totals source fixture (S302 line-items vs summary)
         run: npx tsx scripts/calibration/fixtures/cost-share-v2/totals-source.ts
+      - name: Case File — no data no section, and nothing countable escapes (S305)
+        # Three rules. (1) A section with nothing to say is omitted and the
+        # numbering closes up behind it — a heading whose content is its own
+        # emptiness is filler in a document a lawyer relies on. (2) Adjudication
+        # is BANDED, never rated: past k-anon, "3 of 5 paid" beside a named code
+        # and a named plan is still a small cell, and a percentage is no safer
+        # because with a small sample the percentage IS the sub-count. (3) A
+        # SOURCE guard over the two modules that build user-facing text, so a
+        # sample size, a paid/total pair or a threshold cannot be re-added to a
+        # letter or the Case File. The guard is deliberately not an output scan:
+        # those values exist only when there IS community data, so a scan would
+        # pass vacuously and stay green.
+        run: npx tsx scripts/calibration/fixtures/legal/case-file.ts
       - name: Letter tracks — which parties a claim has evidence against (S304/S305)
         # Written at S304 and never wired in; registered here now that the rung
         # offer reads it. Locks the SILENCE cases first: `overcharge` — the

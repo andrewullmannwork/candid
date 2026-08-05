@@ -625,11 +625,24 @@ export function projectCaseTimeline(input: ProjectTimelineInput): ProjectedCaseT
     payload: e.payload ?? {},
     virtual: false,
   }));
-  const seen = new Set(
-    stored.map((e) => `${e.kind}|${e.disputeId ?? ""}|${normalizeTs(e.occurredAt)}`),
-  );
+  // S305 — keyed on (kind, disputeId), NOT on the timestamp too.
+  //
+  // The exact-timestamp key could not hold: the ledger event is emitted AFTER
+  // the row is written, not atomically with it, so a stored `letter_sent` at
+  // 01:09:16.675 and the row's own `sent_at` of 01:09:15.823 are 852 ms apart
+  // and the virtual twin survived. Every send on a letter with a stored event
+  // was then counted TWICE — inflating `sendCount`, double-counting
+  // `genuineSends`, and reciting each send twice in the letter's prior-contact
+  // block (masked there only by its one-line-per-calendar-day collapse).
+  //
+  // A tolerance window would just move the arbitrary number. Synthesis exists
+  // to backfill rows written before the ledger did (mig 221), so if the ledger
+  // holds this KIND for this dispute it is already the authority and synthesis
+  // has nothing to add. Nothing is lost: `sent_at` is a single column, so the
+  // row could never have recovered an earlier send anyway.
+  const seen = new Set(stored.map((e) => `${e.kind}|${e.disputeId ?? ""}`));
   const virtual: ProjectedHistoryEntry[] = synthesizeCaseEventsFromRows(claim, claimDisputes)
-    .filter((s) => !seen.has(`${s.kind}|${s.disputeId ?? ""}|${normalizeTs(s.occurredAt)}`))
+    .filter((s) => !seen.has(`${s.kind}|${s.disputeId ?? ""}`))
     .map((s) => ({
       kind: s.kind,
       actor: "backfill",
