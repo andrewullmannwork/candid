@@ -89,7 +89,30 @@ export async function GET(req: NextRequest) {
     ]);
     const providerName = pkg.evidence?.claims?.[0]?.providerName ?? null;
     const element = CaseFilePdf({ pkg, providerName, referenceId: claimId.slice(0, 8) });
-    const buffer = await renderToBuffer(element);
+    const composed = await renderToBuffer(element);
+
+    // S305 (spec §5 decision 4) — bind the user's own uploaded bill/EOB in after
+    // the composed pages, under the exhibit label the document's own list
+    // printed. PDF only: the text edition can name a file but not contain it,
+    // which its exhibit line says rather than implying otherwise.
+    const { appendOriginals } = await import("@/lib/legal/attach-originals");
+    const { bytes: buffer, failed } = await appendOriginals(
+      new Uint8Array(composed),
+      pkg.originals ?? [],
+      async (storagePath) => {
+        const { data, error } = await supabase.storage.from("documents").download(storagePath);
+        if (error || !data) return null;
+        return await data.arrayBuffer();
+      },
+    );
+    if (failed.length > 0) {
+      // Named, never silent — the package itself already carries a page saying
+      // so; this is the operational signal that storage is losing documents.
+      console.warn("[legal/evidence-package] originals not attached", {
+        claimId,
+        failed: failed.map((f) => `${f.label}:${f.reason}`),
+      });
+    }
     const filename = `candid-case-file-${(providerName ?? "claim").toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${claimId.slice(0, 8)}.pdf`;
     return new NextResponse(new Uint8Array(buffer), {
       headers: {

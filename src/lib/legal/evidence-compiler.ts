@@ -23,6 +23,7 @@ import { resolveEvidence } from "@/lib/disputes/evidence-resolver";
 import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
 import { formatDate } from "@/lib/disputes/templates";
 import { adjudicationBand } from "@/lib/care/interface";
+import type { OriginalDocument } from "./attach-originals";
 import { loadCaseProjection } from "@/lib/case/load-case-timeline";
 import { guidedCallLogFromMeta, type GuidedCallLogEntry } from "@/lib/guides/pack-registry";
 import { genuineSends, type GenuineSend } from "@/lib/disputes/prior-contact";
@@ -55,6 +56,13 @@ export interface EvidencePackage {
   planContext?: PlanContext | null;
   evidence?: DisputeEvidence | null;
   letterContent?: string | null;
+  /**
+   * S305 — the source files this package's exhibit list promises, with the
+   * labels it printed. The PDF route binds these in AFTER the composed pages;
+   * exposing them here means the binder cannot label an exhibit differently
+   * from the list that names it.
+   */
+  originals?: OriginalDocument[];
 }
 
 interface CompileParams {
@@ -131,6 +139,33 @@ export async function compileEvidencePackage(
   const sends = projected ? genuineSends(projected.history, projected.letters) : [];
   const sentDisputeIds = new Set(sends.map((x) => x.disputeId));
   const sentLetters = (projected?.letters ?? []).filter((l) => sentDisputeIds.has(l.disputeId));
+
+  // The claim's source document — the bill or EOB the user uploaded.
+  // `claims.source_document_id` is the only structural link between a claim and
+  // a file, so it is the only original we can assert belongs to this case.
+  let sourceDoc: { id: string; file_name: string | null; storage_path: string } | null = null;
+  {
+    const { data: cRow } = await supabase
+      .from("claims")
+      .select("source_document_id")
+      .eq("id", claimId)
+      .maybeSingle();
+    const docId = (cRow?.source_document_id as string | null) ?? null;
+    if (docId) {
+      const { data: dRow } = await supabase
+        .from("documents")
+        .select("id, file_name, storage_path")
+        .eq("id", docId)
+        .maybeSingle();
+      if (dRow?.storage_path) {
+        sourceDoc = {
+          id: dRow.id as string,
+          file_name: (dRow.file_name as string | null) ?? null,
+          storage_path: dRow.storage_path as string,
+        };
+      }
+    }
+  }
 
   // The letters' own text, for §10. Loaded only for letters that were actually
   // sent, so an unsent draft cannot reach the document by this path either.
@@ -211,7 +246,7 @@ export async function compileEvidencePackage(
 
     sec("still_missing", "What is still missing", stillMissing(evidence, coverGaps)),
 
-    sec("exhibits", "Exhibits", exhibits(sentLetters, letterBodies)),
+    sec("exhibits", "Exhibits", exhibits(sentLetters, letterBodies, sourceDoc)),
   ];
 
   // Numbering is assigned AFTER omission so the document always reads 1..N with
@@ -227,6 +262,15 @@ export async function compileEvidencePackage(
     planContext,
     evidence,
     letterContent: letterContent ?? null,
+    originals: sourceDoc
+      ? [
+          {
+            label: exhibitLabel(sentLetters.length),
+            fileName: sourceDoc.file_name ?? "uploaded document",
+            storagePath: sourceDoc.storage_path,
+          },
+        ]
+      : [],
   };
 }
 
@@ -372,6 +416,23 @@ function chronology(
   return `${body}\n\n  Note: our record holds one call attestation per kind, so this list shows that a call was made — not how many. If more than one call took place, it is not recorded here.`;
 }
 
+/**
+ * Where a total came from, in plain words (spec §2.2's table).
+ *
+ * A figure a lawyer may rely on has to say whether it was itemised, taken from
+ * the bill's own summary because the lines do not sum to it, or supplied by the
+ * patient — those are different evidence.
+ */
+function provenanceOf(source: string | undefined): string {
+  switch (source) {
+    case "per_line_sum": return "   (from the itemised lines)";
+    case "claim_header": return "   (from the bill's own summary — the lines do not sum to it)";
+    case "user_summary":
+    case "user_line_items": return "   (confirmed by the patient)";
+    default: return "";
+  }
+}
+
 /** §4 — every field the bill carries, INCLUDING the ones it leaves blank. */
 function billSection(claim: DisputeEvidence["claims"][number]): string {
   const lines = claim.lineItemEvidence
@@ -383,11 +444,24 @@ function billSection(claim: DisputeEvidence["claims"][number]): string {
       `      Patient paid:           ${money(li.patientPaid)}`,
     ].join("\n"))
     .join("\n\n");
+  // Every total, each naming its OWN source (spec §2.2). Billed alone was the
+  // first cut and it dropped the two figures the bill's summary actually
+  // states — a lawyer reading "not stated" per line and no total would
+  // conclude the record has nothing, when the bill's own summary has both.
+  const t = claim.effectiveTotals;
+  const totals = [
+    `      Billed:                 ${money(claim.totalBilled)}`,
+    `      Plan discount:          ${money(t?.insuranceAdjusted ?? null)}${provenanceOf(t?.provenance.insuranceAdjustedSource)}`,
+    `      Insurer paid:           ${money(t?.insurancePaid ?? null)}${provenanceOf(t?.provenance.insurancePaidSource)}`,
+    `      Patient responsibility: ${money(t?.patientResponsibility ?? null)}${provenanceOf(t?.provenance.patientResponsibilitySource)}`,
+    `      Patient paid:           ${money(t?.patientPaid ?? null)}${provenanceOf(t?.provenance.patientPaidSource)}`,
+  ].join("\n");
+
   const single = claim.lineItemEvidence.length === 1;
   const note = single
     ? "  Single-line bill: each summary figure equals its line exactly."
     : "  Where a per-line figure was not stated on the bill, it is shown blank rather than allocated.";
-  return `${lines}\n\n  Totals\n      Billed: ${money(claim.totalBilled)}\n\n${note}`;
+  return `${lines}\n\n  Totals\n${totals}\n\n${note}`;
 }
 
 /**
@@ -449,20 +523,37 @@ function gapOwner(kind: string): string {
  * and the reshape dropped it, which would have shipped a case file that lists
  * three exhibits and contains none of them. A lawyer cannot read a filename.
  */
-function exhibits(sent: ProjectedLetterStep[], bodyByDispute: Map<string, string>): string {
-  if (sent.length === 0) return "";
-  return sent
+function exhibitLabel(i: number): string {
+  return String.fromCharCode(65 + i);
+}
+
+function exhibits(
+  sent: ProjectedLetterStep[],
+  bodyByDispute: Map<string, string>,
+  sourceDoc: { file_name: string | null; storage_path: string } | null,
+): string {
+  if (sent.length === 0 && !sourceDoc) return "";
+  const letterBlocks = sent
     .map((l, i) => {
-      const label = `  Exhibit ${String.fromCharCode(65 + i)} — ${letterRailCopy(l.letterType).receiptNoun} as mailed ${fmtDay(l.latestSendAt)}`;
+      const label = `  Exhibit ${exhibitLabel(i)} — ${letterRailCopy(l.letterType).receiptNoun} as mailed ${fmtDay(l.latestSendAt)}`;
       const body = bodyByDispute.get(l.disputeId);
       if (!body) {
         // Named, never dropped silently (spec §5 decision 4).
         return `${label}\n      Gap: the text of this letter is not on file and could not be attached.`;
       }
       const indented = body.trim().split("\n").map((ln) => `      ${ln}`).join("\n");
-      return `${label}\n\n${indented}\n\n      — end of Exhibit ${String.fromCharCode(65 + i)} —`;
+      return `${label}\n\n${indented}\n\n      — end of Exhibit ${exhibitLabel(i)} —`;
     })
     .join("\n\n");
+
+  // The uploaded original continues the SAME label sequence. In the PDF the
+  // file itself is bound in after the composed pages; in plain text it can only
+  // be named, which the line says rather than implying an attachment.
+  if (!sourceDoc) return letterBlocks;
+  const label = exhibitLabel(sent.length);
+  const name = sourceDoc.file_name ?? "uploaded document";
+  const originalBlock = `  Exhibit ${label} — ${name} (the document as uploaded; attached in full to the PDF edition)`;
+  return letterBlocks ? `${letterBlocks}\n\n${originalBlock}` : originalBlock;
 }
 
 function renderCoverageBullet(li: LineItemEvidence): string {
