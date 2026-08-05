@@ -15,7 +15,6 @@ import {
   compileEvidencePackage,
   formatEvidencePackageAsText,
 } from "@/lib/legal/evidence-compiler";
-import { loadServerSubscription } from "@/lib/subscription/server";
 import { requireAuthenticatedUser } from "@/lib/security/require-authenticated-user";
 import { assertOwnership } from "@/lib/security/assert-ownership";
 import { userScoped } from "@/lib/security/user-scoped";
@@ -38,19 +37,13 @@ export async function GET(req: NextRequest) {
 
   const supabase = createServerClient();
 
-  // Block B (P6) — server-side Stream-1 tier gate. Case File / evidence-package
-  // compilation is a Pro feature (FEATURE_ACCESS.documentationAggregation);
-  // closes the direct-API bypass.
-  const subscription = await loadServerSubscription(supabase, user.id);
-  if (!subscription.isPro) {
-    console.log(
-      `[legal/evidence-package] tier gate blocked: user ${user.id} tier=${subscription.tier} status=${subscription.status} → 403`,
-    );
-    return NextResponse.json(
-      { error: "subscription_required", requiredTier: "pro" },
-      { status: 403 },
-    );
-  }
+  // S305 (Andrew) — the Pro gate is OFF. The Case File is what we hand someone
+  // when their case has just died and they may leave us; gating the handoff
+  // behind a subscription was a business call, and it is reversed for now.
+  // Same posture as the S299 escalation-wall removal: the machinery
+  // (FEATURE_ACCESS.documentationAggregation, loadServerSubscription) is left
+  // intact, so re-gating later is re-adding a check rather than rebuilding one.
+  // Auth and IDOR are untouched — this opens the feature, never the resource.
 
   // B9-F02 — claimId is attacker-controlled (query param); the compiler reads
   // claim_discrepancies + claim_line_items by claim_id only (service-role bypasses
@@ -96,7 +89,30 @@ export async function GET(req: NextRequest) {
     ]);
     const providerName = pkg.evidence?.claims?.[0]?.providerName ?? null;
     const element = CaseFilePdf({ pkg, providerName, referenceId: claimId.slice(0, 8) });
-    const buffer = await renderToBuffer(element);
+    const composed = await renderToBuffer(element);
+
+    // S305 (spec §5 decision 4) — bind the user's own uploaded bill/EOB in after
+    // the composed pages, under the exhibit label the document's own list
+    // printed. PDF only: the text edition can name a file but not contain it,
+    // which its exhibit line says rather than implying otherwise.
+    const { appendOriginals } = await import("@/lib/legal/attach-originals");
+    const { bytes: buffer, failed } = await appendOriginals(
+      new Uint8Array(composed),
+      pkg.originals ?? [],
+      async (storagePath) => {
+        const { data, error } = await supabase.storage.from("documents").download(storagePath);
+        if (error || !data) return null;
+        return await data.arrayBuffer();
+      },
+    );
+    if (failed.length > 0) {
+      // Named, never silent — the package itself already carries a page saying
+      // so; this is the operational signal that storage is losing documents.
+      console.warn("[legal/evidence-package] originals not attached", {
+        claimId,
+        failed: failed.map((f) => `${f.label}:${f.reason}`),
+      });
+    }
     const filename = `candid-case-file-${(providerName ?? "claim").toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${claimId.slice(0, 8)}.pdf`;
     return new NextResponse(new Uint8Array(buffer), {
       headers: {

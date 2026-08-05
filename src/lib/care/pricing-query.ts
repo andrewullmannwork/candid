@@ -10,8 +10,11 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { K_ANON_THRESHOLDS } from "./interface";
 
-const K_ANONYMITY_THRESHOLD = 5;
+// S305 — one definition of the rule, and it stays behind the legal-review gate
+// that owns it (see K_ANON_THRESHOLDS' header in ./interface).
+const K_ANONYMITY_THRESHOLD = K_ANON_THRESHOLDS.unspecified_reference;
 
 export interface PricingResult {
   serviceSlug: string;

@@ -154,7 +154,7 @@ function joinDates(dates: string[]): string {
   return `${dates.slice(0, -1).join(", ")}, and ${dates[dates.length - 1]}`;
 }
 
-interface GenuineSend {
+export interface GenuineSend {
   disputeId: string;
   occurredAt: string;
   recipientKind: LetterRecipientKind;
@@ -165,8 +165,18 @@ interface GenuineSend {
  * (§0.9b). `letter_unsent` retracts the most recent outstanding `letter_sent`,
  * which is exactly the stack the sent-versions metadata models — same rule,
  * read from the sequence authority.
+ *
+ * EXPORTED at S305 so the Case File's chronology composes from the very sends
+ * the letter's recital speaks from. The Case File needs rows where the recital
+ * needs prose, and building a second walk of the same history is exactly the
+ * drift the recital was consolidated to end (S300) — so this is one derivation
+ * with two renderings, which is what the content spec asked for (§2.4: "if the
+ * Case File needs a fuller form than the letter's recital, extend that builder").
+ *
+ * ⚠ A send that was unsent is NOT here, deliberately. The Case File must never
+ * recite a contact the record retracted.
  */
-function genuineSends(
+export function genuineSends(
   history: ProjectedHistoryEntry[],
   letters: ProjectedLetterStep[],
 ): GenuineSend[] {

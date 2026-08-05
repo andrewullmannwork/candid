@@ -40,6 +40,30 @@ export const K_ANON_THRESHOLDS = {
   unspecified_reference: 5,
 } as const;
 
+/**
+ * How a community adjudication record may be DESCRIBED once it clears k-anon
+ * (S305, Andrew). Lives beside the thresholds because it is the same rule:
+ * k-anon decides whether we may speak, this decides how.
+ *
+ * Bands, never numbers. Clearing k-anon is not enough on an artifact the
+ * counterparty reads — "3 of 5 claims paid" beside a named code and a named
+ * plan is a small cell, and a percentage is no safer, because with a small
+ * sample the percentage IS the sub-count (60% reads back as three of five to
+ * anyone who knows the sample size). Banding is what removes the arithmetic.
+ *
+ * `null` when the record is genuinely mixed: it tells a reader nothing and
+ * invites a challenge to an exhibit that cannot be audited.
+ */
+export const ADJUDICATION_BANDS = { commonlyPaid: 2 / 3, frequentlyDenied: 1 / 3 } as const;
+
+export function adjudicationBand(paid: number, total: number): string | null {
+  if (total <= 0) return null;
+  const share = paid / total;
+  if (share >= ADJUDICATION_BANDS.commonlyPaid) return "commonly paid";
+  if (share <= ADJUDICATION_BANDS.frequentlyDenied) return "frequently denied";
+  return null;
+}
+
 // ----------------------------------------------------------------------------
 // Layer 1: Provider entity (1:1 with `providers` table)
 // ----------------------------------------------------------------------------

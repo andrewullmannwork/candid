@@ -20,6 +20,7 @@ const MEDICARE_BENCHMARK_FINDING_TYPES: ReadonlySet<string> = new Set(
 );
 import { buildObligationContext, renderObligationClauses } from "./obligation-render";
 import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
+import { adjudicationBand } from "@/lib/care/interface";
 
 interface LetterTemplate {
   type: DisputeLetterType;
@@ -1381,16 +1382,18 @@ function renderLineItemEvidence(
   // Already k-anonymity-gated in the resolver (omitted when total_claims < 5).
   if (li.communityOutcome) {
     const c = li.communityOutcome;
-    const parts: string[] = [];
-    if (c.paidCount > 0) {
-      parts.push(`${c.paidCount} of ${c.totalClaims} claims for this code on this plan have been paid`);
-    } else {
-      parts.push(`${c.totalClaims} claims for this code on this plan are on record`);
+    // BANDED, never counted (S305). This printed "3 of 5 claims for this code on
+    // this plan have been paid" — to the insurer whose own members those claims
+    // belong to. The average payment is an aggregate statistic rather than a
+    // cell count, so it stays; the band replaces the arithmetic.
+    const band = adjudicationBand(c.paidCount, c.totalClaims);
+    if (band) {
+      const avg =
+        c.avgPaidAmount != null ? `; average payment ${formatCurrency(c.avgPaidAmount)}` : "";
+      bullets.push(
+        `   - This code is ${band} on this plan${avg} (anonymized, aggregated Candid member data).`,
+      );
     }
-    if (c.avgPaidAmount != null && c.paidCount > 0) {
-      parts.push(`average payment ${formatCurrency(c.avgPaidAmount)}`);
-    }
-    bullets.push(`   - ${parts.join("; ")} (anonymized, aggregated Candid member data).`);
   }
 
   // Sibling-code bullet — "similar procedures but with slightly different
@@ -1398,9 +1401,10 @@ function renderLineItemEvidence(
   if (li.siblingCodes && li.siblingCodes.length > 0) {
     const sibParts = li.siblingCodes
       .slice(0, 3)
-      .map((s) =>
-        `${s.label} (${s.paidCount}/${s.totalClaims} paid${s.avgPaidAmount != null ? `, avg ${formatCurrency(s.avgPaidAmount)}` : ""})`
-      )
+      // Labels only — "(4/6 paid)" was a small cell beside a named code. The
+      // argument is that adjacent codes ARE paid on this plan; the tally adds
+      // nothing to it and discloses what the band exists to withhold.
+      .map((s) => `${s.label}${s.avgPaidAmount != null ? ` (average payment ${formatCurrency(s.avgPaidAmount)})` : ""}`)
       .join("; ");
     bullets.push(
       `   - Related codes in the same service category have been paid on this plan: ${sibParts}. A narrow coding distinction should not justify a blanket denial of this category.`,
@@ -1419,11 +1423,11 @@ function renderLineItemEvidence(
       : "";
     if (overageRatio >= 0.1) {
       bullets.push(
-        `   - Community benchmark: median billed rate for this code${regionSuffix} is ${formatCurrency(median)} across ${pb.sampleSize} anonymized Candid-member reports. The ${formatCurrency(li.billedAmount)} charged is ${Math.round(overageRatio * 100)}% above that median.${communityPaidSuffix}`,
+        `   - Community benchmark: median billed rate for this code${regionSuffix} is ${formatCurrency(median)}, from anonymized Candid member reports. The ${formatCurrency(li.billedAmount)} charged is ${Math.round(overageRatio * 100)}% above that median.${communityPaidSuffix}`,
       );
     } else if (overageRatio > -0.1) {
       bullets.push(
-        `   - Community benchmark: median billed rate for this code${regionSuffix} is ${formatCurrency(median)} (n=${pb.sampleSize}), roughly in line with the billed amount.${communityPaidSuffix}`,
+        `   - Community benchmark: median billed rate for this code${regionSuffix} is ${formatCurrency(median)}, from anonymized Candid member reports — roughly in line with the billed amount.${communityPaidSuffix}`,
       );
     }
   }

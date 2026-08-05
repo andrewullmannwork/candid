@@ -261,7 +261,7 @@ export function CaseFilePdf({ pkg, providerName, referenceId }: Props) {
     month: "long",
     day: "numeric",
   });
-  const refLabel = (referenceId ?? pkg.title.replace("Evidence Package — Claim ", "")).toUpperCase();
+  const refLabel = (referenceId ?? pkg.title.replace("Candid Case File — Claim ", "")).toUpperCase();
   const headerLeft = `Candid Case File · ${providerName ?? "—"}`;
 
   return (
@@ -305,16 +305,21 @@ export function CaseFilePdf({ pkg, providerName, referenceId }: Props) {
               <View style={styles.sectionRule} />
               <Text style={styles.sectionTitle}>{section.title}</Text>
             </View>
-            {/* Section 0 (the verbatim letter) renders in a subtle card;
-                Section 1 (Claim Summary) renders as a real table from the
-                structured evidence; everything else is the string content. */}
-            {section.title.startsWith("0.") ? (
-              <Text style={styles.letterBody}>{section.content}</Text>
-            ) : section.title.startsWith("1.") && pkg.evidence?.claims?.[0] ? (
-              <ClaimSummaryTable claim={pkg.evidence.claims[0]} />
-            ) : (
-              <Text style={styles.sectionContent}>{section.content}</Text>
-            )}
+            {/* S305 — every section renders its own content, uniformly.
+                This used to branch on `title.startsWith("0.")` / `("1.")`: a
+                renderer keyed on the PRINTED NUMBER. When the document
+                renumbered, section 1 stopped being "Claim Summary" and the
+                branch silently discarded the new section's content — including
+                the cover-sheet gaps the spec requires on page 1 — and drew a
+                table from a parallel read of `evidence` that coerced absent
+                figures to $0.00, re-fabricating in the PDF the zeros the
+                compiler had just stopped asserting. Two derivations of one
+                table; the compiler's is the one that knows a blank is a blank.
+                `EvidenceSection.key` now carries identity if a future renderer
+                needs to treat a section specially. */}
+            <Text style={section.key === "exhibits" ? styles.letterBody : styles.sectionContent}>
+              {section.content}
+            </Text>
             {section.disclaimer ? (
               <Text style={styles.sectionDisclaimer}>{section.disclaimer}</Text>
             ) : null}
@@ -345,39 +350,6 @@ function Footer({ left, right }: { left: string; right: string }) {
   );
 }
 
-type ClaimRow = NonNullable<EvidencePackage["evidence"]>["claims"][number];
-
-function ClaimSummaryTable({ claim }: { claim: ClaimRow }) {
-  return (
-    <View>
-      <Text style={styles.claimMeta}>
-        Date of service: {claim.dateOfService ?? "Unknown"}   ·   Provider:{" "}
-        {claim.providerName ?? "Unknown"}   ·   Plan year: {claim.planYear ?? "Unknown"}   ·   Total billed:{" "}
-        {formatUsd(claim.totalBilled)}
-      </Text>
-      <View style={styles.table}>
-        <View style={[styles.tr, styles.trHead]}>
-          <Text style={[styles.th, styles.colService]}>Service</Text>
-          <Text style={[styles.th, styles.colCode]}>Code</Text>
-          <Text style={[styles.th, styles.colNum]}>Billed</Text>
-          <Text style={[styles.th, styles.colNum]}>Ins. paid</Text>
-          <Text style={[styles.th, styles.colNum]}>Patient</Text>
-        </View>
-        {claim.lineItemEvidence.map((li, i) => (
-          <View key={i} style={styles.tr} wrap={false}>
-            <Text style={[styles.td, styles.colService]}>{li.serviceName}</Text>
-            <Text style={[styles.td, styles.colCode]}>
-              {li.billingCode ? `${li.billingCode.type} ${li.billingCode.value}` : "—"}
-            </Text>
-            <Text style={[styles.td, styles.colNum]}>{formatUsd(li.billedAmount)}</Text>
-            <Text style={[styles.td, styles.colNum]}>{formatUsd(li.insurancePaid ?? 0)}</Text>
-            <Text style={[styles.td, styles.colNum]}>{formatUsd(li.patientOwes ?? 0)}</Text>
-          </View>
-        ))}
-      </View>
-    </View>
-  );
-}
 
 function formatPlanLabel(pc: PlanContext | null | undefined): string {
   // Prefer the exact-year resolved plan; fall back to the user's plan on file

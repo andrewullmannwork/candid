@@ -23,6 +23,7 @@ import type { CostShareAssumption, CostShareOverrides } from "@/lib/claims/recov
 import { useFeatureFlag } from "@/lib/config/use-feature-flag";
 import { GuidedPhoneSteps, ShowFullStepButton, derivePhonePackState, type GuideStepState, type PhonePackState } from "@/components/claims/GuidedPhoneSteps";
 import { CaseRail, CaseResolvedFold, RailStep } from "@/components/claims/CaseRail";
+import { CaseFileBlock } from "@/components/claims/CaseFileBlock";
 import { OutcomeReportingModal } from "@/components/disputes/OutcomeReportingModal";
 import { CollectorModal, type CollectorSubmit } from "@/components/disputes/CollectorModal";
 import { ExhaustionAttestModal } from "@/components/disputes/ExhaustionAttestModal";
@@ -49,6 +50,8 @@ import {
   type ProjectedRegulatorComplaint,
 } from "@/lib/case/timeline-projector";
 import { letterRecipientKind } from "@/lib/disputes";
+import { isAdverseOutcome } from "@/lib/disputes/outcome-taxonomy";
+import { guidedCallLogFromMeta } from "@/lib/guides/pack-registry";
 import {
   deriveLetterTracks,
   letterTypeHintFromTypes,
@@ -1920,6 +1923,29 @@ export function ClaimDetail({
       : null;
   const railResolution = railComposed?.resolution ?? null;
   const caseFolded = railResolution != null && !caseExpanded;
+  // S305 — did the case END badly? The same predicate the regulator card keys
+  // on (S303), so "the case is over and it went against you" means one thing on
+  // this page. A case that resolved in the user's favour still gets its Case
+  // File; it just isn't the primary thing left to do.
+  const caseEndedAdversely =
+    railResolution != null &&
+    (railTimeline?.letters ?? []).some(
+      (l) => l.outcome != null && isAdverseOutcome(l.outcome.detail),
+    );
+  // The block's meta line. Counts what the case actually holds; the copy omits
+  // whatever is zero rather than printing "0 calls".
+  const caseFileLetterCount = (railTimeline?.letters ?? []).filter(
+    (l) => l.latestSendAt != null,
+  ).length;
+  const caseFileCallCount = guidedCallLogFromMeta(guideStepsMeta).length;
+  const caseFileUpdatedLabel = (() => {
+    const stamps = [
+      ...(railTimeline?.letters ?? []).flatMap((l) => [l.latestSendAt, l.outcome?.loggedAt]),
+      ...(railTimeline?.regulator.filings ?? []).map((f) => f.filedAt),
+    ].filter((x): x is string => typeof x === "string" && x.length > 0);
+    if (stamps.length === 0) return null;
+    return fmtRailDate(stamps.sort().at(-1)!);
+  })();
   // S305 — ONE predicate for "the rail owns the letter step", read by 4b's
   // gate, the phone step's 4-vs-4a badge, and the flag-OFF recover gate. A
   // letter the claim is OWED takes that step onto the rail exactly as a letter
@@ -3853,6 +3879,23 @@ export function ClaimDetail({
         </>
       )}
       </div>{/* /S302 resolved-fold collapse wrapper */}
+
+      {/* S305 — the Case File. OUTSIDE the fold wrapper above, deliberately: it
+          is not a rail step, so it must not collapse with them (spec §1 — "it
+          survives the fold, unchanged"). Present from the first letter; absent
+          before, because there is no case to file. Becomes the primary thing on
+          screen once the case has ended in a denial. */}
+      {isFlagged && railExtends && railTimeline && (
+        <CaseFileBlock
+          claimId={claimId}
+          getAuthToken={getAuthToken}
+          primary={caseFolded && caseEndedAdversely}
+          updatedLabel={caseFileUpdatedLabel}
+          letters={caseFileLetterCount}
+          calls={caseFileCallCount}
+          complaints={railTimeline.regulator.filings.length}
+        />
+      )}
       {/* S299 — the rail's inline-action modals: the dispute page's OWN
           components mounted here (one modal source; zero new UI machinery).
           Open state is settable only from the rail, so flag-OFF renders

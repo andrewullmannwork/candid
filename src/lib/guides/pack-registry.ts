@@ -871,6 +871,40 @@ export const ALL_GUIDE_STEPS: GuideStep[] = [
 // names, and counts interpolate as arguments — copy changes go to Andrew
 // BEFORE they land here. Exercised by fixtures/case-timeline/rail-steps.ts.
 
+/**
+ * The Case File block (S305) — copy approved VERBATIM from the S303 mock.
+ *
+ * Two states and one document. Live: it names what it contains and that it is
+ * lawyer-ready. Ended in denial: it becomes the one thing left to do — "not a
+ * consolation prize, the handoff we've been promising the whole way" (spec §0).
+ * Never a numbered step: it is not something you do, it is what everything you
+ * have done adds up to, which is why it sits outside the rail and outside the
+ * fold.
+ */
+export const CASE_FILE = {
+  title: "Your case file",
+  body:
+    "Everything on this bill in one document — the charges, what your plan covers, every letter and call, and what's still missing. Yours to keep, and ready to hand to a lawyer whenever you want one.",
+  titleDenied: "Take your case file with you",
+  bodyDenied:
+    "You've exhausted what we can do from here. Your case file has every document, date and response a lawyer needs to pick this up — including what we couldn't get answered.",
+  ctaPdf: "Download PDF",
+  ctaText: "Text",
+  failed: "That didn't download — please try again.",
+  /** "Updated Aug 4 · 3 letters · 2 calls · 1 regulator complaint" — omits what it doesn't have. */
+  meta: (updated: string | null, letters: number, calls: number, complaints: number): string =>
+    [
+      updated ? `Updated ${updated}` : null,
+      letters > 0 ? `${letters} letter${letters === 1 ? "" : "s"}` : null,
+      calls > 0 ? `${calls} call${calls === 1 ? "" : "s"}` : null,
+      complaints > 0
+        ? `${complaints} regulator complaint${complaints === 1 ? "" : "s"}`
+        : null,
+    ]
+      .filter(Boolean)
+      .join(" · "),
+} as const;
+
 export const CASE_RAIL = {
   // Case-header chip (§0.9a rule 2d — projector-derived, never stored).
   headerChip: (waiting: number, firstDueLabel: string | null): string =>
