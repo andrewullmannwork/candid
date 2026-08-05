@@ -135,7 +135,14 @@ const EXPECTED_SEEDING: Record<DisputeGroundType, Row[]> = {
     { element: "deductible_oop_accumulator", party: "insurer", condition: null, voiceIfMet: "demand", voiceIfNot: "fall_to_facts" },
   ],
   benchmark: [],
-  unallocated_balance: [],
+  // S304 — was []. The identity path gave this ground a party-addressed ask (the
+  // provider's own arithmetic, on the provider's own statement), so it now has an
+  // obligated party. Deliberately carries NO OBLIGATION_PROSE entry, which is why
+  // every letter fixture stayed green: renderObligationClauses yields nothing for
+  // an element without prose, so this is routing metadata, not copy.
+  unallocated_balance: [
+    { element: "unaccounted_balance_explain", party: "provider", condition: null, voiceIfMet: "demand", voiceIfNot: "omit" },
+  ],
   coding_peer: [
     { element: "coding_review", party: "provider", condition: null, voiceIfMet: "raise", voiceIfNot: "omit" },
   ],

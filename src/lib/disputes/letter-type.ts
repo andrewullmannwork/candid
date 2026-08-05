@@ -20,8 +20,9 @@
  * Source of truth (newer rows): metadata.letterType, stamped at persist.
  * Legacy fallback: dispute_type → letter type, GET semantics + the fix.
  */
-import type { DisputeLetterType } from "@/lib/billing/types";
+import type { DisputeLetterType, FindingType } from "@/lib/billing/types";
 import { deadlineAnchorField } from "./deadline-engine";
+import { deriveFindingToParties } from "./dispute-ground-catalog";
 
 /**
  * Raw `dispute_outcomes.dispute_type` → resolved `DisputeLetterType`.
@@ -132,6 +133,70 @@ export function letterRecipientKind(
 // "provider" — so routing a null straight through the resolver would newly
 // demand a provider address on every letterType-less call. Handled before the
 // resolver, asserted in the fixture.
+
+/**
+ * S304 — the letter TRACKS a claim warrants, one per obligated party.
+ *
+ * An insurer appeal and a provider dispute are PARALLEL, not an escalation
+ * ladder: the insurer paying $0 on a covered service and the provider's own
+ * arithmetic not closing are independent wrongs against independent parties,
+ * both valid at once. The escalation machinery (nextRungStillOpen, the 409
+ * rung-already-taken gate) governs SEQUENTIAL rungs within one track and is
+ * untouched by this — a first letter on a new track is not an escalation.
+ */
+export interface LetterTrack {
+  party: "insurer" | "provider";
+  /** Why the track exists. Distinct sources, so a rung can say what it rests on. */
+  basis: "obligated_finding" | "insurer_underpaid";
+}
+
+const FINDING_TO_PARTIES = deriveFindingToParties();
+
+/**
+ * Which parties this claim has evidence against.
+ *
+ * TWO sources, both already computed elsewhere — nothing here is authored:
+ *
+ *  - `findingTypes` → the catalog's CURATED `obligationElements[].party`. Not
+ *    `autoLetterType`, which is a per-ground template default and routes three
+ *    insurer findings to the provider.
+ *  - `insurerUnderpaid` → the cost-share engine's `InsurerDiscrepancy`
+ *    ("positive = insurer assigned the patient MORE than the plan says"). This
+ *    is NOT a finding and never will be — it comes from plan math, which is why
+ *    a claim can warrant an appeal with zero audit findings against it.
+ *
+ * Returns EMPTY when neither source speaks. That is the common case — the
+ * commonest finding, `overcharge`, has no obligated party by design — and the
+ * caller must fall back to its existing behaviour rather than treat empty as
+ * "no letter". Empty is also what a `recovery_cost_share_v2`-OFF claim yields,
+ * since the insurer signal is gated on that flag; falling back keeps flag-off
+ * behaviour byte-identical.
+ */
+export function deriveLetterTracks(input: {
+  findingTypes: readonly string[];
+  insurerUnderpaid: boolean;
+}): LetterTrack[] {
+  const parties = new Map<LetterTrack["party"], LetterTrack["basis"]>();
+
+  for (const t of input.findingTypes) {
+    for (const p of FINDING_TO_PARTIES[t as FindingType] ?? []) {
+      // `provider_financial_assistance` is an inert render key (the charity/FA
+      // fast-follow slot), not a letter recipient — never a track.
+      if (p === "insurer" || p === "provider") parties.set(p, "obligated_finding");
+    }
+  }
+
+  // An obligated finding is the stronger basis, so it is not overwritten.
+  if (input.insurerUnderpaid && !parties.has("insurer")) {
+    parties.set("insurer", "insurer_underpaid");
+  }
+
+  // Stable order: the insurer track reads first because its deadline is the one
+  // that expires (plan appeal windows), while a provider billing dispute has no
+  // statutory clock.
+  const order: Array<LetterTrack["party"]> = ["insurer", "provider"];
+  return order.filter((p) => parties.has(p)).map((p) => ({ party: p, basis: parties.get(p)! }));
+}
 
 export type RecipientAddressGapKind =
   | "provider_address_missing"
