@@ -110,8 +110,16 @@ const RESOLVED_STATUSES = [
  * (won/lost/settled/withdrawn/*_on_escalation) don't block a new row — the user
  * may legitimately open a fresh fight after a prior one closed.
  *
- * When claim_line_item_id is null the dedup key is incomplete, so we fall
- * through to INSERT (no safe way to tell two disputes apart).
+ * S305 — when there is no line item the key falls back to (user_id, claim_id,
+ * dispute_type). It used to fall through to INSERT unconditionally, on the
+ * grounds that there was "no safe way to tell two disputes apart" — which
+ * stopped being true once a letter could rest on CLAIM-scoped grounds alone
+ * (`unallocated_balance`: the bill's own arithmetic doesn't close, which
+ * belongs to no single line). Such a letter carries no line items, so every
+ * double-click, stale tab and retry INSERTED another one, and duplicate rows
+ * corrupt the per-case aggregates the flywheel reads — the same harm S303's
+ * rung-already-taken gate exists to prevent. Same claim + same type + not yet
+ * resolved is the same fight.
  */
 export async function persistDisputeLetter(
   supabase: SupabaseClient,
@@ -121,14 +129,29 @@ export async function persistDisputeLetter(
     const disputeType = mapLetterTypeToDisputeType(input.letterType);
     const primaryLineItemId = input.claimLineItemIds?.[0] || null;
 
-    if (primaryLineItemId) {
-      const { data: existing, error: selectError } = await supabase
+    // The dedup SCOPE: a line when the letter has one, else the claim. Both are
+    // "is this the same fight again?"; only the grain differs with the grounds.
+    const dedupeScope: { column: "claim_line_item_id" | "claim_id"; value: string } | null =
+      primaryLineItemId
+        ? { column: "claim_line_item_id", value: primaryLineItemId }
+        : input.claimId
+          ? { column: "claim_id", value: input.claimId }
+          : null;
+
+    if (dedupeScope) {
+      let q = supabase
         .from("dispute_outcomes")
         .select("id, amount_disputed, sent_at")
         .eq("user_id", input.userId)
-        .eq("claim_line_item_id", primaryLineItemId)
+        .eq(dedupeScope.column, dedupeScope.value)
         .eq("dispute_type", disputeType)
-        .not("status", "in", `(${RESOLVED_STATUSES.join(",")})`)
+        .not("status", "in", `(${RESOLVED_STATUSES.join(",")})`);
+      // Claim-scoped lookups match claim-scoped rows ONLY. Without this a
+      // letter with no line items would merge into one that HAS them — a
+      // different letter, covering charges this one never named. Same question,
+      // same grain.
+      if (dedupeScope.column === "claim_id") q = q.is("claim_line_item_id", null);
+      const { data: existing, error: selectError } = await q
         .order("created_at", { ascending: false })
         .limit(1)
         .maybeSingle();

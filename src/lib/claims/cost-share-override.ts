@@ -22,7 +22,26 @@ export type CostShareOverrideParsed =
   | { field: "aca"; status: "confirmed" | "non_aca" }
   | { field: "patient_paid"; amount: number | null }
   | { field: "services_confirmed"; confirmed: boolean }
+  /**
+   * S302 — which of OUR TWO PARSES to trust when a bill's line items don't sum
+   * to its own summary. Both candidates are already-parsed real numbers, so
+   * this records a choice, never a new value: no per-line writes, no
+   * redistribution, no imputation. `null` clears back to the default rule.
+   */
+  | { field: "totals_source"; use: "summary" | "line_items" | null }
   | { field: "claim_plan"; insurancePlanId: string };
+
+/**
+ * The REQUEST body type, deliberately identical to the parsed value — the wire
+ * shape and the validated shape are the same discriminated union.
+ *
+ * S302 — `CostShareBanner` used to declare its own parallel copy of this union,
+ * and the two had ALREADY drifted: the client's was missing `service_cost` and
+ * `patient_paid`, so those corrections were unrepresentable on the surface that
+ * sends them. Two lists that must agree is the same hazard as the two dispute
+ * column lists; the fix is the same — delete one. The client now imports this.
+ */
+export type CostShareOverrideRequest = CostShareOverrideParsed;
 
 export type ParseResult =
   | { ok: true; value: CostShareOverrideParsed }
@@ -132,6 +151,19 @@ export function parseCostShareOverride(body: unknown): ParseResult {
         return { ok: false, error: "services_confirmed requires a boolean `confirmed`" };
       }
       return { ok: true, value: { field: "services_confirmed", confirmed: b.confirmed } };
+    }
+
+    case "totals_source": {
+      // The bill is internally consistent on paper; if our two parses disagree,
+      // one of OURS is wrong. The user tells us which — a three-state answer,
+      // where null means "un-answer" (back to the default header-wins rule).
+      if (b.use !== "summary" && b.use !== "line_items" && b.use !== null) {
+        return {
+          ok: false,
+          error: "totals_source requires use of 'summary', 'line_items', or null",
+        };
+      }
+      return { ok: true, value: { field: "totals_source", use: b.use } };
     }
 
     case "claim_plan": {

@@ -35,9 +35,19 @@ export interface CaseProjection {
   providerName: string | null;
 }
 
-/** The full ProjectorDisputeRow column set (+ the pinned plan for names). */
+/**
+ * The full ProjectorDisputeRow column set (+ the pinned plan for names).
+ *
+ * S302 — callers that fetch their OWN dispute rows and pass them in must
+ * select this constant, not a hand-copied subset. The claim GET used to append
+ * a parallel list of rail columns; the two agreed by luck, and a column added
+ * here (like `amount_recovered`, which the resolved fold sums) would have been
+ * silently absent on that path. PostgREST tolerates a name appearing twice in
+ * one select and returns it once, so the claim GET now concatenates this
+ * constant wholesale — one list, no reconciliation.
+ */
 export const CASE_TIMELINE_DISPUTE_COLUMNS =
-  "id, claim_id, dispute_type, status, created_at, filed_date, resolution_date, sent_at, governing_deadline_date, deadline_type, metadata, insurance_plan_id";
+  "id, claim_id, dispute_type, status, created_at, filed_date, resolution_date, sent_at, governing_deadline_date, deadline_type, metadata, insurance_plan_id, amount_recovered";
 
 export async function loadCaseProjection(
   supabase: SupabaseClient,
@@ -173,6 +183,9 @@ export async function loadCaseTimelinePayload(
     waitingCount: projected.waitingCount,
     soonestResponseDue: projected.soonestResponseDue,
     sentLetterMeta: projected.sentLetterMeta,
+    // S303 — the case-level regulator complaint. Small (one record per case),
+    // and the rail cannot compose its card without it.
+    regulator: projected.regulator,
     insurerNameByDispute,
     providerName,
   };

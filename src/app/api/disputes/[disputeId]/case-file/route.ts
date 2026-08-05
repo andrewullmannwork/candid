@@ -36,24 +36,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase/server";
 import { requireAuthenticatedUser } from "@/lib/security/require-authenticated-user";
 import { userScoped } from "@/lib/security/user-scoped";
+import { resolveDisputeReadiness } from "@/lib/disputes/dispute-readiness";
 import { loadServerSubscription } from "@/lib/subscription/server";
-import { resolvePlanContext } from "@/lib/disputes/plan-context";
-import { resolveEvidence } from "@/lib/disputes/evidence-resolver";
-import {
-  computeDisputeStrength,
-  loadStrengthConfig,
-  type StrengthResult,
-} from "@/lib/disputes/strength-scoring";
-import { letterRecipientKind } from "@/lib/disputes";
-import { resolveAccountName } from "@/lib/disputes/rerender";
 import { getUserDisputes } from "@/lib/disputes/persist";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 
 const PRIVATE_NO_STORE = { "Cache-Control": "private, no-store" } as const;
-
-function normalizeNameForCompare(name: string): string {
-  return name.toLowerCase().replace(/[.,'"()]/g, "").replace(/\s+/g, " ").trim();
-}
 
 export async function GET(
   req: NextRequest,
@@ -101,126 +89,33 @@ export async function GET(
     new Set([dispute.claim_line_item_id, ...extraIds].filter(Boolean)),
   ) as string[];
 
-  // 4) Resolve plan context + structured evidence (pure reads; NO letter
-  // regeneration or persistence). Non-fatal: a failure leaves them null and the
-  // Case File still returns with whatever resolved.
-  let planContext = null;
-  let evidence = null;
-  if (dispute.claim_id) {
-    const userConfirmedSamePlan = ((): "yes" | "no" | "not_sure" | null => {
-      const v = (dispute.metadata as Record<string, unknown> | null)
-        ?.userConfirmedSamePlan;
-      return v === "yes" || v === "no" || v === "not_sure" ? v : null;
-    })();
-    const canonicalPlanIdForBillYear = ((): string | null => {
-      const v = (dispute.metadata as Record<string, unknown> | null)
-        ?.canonicalPlanIdForBillYear;
-      return typeof v === "string" && v.length > 0 ? v : null;
-    })();
-    // Block C2 — service-not-rendered attestations, threaded so the Case File's
-    // evidence + strength reflect the user's attestations.
-    const serviceAttestedLineIds = ((): string[] => {
-      const v = (dispute.metadata as Record<string, unknown> | null)
-        ?.serviceAttestedLineIds;
-      return Array.isArray(v)
-        ? v.filter((x): x is string => typeof x === "string")
-        : [];
-    })();
-    try {
-      // Case File resolves the same plan as the on-screen letter — the dispute's
-      // explicit user override, else the claim's live DOS-correct plan.
-      planContext = await resolvePlanContext(supabase, {
-        userId: authedUser.id,
-        claimId: dispute.claim_id,
-        canonicalPlanIdForBillYear,
-        pinnedInsurancePlanId: (dispute.insurance_plan_id as string | null) ?? null,
-      });
-      evidence = await resolveEvidence(supabase, {
-        userId: authedUser.id,
-        claimIds: [dispute.claim_id],
-        lineItemIds: allLineItemIds.length > 0 ? allLineItemIds : undefined,
-        planContext,
-        letterType: dispute.dispute_type,
-        disputeId: dispute.id,
-        userConfirmedSamePlan,
-        canonicalPlanIdForBillYear,
-        attestedLineItemIds: serviceAttestedLineIds,
-      });
-    } catch (err) {
-      console.error(
-        "[disputes/case-file] evidence resolve failed (non-fatal):",
-        err,
-      );
-    }
-  }
-
-  // 5) Patient-identity resolution for the readiness axis — mirrors the
-  // [disputeId] GET name-match (names match → identity resolved). Inlined to
-  // keep Block B self-contained + zero-touch to the just-shipped GET; a shared
-  // patient-identity helper is a logged follow-up.
-  let patientNameMismatch: { billName: string; profileName: string } | null =
-    null;
-  try {
-    const { data: userRow } = await supabase
-      .from("users")
-      .select("display_name, email")
-      .eq("id", authedUser.id)
-      .maybeSingle();
-    let billName = "";
-    if (dispute.claim_id) {
-      const { data: claim } = await userScoped(supabase, authedUser.id)
-        .table("claims")
-        .select("metadata")
-        .eq("id", dispute.claim_id)
-        .maybeSingle();
-      billName =
-        (claim?.metadata as { patient?: { name?: string } } | undefined)
-          ?.patient?.name?.trim() ?? "";
-    }
-    const accountName = resolveAccountName(
-      userRow?.display_name,
-      userRow?.email,
-    );
-    if (
-      billName &&
-      accountName &&
-      normalizeNameForCompare(billName) !== normalizeNameForCompare(accountName)
-    ) {
-      patientNameMismatch = { billName, profileName: accountName };
-    }
-  } catch (err) {
-    console.warn(
-      "[disputes/case-file] patient-name compare failed (non-fatal):",
-      err,
-    );
-  }
-
-  // Block C2 — sticky patient-identity confirmation (POST confirm-patient-identity):
-  // suppress the mismatch so the readiness axis stays closed (mirrors the GET route).
-  if (
-    (dispute.metadata as Record<string, unknown> | null)
-      ?.patientIdentityResolved === true
-  ) {
-    patientNameMismatch = null;
-  }
-
-  // 6) Three-axis strength — the single source of truth. Pure + never throws;
-  // the readiness axis consumes the name-match resolved above.
-  let strength: StrengthResult | null = null;
-  try {
-    const strengthConfig = await loadStrengthConfig(supabase);
-    strength = computeDisputeStrength(evidence, {
-      config: strengthConfig,
-      patientIdentityResolved: !patientNameMismatch,
-      recipientKind: letterRecipientKind(dispute.dispute_type),
-      letterRequirementsOn: await isFeatureEnabled("letter_requirements_v1"),
-    });
-  } catch (err) {
-    console.error(
-      "[disputes/case-file] strength computation failed (non-fatal):",
-      err,
-    );
-  }
+  // 4–6) Plan context, evidence, patient identity, and three-axis strength —
+  // ONE shared resolver (S302), the same one the [disputeId] GET and the send
+  // gate use.
+  //
+  // This route previously hand-rolled all of it, and had drifted: it passed the
+  // RAW `dispute.dispute_type` as `letterType`, where the GET deliberately
+  // passes the RESOLVED type. Consequences, both live on this LEGAL export:
+  // with `letter_requirements_v1` OFF the gap logic falls back to
+  // `letterType === "insurance_appeal"`, which raw "internal_appeal" fails, so
+  // an appeal was asked for the PROVIDER's address and never its appeals
+  // address; and `resolveLegalBasis` (no flag, no normalization) returned
+  // NOTHING for the raw vocab, so `backedClaim` could read false here while the
+  // page read true. Both die with the hand-rolled copy.
+  const readiness = await resolveDisputeReadiness(supabase, {
+    userId: authedUser.id,
+    dispute,
+    lineItemIds: allLineItemIds,
+  });
+  const planContext = readiness.planContext;
+  const evidence = readiness.evidence;
+  // S302 round 3 — the resolver now reports the raw comparison AND the user's
+  // answer separately. The Case File has always meant "an UNRESOLVED mismatch",
+  // so it combines them here rather than inheriting a conflated field.
+  const patientNameMismatch = readiness.patientIdentityConfirmed
+    ? null
+    : readiness.patientNameMismatch;
+  const strength = readiness.strength;
 
   // 7) Data-trust HARD STOP (flag-gated; mirrors letter generation). A
   // sign-convention WARN is surfaced via strength.dataTrust below, NOT blocked.

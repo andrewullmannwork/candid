@@ -441,7 +441,14 @@ export interface CostShareAssumption {
     /** S291 — the plan's terms came from a card/manual entry, not a document. */
     | "plan_provenance"
     /** S291 — WHICH plan this bill is audited against (correctable via the chooser). */
-    | "plan_identity";
+    | "plan_identity"
+    /**
+     * S302 — the bill's line items do not sum to the bill's own summary, so one
+     * of OUR two parses is wrong and the user says which. Claim-level, like
+     * `plan_identity`: it is not emitted by the per-line engine but assembled
+     * by the claim page from `effectiveTotals.provenance`.
+     */
+    | "totals_source";
   /** the value we assumed, e.g. "not_met", "in_network", "subject". */
   assumed: string;
   /** dollar value behind it when known (e.g. the $7,050 deductible); null → banner shows "add …". */

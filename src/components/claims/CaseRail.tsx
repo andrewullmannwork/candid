@@ -4,12 +4,17 @@
  * CaseRail — the extended claim rail's live phase (S299, timeline unification
  * phase 1a; approved mock: plans/mocks/s298-extended-rail-mock.html Panels A+B).
  *
- * Mounted by ClaimDetail below the prep steps (1–4b) when `case_rail_v1` is ON
- * and the projection extends the rail. Renders EXCLUSIVELY from rail-steps
- * models (which compose EXCLUSIVELY from the projector — agenda §1 one
- * derivation): per-letter waiting cards (chips + countdown + "What happens
- * next"), concurrent waits in chronological order, collapsed receipts for
- * sent/answered steps.
+ * Mounted by ClaimDetail below the prep steps when `case_rail_v1` is ON and any
+ * letter exists. Renders EXCLUSIVELY from rail-steps models (which compose
+ * EXCLUSIVELY from the projector — agenda §1 one derivation): per-letter
+ * waiting cards (chips + countdown + "What happens next"), collapsed receipts
+ * for sent/answered steps.
+ *
+ * S302 phase 3 — the rail owns EVERY letter's send step, grouped one block per
+ * letter under a band. Before this the first letter's send step was the prep
+ * rail's 4b, so one letter rendered with guided-step anatomy and the rest
+ * rendered with rail anatomy (Andrew, S301: "each letter is a little
+ * different"). 4b now renders only before the first letter exists.
  *
  * Phase-1a action contract (Andrew, S299 E2E round): the wait-card options
  * act INLINE on the claim page via the EXISTING machinery — "Log their
@@ -32,9 +37,9 @@ import { ShowFullStepButton } from "@/components/claims/GuidedPhoneSteps";
 import { UnsendControl } from "@/components/disputes/UnsendControl";
 import { CASE_RAIL, COLLECTIONS_CHROME } from "@/lib/guides/pack-registry";
 import {
-  composeRailSteps,
-  railStepDisputeId,
-  type ComposeRailInput,
+  type RailCaseResolution,
+  type RailDoorTile,
+  type RailLetterGroup,
   type RailStepModel,
   type RailWaitCard,
 } from "@/lib/case/rail-steps";
@@ -142,6 +147,51 @@ export function RailStep({
   );
 }
 
+/**
+ * S302 — the resolved fold (agenda §2.2, mock Panel D). Every letter on the
+ * case reached a terminal outcome, so the whole rail collapses to one line.
+ *
+ * Exported from here with the rest of the rail chrome; ClaimDetail owns the
+ * expanded/collapsed state because the steps it hides are ITS children (1–4
+ * prep included — a resolved case folds entirely, not just its letters).
+ *
+ * §2.2's go-back principle: no collapse in this product is permanent, so the
+ * expanded state keeps a Collapse control rather than being one-way.
+ */
+export function CaseResolvedFold({
+  resolution,
+  expanded,
+  onToggle,
+}: {
+  resolution: RailCaseResolution;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div className="mt-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3.5">
+      <div className="flex min-w-0 items-center gap-3">
+        <span
+          className="grid h-[26px] w-[26px] flex-shrink-0 place-items-center rounded-full bg-emerald-700 text-[12px] font-bold leading-none text-white"
+          aria-hidden
+        >
+          {"✓"}
+        </span>
+        <div className="min-w-0">
+          <div className="text-[14.5px] font-bold text-emerald-800">{resolution.headline}</div>
+          <div className="mt-px text-[12.5px] text-emerald-700/80">{resolution.meta}</div>
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex-shrink-0 text-[13px] font-semibold text-emerald-800 underline-offset-2 hover:underline"
+      >
+        {expanded ? CASE_RAIL.foldCollapse : resolution.expandLabel}
+      </button>
+    </div>
+  );
+}
+
 // ── The extension rail ──────────────────────────────────────────────────────
 
 const receiptClass = "text-[13px] font-semibold text-emerald-700";
@@ -185,16 +235,11 @@ function WaitCardBody({
           </span>
         )}
       </div>
-      {card.countdownPct != null && (
-        <div className="mb-1 mt-2.5 h-1 overflow-hidden rounded-full bg-slate-100">
-          <i
-            className="block h-full rounded-full bg-amber-500"
-            style={{ width: `${card.countdownPct}%` }}
-            aria-hidden
-          />
-        </div>
-      )}
-      <div className="mt-3 flex flex-wrap items-center gap-3">
+      {/* S302 — the elapsed-% countdown BAR is gone in EVERY state (Andrew:
+          "the number is enough if it updates daily"; and on round 2, "keep the
+          bar away"). Urgency is the chip's colour alone. mt-3.5 keeps the
+          chips-to-actions gap the bar used to provide. */}
+      <div className="mt-3.5 flex flex-wrap items-center gap-3">
         <button
           type="button"
           onClick={onLogResponse}
@@ -292,8 +337,13 @@ function GuideStepCard({
   return (
     <div className="rounded-xl border border-gray-200 bg-white px-4 py-3.5">
       <div className="min-w-0 flex-1">
-        <div className="text-[13.5px] font-bold text-gray-900">{step.title}</div>
-        <div className="mt-0.5 text-[12.5px] leading-[1.55] text-gray-500">{step.body}</div>
+        {/* S303 (Andrew, T8) — NO title here. RailStep already renders it as
+            the step's header, directly above this card, so every collections
+            step printed its own title twice. Shipped that way at S301 and
+            never promoted. The header is the canonical position: it is where
+            every other step kind names itself, and where the badge and spine
+            align. */}
+        <div className="text-[12.5px] leading-[1.55] text-gray-500">{step.body}</div>
 
         {step.state === "skipped" ? (
           <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -379,7 +429,7 @@ function GuideStepCard({
             every click and showed nothing, because the UI moved on regardless. */}
         {failed && (
           <p className="mt-2 text-[11.5px] font-medium text-red-600">
-            That didn&apos;t save — please try again.
+            {COLLECTIONS_CHROME.saveFailed}
           </p>
         )}
       </div>
@@ -387,25 +437,64 @@ function GuideStepCard({
   );
 }
 
+/**
+ * S302 — the letter band: the group header above one letter's steps (approved
+ * mock option B). Names the letter once so its steps don't have to, and
+ * carries the per-letter status the rail could not show at a glance before.
+ *
+ * The INDENT lives on the group wrapper below, not here: the band is the
+ * group's left edge, and the steps step in under it.
+ */
+function LetterBand({ group }: { group: RailLetterGroup }) {
+  const tone = group.status?.tone;
+  return (
+    <div className="mb-3 mt-1 flex flex-wrap items-center justify-between gap-2.5 rounded-xl border border-blue-100 bg-blue-50/40 px-3.5 py-2.5">
+      <div className="min-w-0">
+        <div className="text-[10px] font-extrabold uppercase tracking-[0.11em] text-blue-400">
+          {group.eyebrow}
+        </div>
+        <div className="mt-px text-[14px] font-bold text-gray-900">{group.title}</div>
+      </div>
+      {group.status && (
+        <span
+          className={
+            "inline-flex items-center rounded-full px-2.5 py-[3px] text-[12px] font-semibold ring-1 ring-inset " +
+            (tone === "green"
+              ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
+              : tone === "amber"
+                ? "bg-amber-50 text-amber-800 ring-amber-200"
+                : "bg-slate-100 text-slate-600 ring-slate-200")
+          }
+        >
+          {group.status.label}
+        </span>
+      )}
+    </div>
+  );
+}
+
 export function CaseRail({
-  letters,
-  insurerNameByDispute,
-  providerName,
-  primaryDisputeId,
-  firstNumber,
+  groups,
   claimId,
   getAuthToken,
   onLogResponse,
   onSomethingElse,
   onUndoResult,
   onStartNextLetter,
+  renderOfferAction,
   escalating,
   onMarkSent,
   onSaveFirstContactDate,
   onRefetch,
-}: Omit<ComposeRailInput, "insurerNameByDispute" | "providerName" | "now"> & {
-  insurerNameByDispute: Record<string, string>;
-  providerName: string | null;
+}: {
+  /**
+   * S303 — the rail arrives COMPOSED. ClaimDetail composes once (composeRail)
+   * and passes both halves down; this component used to re-compose the same
+   * inputs while ClaimDetail separately computed the fold from `letters`
+   * alone, which is exactly how a finished-looking case could collapse with
+   * steps still open. One composition, one truth.
+   */
+  groups: RailLetterGroup[];
   claimId: string;
   getAuthToken: () => Promise<string | null>;
   /** Opens the shared OutcomeReportingModal (ClaimDetail mounts it). */
@@ -418,6 +507,20 @@ export function CaseRail({
    *  external_review via the shared ExhaustionAttestModal, final_notice
    *  direct, debt_validation via the shared CollectorModal. */
   onStartNextLetter: (disputeId: string, targetLetterType: string) => void;
+  /**
+   * S305 — the draft control for a parallel-track offer, supplied by the owner
+   * of the claim data.
+   *
+   * A NODE rather than a callback, deliberately. Drafting a first letter is not
+   * one request: it is a cached feature-flag read, a plans-by-year fetch, the
+   * plan-pinning chooser, the persistent draft overlay, an inline error and the
+   * navigation on success — all of which `BulkDisputeButton` already owns.
+   * Taking a callback here would mean re-implementing five behaviours; taking
+   * the button means the same component renders in a second place with a
+   * different letter type, and nothing is duplicated. The rail still knows
+   * nothing about claims, findings or auth.
+   */
+  renderOfferAction: (letterType: string) => React.ReactNode;
   /** Escalate in flight (ClaimDetail state) — disables the offer buttons. */
   escalating: boolean;
   /** S301 — mark-as-sent / unsend for the collections "Mail it certified" step.
@@ -443,25 +546,27 @@ export function CaseRail({
   const [guideOverride, setGuideOverride] = useState<
     Record<string, "open" | "done" | "skipped">
   >({});
-  // Pack-D filed attest (phase 1b) — optimistic with snap-back (S295 idiom);
-  // server truth arrives with the next projection refetch. Note drafts are
-  // controlled (GuidedPhoneSteps idiom) so the attest click can carry the
-  // UNION {done, note} in ONE request — clicking the button blurs the input,
-  // and two concurrent read-modify-write POSTs lose one field to the other
-  // (the S299 "complaint number disappeared" race, Andrew).
-  const [filedOverride, setFiledOverride] = useState<Record<string, boolean>>({});
+  /**
+   * S303 — the regulator card's optimistic state is `guideOverride` above,
+   * keyed by the SAME stepId the write uses. It had its own `filedOverride`
+   * and `filedSkipped` maps keyed by disputeId, which is the mistake the
+   * storage move corrects: the record is claim-scoped, so a dispute in the key
+   * meant three letters could hold three answers to one act. Both maps are
+   * gone; only the note drafts remain, controlled (GuidedPhoneSteps idiom) so
+   * the attest click carries the UNION {checked, note} in ONE request — the
+   * button blurs the input, and two concurrent read-modify-writes lose one
+   * field to the other (the S299 "complaint number disappeared" race, Andrew).
+   */
   const [attestNoteDrafts, setAttestNoteDrafts] = useState<Record<string, string>>({});
+  /**
+   * S303 — "File again" has been pressed on an agency filed about an earlier
+   * letter, so its field is open for a NEW confirmation number. A display mode
+   * and nothing more: it asserts nothing, so it belongs in React state rather
+   * than on the record.
+   */
+  const [refiling, setRefiling] = useState<Record<string, boolean>>({});
 
-  const steps: RailStepModel[] = composeRailSteps({
-    letters,
-    primaryDisputeId,
-    firstNumber,
-    insurerNameByDispute,
-    providerName,
-    // Client clock — calendars are the user's timezone (letter-type.ts rule).
-    now: new Date(),
-  });
-  if (steps.length === 0) return null;
+  if (groups.length === 0) return null;
 
   const goToLetter = (disputeId: string) => router.push(`/disputes?dispute=${disputeId}`);
 
@@ -493,33 +598,6 @@ export function CaseRail({
     }
   };
 
-  // Pack-D filed attest — the EXISTING dispute checklist POST (one state,
-  // shared with the dispute-side Pack D until phase 3 retires that mount;
-  // writes also emit guide_step_attested ledger events via Phase 0).
-  const persistAttest = async (
-    disputeId: string,
-    body: { done?: boolean; note?: string },
-  ): Promise<boolean> => {
-    try {
-      const token = await getAuthToken();
-      if (!token) return false;
-      const res = await fetch(`/api/disputes/${disputeId}/checklist`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ key: "packD:filed", ...body }),
-      });
-      return res.ok;
-    } catch {
-      return false;
-    }
-  };
-  const toggleFiled = async (disputeId: string, next: boolean, note: string) => {
-    setFiledOverride((m) => ({ ...m, [disputeId]: next }));
-    // The union write: done + the current note together, so blur-vs-click
-    // request ordering converges on both fields either way.
-    const ok = await persistAttest(disputeId, { done: next, note });
-    if (!ok) setFiledOverride((m) => ({ ...m, [disputeId]: !next }));
-  };
 
   // ── Collections steps (S301) ──────────────────────────────────────────────
   //
@@ -532,7 +610,14 @@ export function CaseRail({
   // the button navigated whether or not the write landed. Every action here
   // awaits its result and reverts the row on failure.
   const runGuideStep = async (
-    body: { stepId: string; checked?: boolean; skipped?: boolean; note?: string },
+    body: {
+      stepId: string;
+      checked?: boolean;
+      skipped?: boolean;
+      note?: string;
+      /** Stamps the emitted ledger event with the letter this act answered. */
+      disputeId?: string;
+    },
   ): Promise<boolean> => {
     try {
       const token = await getAuthToken();
@@ -562,6 +647,61 @@ export function CaseRail({
       return rest;
     });
 
+  /**
+   * ONE claim-step write: busy → optimistic → POST → refetch → clear, with the
+   * row reverting and the error surfacing on failure.
+   *
+   * S303 — extracted rather than copied a third time. The collections attest,
+   * the collections skip, and now every regulator door do exactly this dance;
+   * a third hand-rolled copy is how they drift apart, and the optimistic clear
+   * is the easy step to forget (the S302 totals row VANISHED because an
+   * optimistic clear raced the field it was derived from).
+   */
+  const runClaimStep = async (
+    stepId: string,
+    next: "open" | "done" | "skipped",
+    body: { checked?: boolean; skipped?: boolean; note?: string; disputeId?: string },
+  ): Promise<void> => {
+    setGuideBusy((m) => ({ ...m, [stepId]: true }));
+    setGuideError((m) => ({ ...m, [stepId]: false }));
+    try {
+      applyOptimistic(stepId, next);
+      const ok = await runGuideStep({ stepId, ...body });
+      if (ok) await onRefetch();
+      else setGuideError((m) => ({ ...m, [stepId]: true }));
+      clearOptimistic(stepId);
+    } finally {
+      setGuideBusy((m) => ({ ...m, [stepId]: false }));
+    }
+  };
+
+  // ── The regulator complaint (S303) ────────────────────────────────────────
+  //
+  // Claim-scoped and PER AGENCY, through the same route above. Until S303 this
+  // wrote `packD:filed` on the DISPUTE, so one bill could hold three
+  // contradictory answers to a single act — measured on the Ballard case as
+  // filed / filed / not-filed for one filing. The route stamps the times,
+  // keeps `checkedAt` and `skippedAt` mutually exclusive on write, and banks
+  // the previous confirmation number (noteHistory, last 5) before replacing
+  // it, so a mistyped number is recoverable.
+  // `disputeId` rides along ONLY to stamp the emitted ledger event with the
+  // letter this complaint answered. It is not stored — the step key already
+  // carries it — but without it the case spine would record the act with no
+  // link to its letter, leaving the Case File to parse a string.
+  const toggleFiled = (door: RailDoorTile, disputeId: string, next: boolean, note: string) =>
+    // The UNION write — the attestation and the confirmation number in ONE
+    // request. Clicking the button blurs the input, and two concurrent
+    // read-modify-writes lose one field to the other (the S299 "complaint
+    // number disappeared" race, Andrew).
+    runClaimStep(door.stepId, next ? "done" : "open", { checked: next, note, disputeId });
+  const saveFiledNote = (door: RailDoorTile, note: string) =>
+    // Note-only save (blur). Deliberately NOT an attestation: a confirmation
+    // number typed and never confirmed is not a filing, and the route emits no
+    // ledger event for a note-only write.
+    runGuideStep({ stepId: door.stepId, note });
+  const toggleDeclined = (stepId: string, disputeId: string, next: boolean) =>
+    runClaimStep(stepId, next ? "skipped" : "open", { skipped: next, disputeId });
+
   // Unsend from the rail — the EXISTING mark-sent route in its undo direction,
   // so the snapshot retention, clock retraction, and letter_unsent event all
   // happen on the one path that owns them. Structural (it changes which steps
@@ -571,6 +711,20 @@ export function CaseRail({
     s: Extract<RailStepModel, { kind: "guide-step" }>,
     value: string | null,
   ) => {
+    // An attestation step IS the shared claim-step write. The other two done
+    // sources are different writers (mark-as-sent; the deadline-inputs route)
+    // and keep their own handling below.
+    if (s.doneSource === "attestation") {
+      const nextDone = s.action.kind === "text" ? true : s.state !== "done";
+      await runClaimStep(
+        s.stepId,
+        nextDone ? "done" : "open",
+        s.action.kind === "text"
+          ? { checked: true, note: value ?? "" }
+          : { checked: nextDone },
+      );
+      return;
+    }
     setGuideBusy((m) => ({ ...m, [s.stepId]: true }));
     setGuideError((m) => ({ ...m, [s.stepId]: false }));
     try {
@@ -581,7 +735,7 @@ export function CaseRail({
         await onMarkSent(s.disputeId, s.state !== "done");
         return;
       }
-      if (s.doneSource === "date") {
+      {
         // Undo on a date step CLEARS it (null); saving sets it. Both go through
         // the existing deadline-inputs route — the engine keeps one input path.
         // Optimistic like every other field flip: the stored date IS the answer,
@@ -596,53 +750,34 @@ export function CaseRail({
         }
         return;
       }
-      const nextDone = s.action.kind === "text" ? true : s.state !== "done";
-      applyOptimistic(s.stepId, nextDone ? "done" : "open");
-      const ok =
-        s.action.kind === "text"
-          ? await runGuideStep({ stepId: s.stepId, checked: true, note: value ?? "" })
-          : await runGuideStep({ stepId: s.stepId, checked: nextDone });
-      if (ok) {
-        await onRefetch();
-        clearOptimistic(s.stepId);
-      } else {
-        clearOptimistic(s.stepId);
-        setGuideError((m) => ({ ...m, [s.stepId]: true }));
-      }
     } finally {
       setGuideBusy((m) => ({ ...m, [s.stepId]: false }));
     }
   };
 
-  const runGuideSkip = async (
+  const runGuideSkip = (
     s: Extract<RailStepModel, { kind: "guide-step" }>,
     skipped: boolean,
-  ) => {
-    setGuideBusy((m) => ({ ...m, [s.stepId]: true }));
-    setGuideError((m) => ({ ...m, [s.stepId]: false }));
-    try {
-      applyOptimistic(s.stepId, skipped ? "skipped" : "open");
-      const ok = await runGuideStep({ stepId: s.stepId, skipped });
-      if (ok) {
-        await onRefetch();
-        clearOptimistic(s.stepId);
-      } else {
-        clearOptimistic(s.stepId);
-        setGuideError((m) => ({ ...m, [s.stepId]: true }));
-      }
-    } finally {
-      setGuideBusy((m) => ({ ...m, [s.stepId]: false }));
-    }
-  };
+  ) => runClaimStep(s.stepId, skipped ? "skipped" : "open", { skipped });
 
-  return (
-    <>
-      {steps.map((s, i) => {
-        const last = i === steps.length - 1;
+  /**
+   * One step. `letterId` is the S300 deep-link anchor — it comes from the
+   * GROUP now, because every step inside a group belongs to that letter by
+   * construction (which is what retired `railStepDisputeId`, whose whole job
+   * was reaching the id through `card`/`move`). The anchor semantics are
+   * unchanged: still one attribute per step, so claim/page.tsx's "last match
+   * is the most recent step" still lands on the actionable card.
+   *
+   * S305 — null on an OFFER group. There is no letter, so there is nothing for
+   * an emailed deep link to point at; `RailStep` already omits the attribute
+   * rather than emitting an empty one.
+   */
+  const renderStep = (s: RailStepModel, last: boolean, letterId: string | null) => {
+    {
         switch (s.kind) {
           case "wait-active":
             return (
-              <RailStep key={s.key} dataLetter={railStepDisputeId(s)} n={s.badge} title={s.title} sub={s.sub ?? undefined} last={last}>
+              <RailStep key={s.key} dataLetter={letterId} n={s.badge} title={s.title} sub={s.sub ?? undefined} last={last}>
                 <WaitCardBody
                   card={s.card}
                   whnOpen={whnOpen[s.key] ?? s.card.whn?.defaultOpen ?? false}
@@ -663,7 +798,7 @@ export function CaseRail({
             return (
               <RailStep
                 key={s.key}
-                dataLetter={railStepDisputeId(s)}
+                dataLetter={letterId}
                 n={s.badge}
                 done
                 title={s.title}
@@ -701,11 +836,34 @@ export function CaseRail({
               />
             );
           case "next-move": {
-            const filedNow = filedOverride[s.move.disputeId] ?? s.move.regulator.attest.filed;
-            const attestNoteValue =
-              attestNoteDrafts[s.move.disputeId] ?? s.move.regulator.attest.note ?? "";
+            const reg = s.move.regulator;
+            // Per-door state rides the SHARED collections override map, keyed
+            // by the same stepId the write uses — so an in-flight filing shows
+            // instantly and reconciles from the projection, exactly like every
+            // other attested step on this rail.
+            const doorState = (d: RailDoorTile) =>
+              guideOverride[d.stepId] ?? (d.filedAt ? "done" : "open");
+            const anyFiled = reg != null && reg.doors.some((d) => doorState(d) === "done");
+            const declined =
+              reg?.skip != null &&
+              (guideOverride[reg.skip.stepId] ??
+                (reg.skip.declined ? "skipped" : "open")) === "skipped";
             return (
-              <RailStep key={s.key} dataLetter={railStepDisputeId(s)} n={s.badge} title={s.title} sub={s.sub ?? undefined} last={last}>
+              <RailStep
+                key={s.key}
+                dataLetter={letterId}
+                n={s.badge}
+                title={s.title}
+                sub={s.sub ?? undefined}
+                last={last}
+                // S302 round 4 (Andrew) — this step never carried a done-state
+                // at all, so filing a complaint left it permanently blue. The
+                // attestation IS its completion; skipping greys it, matching
+                // every other attested step on this rail (S297 §3.2: a declined
+                // step is never a check). S303 — ANY agency filed completes it.
+                done={anyFiled}
+                skipped={!anyFiled && declined}
+              >
                 <div className="space-y-2.5">
                   {s.move.letterOffer && (
                     <div className="rounded-xl border border-gray-200 bg-white px-4 py-3.5">
@@ -740,100 +898,198 @@ export function CaseRail({
                       </div>
                     </div>
                   )}
+                  {reg && (
                   <div className="rounded-xl border border-gray-200 bg-white px-4 py-3.5">
-                    <div className="text-[14px] font-bold text-gray-900">{s.move.regulator.title}</div>
-                    <div className="mb-2.5 mt-0.5 text-[12.5px] text-gray-500">
-                      {s.move.regulator.lead}
-                    </div>
-                    <div className="flex flex-wrap gap-2.5">
-                      {s.move.regulator.doors.map((d) => (
-                        <a
-                          key={d.id}
-                          href={d.href}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className={
-                            "min-w-[190px] flex-1 rounded-[10px] border px-3 py-2.5 text-[13px] transition-colors hover:bg-gray-50 " +
-                            (d.chip ? "border-blue-200 bg-blue-50/40" : "border-gray-200 bg-white")
-                          }
-                        >
-                          <span className="flex flex-wrap items-center gap-1.5 font-bold text-gray-900">
-                            {d.name}
-                            {d.chip && (
-                              <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-[2px] text-[10.5px] font-semibold text-slate-600 ring-1 ring-inset ring-slate-200">
-                                {d.chip}
-                              </span>
-                            )}
-                          </span>
-                          <span className="mt-0.5 block text-[12px] text-gray-500">{d.desc}</span>
-                        </a>
-                      ))}
-                    </div>
-                    <div className="mt-3 border-t border-gray-100 pt-2.5">
-                      <div className="text-[13px] font-semibold text-gray-900">
-                        {s.move.regulator.attest.title}
-                      </div>
-                      {/* Log input + attest button — the Pack A′ row anatomy
-                          (Andrew, 1b E2E: match "work it by phone" + the
-                          "I made the call" button). */}
-                      <div className="mt-2 flex flex-wrap items-start gap-x-3 gap-y-2">
-                        <input
-                          type="text"
-                          value={attestNoteValue}
-                          placeholder={s.move.regulator.attest.notePlaceholder}
-                          maxLength={500}
-                          onChange={(e) =>
-                            setAttestNoteDrafts((m) => ({
-                              ...m,
-                              [s.move.disputeId]: e.target.value,
-                            }))
-                          }
-                          onBlur={(e) => {
-                            const v = e.target.value.trim();
-                            if (v !== (s.move.regulator.attest.note ?? "")) {
-                              void persistAttest(s.move.disputeId, { note: v });
+                    <div className="text-[14px] font-bold text-gray-900">{reg.title}</div>
+                    <div className="mb-2.5 mt-0.5 text-[12.5px] text-gray-500">{reg.lead}</div>
+                    {/* Two rows of two (Andrew, S303 mock). A GRID, not a wrap:
+                        grid cells stretch to the tallest in their row, and each
+                        tile pins its controls with mt-auto — so every field and
+                        button lands on the same line no matter how long the
+                        agency's description runs. */}
+                    <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                      {reg.doors.map((d) => {
+                        const filed = doorState(d) === "done";
+                        // Filed about an EARLIER letter and the user has not
+                        // asked to file again: the number shows, read-only,
+                        // and this letter's step stays open. Locked is a
+                        // display mode, not an attestation, so it is plain
+                        // React state — nothing about it belongs on the record.
+                        const locked =
+                          !filed && d.earlier != null && !refiling[d.stepId];
+                        const noteValue = locked
+                          ? (d.earlier?.note ?? "")
+                          : (attestNoteDrafts[d.stepId] ?? d.note ?? "");
+                        const busy = guideBusy[d.stepId] ?? false;
+                        return (
+                          <div
+                            key={d.id}
+                            className={
+                              "flex flex-col rounded-[10px] border px-3 py-2.5 text-[13px] " +
+                              (filed
+                                ? "border-emerald-300 bg-emerald-50/60"
+                                : locked
+                                  ? "border-gray-200 bg-gray-50/70"
+                                  : d.chip
+                                    ? "border-blue-200 bg-blue-50/40"
+                                    : "border-gray-200 bg-white")
                             }
-                          }}
-                          className="min-w-[220px] flex-1 rounded-lg border border-gray-200 px-3 py-[7px] text-[12.5px] text-gray-800 placeholder:text-gray-400 focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-100"
-                        />
-                        <button
-                          type="button"
-                          onClick={() =>
-                            void toggleFiled(s.move.disputeId, !filedNow, attestNoteValue.trim())
-                          }
-                          className={
-                            filedNow
-                              ? "inline-flex items-center gap-1.5 rounded-xl border border-emerald-300 bg-emerald-50 px-3.5 py-[7px] text-[12.5px] font-semibold text-emerald-700"
-                              : "inline-flex items-center gap-1.5 rounded-xl border-[1.5px] border-blue-400 bg-white px-3.5 py-[6.5px] text-[12.5px] font-semibold text-blue-700 transition-colors hover:bg-blue-50"
-                          }
-                        >
-                          {s.move.regulator.attest.checkboxLabel}
-                          {filedNow && (
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                              <path d="M5 13l4 4L19 7" />
-                            </svg>
-                          )}
-                        </button>
-                        {/* S301 (Andrew E2E) — the attest WAS already a toggle,
-                            but once filed it reads as a status pill, so nobody
-                            discovers that clicking it again un-files. Same
-                            explicit Undo the collections steps carry, so every
-                            attestation on this rail reverses the same way. */}
-                        {filedNow && (
+                          >
+                            <a
+                              href={d.href}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="group"
+                            >
+                              <span className="flex flex-wrap items-center gap-1.5 font-bold text-gray-900 group-hover:underline">
+                                {d.name}
+                                {d.chip && (
+                                  <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-[2px] text-[10.5px] font-semibold text-slate-600 ring-1 ring-inset ring-slate-200">
+                                    {d.chip}
+                                  </span>
+                                )}
+                              </span>
+                              <span className="mt-0.5 block text-[12px] text-gray-500">
+                                {d.desc}
+                              </span>
+                            </a>
+                            <div className="mt-auto flex items-center gap-2 pt-2.5">
+                              <input
+                                type="text"
+                                value={noteValue}
+                                readOnly={locked}
+                                placeholder={reg.notePlaceholder}
+                                maxLength={500}
+                                onChange={(e) =>
+                                  setAttestNoteDrafts((m) => ({
+                                    ...m,
+                                    [d.stepId]: e.target.value,
+                                  }))
+                                }
+                                onBlur={(e) => {
+                                  if (locked) return;
+                                  const v = e.target.value.trim();
+                                  if (v !== (d.note ?? "")) void saveFiledNote(d, v);
+                                }}
+                                className={
+                                  "min-w-0 flex-1 rounded-lg border border-gray-200 px-3 py-[7px] text-[12.5px] placeholder:text-gray-400 focus:outline-none " +
+                                  (locked
+                                    ? "bg-gray-100 text-gray-500"
+                                    : "bg-white text-gray-800 focus:border-blue-300 focus:ring-2 focus:ring-blue-100")
+                                }
+                              />
+                              <button
+                                type="button"
+                                disabled={busy || locked}
+                                onClick={() =>
+                                  void toggleFiled(d, s.move.disputeId, !filed, noteValue.trim())
+                                }
+                                className={
+                                  "inline-flex flex-shrink-0 items-center gap-1.5 rounded-xl px-3.5 text-[12.5px] font-semibold disabled:cursor-not-allowed " +
+                                  (filed
+                                    ? "border border-emerald-300 bg-emerald-50 py-[7px] text-emerald-700 disabled:opacity-60"
+                                    : locked
+                                      ? // Greyed-out green (Andrew): this agency HAS been
+                                        // filed, just not about this letter — readable as
+                                        // history, not as this step's completion.
+                                        "border border-emerald-200 bg-emerald-50/50 py-[7px] text-emerald-700/50"
+                                      : "border-[1.5px] border-blue-400 bg-white py-[6.5px] text-blue-700 transition-colors hover:bg-blue-50 disabled:opacity-60")
+                                }
+                              >
+                                {reg.filedLabel}
+                                {(filed || locked) && (
+                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                                    <path d="M5 13l4 4L19 7" />
+                                  </svg>
+                                )}
+                              </button>
+                            </div>
+                            {locked && d.earlier && (
+                              <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11.5px] font-medium text-gray-500">
+                                {d.earlier.label}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setRefiling((m) => ({ ...m, [d.stepId]: true }));
+                                    // Clear the field so a second filing is only
+                                    // ever recorded when a second confirmation
+                                    // number is actually typed — never by
+                                    // clicking through the first one.
+                                    setAttestNoteDrafts((m) => ({ ...m, [d.stepId]: "" }));
+                                  }}
+                                  className="underline underline-offset-2 hover:text-gray-700"
+                                >
+                                  {reg.fileAgainLabel}
+                                </button>
+                              </div>
+                            )}
+                            {/* S301 (Andrew E2E) — once filed the button reads
+                                as a status pill, so nobody discovers that
+                                clicking it again un-files. The same explicit
+                                Undo every other attestation on this rail
+                                carries. */}
+                            {filed && (
+                              <div className="mt-1.5 flex items-center gap-2 text-[11.5px] font-medium text-emerald-700">
+                                {d.filedAtLabel ? `Filed ${d.filedAtLabel}` : "Filed"}
+                                <button
+                                  type="button"
+                                  disabled={busy}
+                                  onClick={() =>
+                                    void toggleFiled(d, s.move.disputeId, false, noteValue.trim())
+                                  }
+                                  className="text-gray-500 underline underline-offset-2 hover:text-gray-700 disabled:opacity-60"
+                                >
+                                  {COLLECTIONS_CHROME.undoSkipLabel}
+                                </button>
+                              </div>
+                            )}
+                            {(guideError[d.stepId] ?? false) && (
+                              <div className="mt-1.5 text-[11.5px] text-red-600">
+                                {COLLECTIONS_CHROME.saveFailed}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {/* The case-level declination — offered ONLY while nothing
+                        is filed, so "I'm not filing a complaint" and "I filed
+                        one" can never both be true on the record. */}
+                    {reg.skip && !anyFiled && (
+                      <div className="mt-3 flex items-center gap-2">
+                        {declined ? (
+                          <>
+                            <span className="text-[11.5px] font-medium text-gray-400">
+                              {COLLECTIONS_CHROME.skippedLabel}
+                            </span>
+                            <button
+                              type="button"
+                              disabled={guideBusy[reg.skip.stepId] ?? false}
+                              onClick={() =>
+                                void toggleDeclined(reg.skip!.stepId, s.move.disputeId, false)
+                              }
+                              className="text-[11.5px] font-medium text-gray-500 underline underline-offset-2 hover:text-gray-700 disabled:opacity-60"
+                            >
+                              {COLLECTIONS_CHROME.undoSkipLabel}
+                            </button>
+                          </>
+                        ) : (
                           <button
                             type="button"
+                            disabled={guideBusy[reg.skip.stepId] ?? false}
                             onClick={() =>
-                              void toggleFiled(s.move.disputeId, false, attestNoteValue.trim())
+                              void toggleDeclined(reg.skip!.stepId, s.move.disputeId, true)
                             }
-                            className="text-[11.5px] font-medium text-gray-500 underline underline-offset-2 hover:text-gray-700"
+                            className="text-[11.5px] font-medium text-gray-500 underline underline-offset-2 hover:text-gray-700 disabled:opacity-60"
                           >
-                            {COLLECTIONS_CHROME.undoSkipLabel}
+                            {CASE_RAIL.regulatorSkipLabel}
                           </button>
                         )}
                       </div>
-                    </div>
-                    <div className="mt-2.5 text-[11.5px] text-gray-400">{s.move.regulator.foot}</div>
+                    )}
+                    <div className="mt-2.5 text-[11.5px] text-gray-400">{reg.foot}</div>
                   </div>
+                  )}
                 </div>
               </RailStep>
             );
@@ -842,7 +1098,7 @@ export function CaseRail({
             return (
               <RailStep
                 key={s.key}
-                dataLetter={railStepDisputeId(s)}
+                dataLetter={letterId}
                 n={s.badge}
                 done
                 title={s.title}
@@ -878,9 +1134,86 @@ export function CaseRail({
                 )}
               </RailStep>
             );
+          case "letter-offer": {
+            const o = s.offer;
+            // Optimistic state rides the SAME map every other declinable step
+            // on this rail uses, keyed by the same stepId the write uses — so
+            // the decline paints in the click's own render and reconciles from
+            // the claim, exactly like the regulator doors and the collections
+            // steps (S303).
+            const declined = (guideOverride[o.stepId] ?? (o.declined ? "skipped" : "open")) === "skipped";
+            return (
+              <RailStep
+                key={s.key}
+                dataLetter={letterId}
+                n={s.badge}
+                title={s.title}
+                sub={s.sub ?? undefined}
+                last={last}
+                // Never `done`: the moment the letter exists this step stops
+                // being composed and the letter's own group replaces it.
+                skipped={declined}
+              >
+                <div className={`rounded-xl border border-gray-200 px-4 py-3.5 ${declined ? "bg-gray-50" : "bg-white"}`}>
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="min-w-[14rem] flex-1">
+                      {/* The finding's OWN words — the reason this letter is
+                          owed. Absent on an insurer track raised by the
+                          cost-share engine, which is plan math, not a finding. */}
+                      {o.reasonTitle && (
+                        <div className={`text-[14px] font-bold ${declined ? "text-gray-400" : "text-gray-900"}`}>
+                          {o.reasonTitle}
+                        </div>
+                      )}
+                      {o.reasonDetail && (
+                        <div className={`mt-0.5 text-[12.5px] leading-[1.55] ${declined ? "text-gray-400" : "text-gray-500"}`}>
+                          {o.reasonDetail}
+                        </div>
+                      )}
+                    </div>
+                    {!declined && (
+                      <div className="flex flex-shrink-0 items-center gap-2">
+                        {renderOfferAction(o.letterType)}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div className="mt-2.5 flex flex-wrap items-center gap-2 text-[11.5px] text-gray-400">
+                  {declined ? (
+                    <>
+                      <span>
+                        {COLLECTIONS_CHROME.skippedLabel}
+                        {o.declinedAtLabel ? ` · ${o.declinedAtLabel}` : ""}
+                      </span>
+                      <button
+                        type="button"
+                        disabled={guideBusy[o.stepId] ?? false}
+                        onClick={() => void runClaimStep(o.stepId, "open", { skipped: false })}
+                        className="font-medium text-gray-500 underline underline-offset-2 hover:text-gray-700 disabled:opacity-60"
+                      >
+                        {COLLECTIONS_CHROME.undoSkipLabel}
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={guideBusy[o.stepId] ?? false}
+                      onClick={() => void runClaimStep(o.stepId, "skipped", { skipped: true })}
+                      className="font-medium text-gray-500 underline underline-offset-2 hover:text-gray-700 disabled:opacity-60"
+                    >
+                      {COLLECTIONS_CHROME.skipLabel}
+                    </button>
+                  )}
+                  {(guideError[o.stepId] ?? false) && (
+                    <span className="text-red-600">{COLLECTIONS_CHROME.saveFailed}</span>
+                  )}
+                </div>
+              </RailStep>
+            );
+          }
           case "send-draft":
             return (
-              <RailStep key={s.key} dataLetter={railStepDisputeId(s)} n={s.badge} title={s.title} last={last}>
+              <RailStep key={s.key} dataLetter={letterId} n={s.badge} title={s.title} last={last}>
                 <div className="rounded-xl border border-gray-200 bg-white px-4 py-3.5">
                   <button
                     type="button"
@@ -896,7 +1229,7 @@ export function CaseRail({
             return (
               <RailStep
                 key={s.key}
-                dataLetter={railStepDisputeId(s)}
+                dataLetter={letterId}
                 n={s.badge}
                 title={s.title}
                 last={last}
@@ -920,7 +1253,31 @@ export function CaseRail({
               </RailStep>
             );
         }
-      })}
+    }
+  };
+
+  return (
+    <>
+      {groups.map((g) => (
+        <section key={g.key}>
+          <LetterBand group={g} />
+          {/* The group's own spine — sits LEFT of the step badges, so the two
+              lines read as hierarchy (letter, then its steps) rather than as
+              one broken connector. Indent is sm-only: on a phone the rail
+              already drops its indent and the band carries the grouping. */}
+          <div className="relative sm:ml-[26px]">
+            <span
+              className="absolute -left-[13px] bottom-3.5 top-0 hidden w-[2px] rounded-full bg-blue-100 sm:block"
+              aria-hidden
+            />
+            {g.steps.map((s, i) =>
+              // Last WITHIN the group: the step connector must stop before the
+              // next letter's band rather than running into it.
+              renderStep(s, i === g.steps.length - 1, g.disputeId),
+            )}
+          </div>
+        </section>
+      ))}
     </>
   );
 }

@@ -6,16 +6,20 @@
  * (same shape as the claim-page CostShareBanner).
  *
  * S265 refinements:
- *  - Unified readiness indicator at the top (one pill + meter) — replaces the separate
- *    ReadinessRail. Spans the required floor ("Not ready" until a recipient address /
- *    backed line exists → from the backend `strength.readiness`) and the soft strengtheners
- *    ("Ready to send" → "Strong" → "Airtight" as plan cost / EOB / amount / denial land).
+ *  - A completion meter at the top ("6 of 11 added").
+ *    ⚠ S302 — the readiness PILL that used to sit here MOVED to the top of the
+ *    UnifiedTodo spine (tracker Item AB). The page carried two progress signals
+ *    that counted different row sets and could disagree; the one that survives
+ *    is the SERVER's floor (`strength.readiness`), which is what actually scores
+ *    the letter and prints in the Case File. This panel's four-rung client tier
+ *    — including its "Strong" rung — is deleted, not relocated. What remains
+ *    here is a quantity meter, not a verdict on sendability.
  *  - Per-row importance: high-impact evidence inputs carry an "Important" chip.
  *  - De-clutter: incomplete rows (important-first) render full at the top; completed rows
  *    sink to an "Added" group below, each still editable.
  *  - Editable-after-verify: the confirmed name + attested-services rows expose an Edit.
  *
- * Reuse-first + delegate: the panel owns only layout, the readiness computation, and the
+ * Reuse-first + delegate: the panel owns only layout and the
  * inline value editors (amount-paid + the two deadline dates). Every other row delegates to
  * an existing handler/modal.
  */
@@ -128,16 +132,10 @@ export interface CaseNeedsPanelProps {
   planLabel: string | null;
   showInsuranceRow: boolean;
   canChangePlan: boolean;
-  /**
-   * The backend-computed readiness floor (`strength.readiness`) — drives the bottom rung
-   * of the unified indicator (can the letter be credibly sent at all). Null when the
-   * strength payload is absent → the panel falls back to a name+address heuristic.
-   */
-  readiness: {
-    state: "attention" | "ready_to_send" | "airtight";
-    requiredMet: number;
-    requiredTotal: number;
-  } | null;
+  // S302 — `readiness` REMOVED. The panel no longer renders a sendability
+  // verdict, so it no longer needs the floor: the one signal lives at the top of
+  // the spine, where UnifiedTodo reads the same `strength.readiness` the page
+  // already holds. One prop, one consumer, one answer.
   /** service_coverage_verify gates — moved from EvidenceGaps into Zone-1 (S265). */
   coverageVerifyGaps: Array<{
     claimId: string;
@@ -257,33 +255,20 @@ const PencilIcon = (<svg width="18" height="18" viewBox="0 0 24 24" {...stroke} 
 const ShieldCheckIcon = (<svg width="18" height="18" viewBox="0 0 24 24" {...stroke} aria-hidden><path d="M12 3l7 3v6c0 4-3 7-7 9-4-2-7-5-7-9V6z" /><path d="M9 12l2 2 4-4" /></svg>);
 const AuditIcon = (<svg width="18" height="18" viewBox="0 0 24 24" {...stroke} aria-hidden><circle cx="11" cy="11" r="7" /><path d="M21 21l-4.3-4.3" /></svg>);
 
-// ── unified readiness ladder ──────────────────────────────────────────────────
-type Tier = "not_ready" | "ready" | "strong" | "airtight";
-const TIER_META: Record<Tier, { label: string; pill: string; bar: string }> = {
-  not_ready: { label: "Not ready to send", pill: "border-amber-200 bg-amber-50 text-amber-800", bar: "bg-amber-400" },
-  ready: { label: "Ready to send", pill: "border-blue-200 bg-blue-50 text-blue-700", bar: "bg-blue-500" },
-  strong: { label: "Strong", pill: "border-indigo-200 bg-indigo-50 text-indigo-700", bar: "bg-indigo-500" },
-  airtight: { label: "Airtight", pill: "border-emerald-200 bg-emerald-50 text-emerald-700", bar: "bg-emerald-500" },
-};
-
-/**
- * The four-rung tier. `floorMet` = the required-to-send floor is satisfied (a recipient
- * address + a backed line, per the backend readiness state). Above the floor the soft
- * strengtheners (weighted: Important ×2, Helpful ×1) push Ready → Strong → Airtight.
- */
-export function computeTier(
-  floorMet: boolean,
-  items: Array<{ done: boolean; importance: Importance }>,
-): Tier {
-  if (!floorMet) return "not_ready";
-  const w = (imp: Importance) => (imp === "important" ? 2 : 1);
-  const totalW = items.reduce((s, i) => s + w(i.importance), 0);
-  const doneW = items.reduce((s, i) => s + (i.done ? w(i.importance) : 0), 0);
-  const frac = totalW === 0 ? 1 : doneW / totalW;
-  if (frac >= 1) return "airtight";
-  if (frac >= 0.5) return "strong";
-  return "ready";
-}
+// ── readiness ──────────────────────────────────────────────────────────────
+// S302 — the client's four-rung `computeTier` + TIER_META are DELETED. There
+// were two readiness ladders: this one (floorMet + a weighted count of the
+// panel's own rows → not_ready / ready / STRONG / airtight) and the server's
+// (`strength.readiness`: the MVDL floor + open optional gaps → attention /
+// ready_to_send / airtight). They counted different row sets, so they could and
+// did disagree — and only the server's scores the letter and prints in the
+// Case File. The one signal now lives at the TOP of the spine (tracker Item AB,
+// Andrew: "I don't see the readiness score anywhere except under the dispute
+// letter card, which is not really where you look"), rendered by UnifiedTodo
+// from the same `readiness` prop this panel receives.
+//
+// What this panel keeps is a QUANTITY meter — "6 of 11 added" — which says more
+// precisely what the lost "Strong" rung was gesturing at.
 
 const ImportantBadge = (
   <span className="inline-flex items-center rounded-full bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700">
@@ -505,29 +490,31 @@ function DateEditor({ initial, prompt, onSaved }: { initial: string | null; prom
   );
 }
 
-/** Header: title + the unified readiness pill + a thin completion meter. */
-function ReadinessHeader({ tier, completed, total }: { tier: Tier; completed: number; total: number }) {
-  const meta = TIER_META[tier];
+/** Header: title + a thin completion meter. The readiness PILL moved to the
+ *  top of the spine (S302 / Item AB) — a second one here is the competing
+ *  signal that item exists to remove. Bar colour is now constant: this is a
+ *  count of optional strengtheners added, not a verdict on sendability. */
+function ReadinessHeader({ completed, total }: { completed: number; total: number }) {
   const pct = total === 0 ? 0 : Math.round((completed / total) * 100);
   return (
     <div>
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          {PencilIcon}
-          <h3 className="text-[15px] font-semibold text-gray-900">What we need from you</h3>
-        </div>
-        <span className={`whitespace-nowrap rounded-full border px-2.5 py-0.5 text-xs font-semibold ${meta.pill}`}>
-          {meta.label}
-        </span>
+      <div className="flex items-center gap-2">
+        {PencilIcon}
+        <h3 className="text-[15px] font-semibold text-gray-900">What we need from you</h3>
       </div>
       <p className="mt-1.5 text-[13px] text-gray-500">
         Add what you can — each item makes your letter stronger, and we&apos;ll use it right away.
       </p>
       <div className="mt-3 flex items-center gap-3">
         <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-gray-100">
-          <div className={`h-full rounded-full transition-all ${meta.bar}`} style={{ width: `${pct}%` }} />
+          <div
+            className="h-full rounded-full bg-blue-500 transition-all"
+            style={{ width: `${pct}%` }}
+          />
         </div>
-        <span className="whitespace-nowrap text-[12px] font-medium text-gray-500">{completed} of {total} added</span>
+        <span className="whitespace-nowrap text-[12px] font-medium text-gray-500">
+          {completed} of {total} added — each one makes the letter stronger
+        </span>
       </div>
     </div>
   );
@@ -548,7 +535,7 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
     attestationReviewed, attestationSource, hasInsurer, providerAddressOnFile, insurerAddressOnFile,
     eobPresent, userPatientPaid, billPatientPaid, denialNoticeDate, denialDatePrefill,
     collectorFirstContactDate,
-    planLabel, showInsuranceRow, canChangePlan, readiness,
+    planLabel, showInsuranceRow, canChangePlan,
     coverageVerifyGaps, onCoverageVerify, rerunAuditEnabled, auditFindingsMissing, onAuditRerun,
     onAddPlanDetails, onConfirmParsedCosts, onRejectParsedCost, onResolvePatient, onEditLetter,
     onReviewAttestation,
@@ -977,7 +964,33 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
           : "Make sure the bill's patient is you (or a family member you're disputing for)."}
       </Row>
     ) : (
-      <Row icon={UserIcon} label="Patient name" control={<DoneEdit label="Verified" onEdit={onEditLetter} />} />
+      /* S302 round 3 (Andrew: "when I go to edit patient name, it won't let me
+         click edit"). This Edit called `onEditLetter` — it opened the LETTER
+         BODY editor, not the patient question, and on a sent letter that is
+         immutable so it did nothing at all. It now reopens the SAME
+         three-choice form the unresolved row uses, which became possible only
+         once the mismatch stopped being nulled on confirmation (the names have
+         to survive for the question to be re-askable). */
+      <Row
+        icon={UserIcon}
+        label="Patient name"
+        control={<DoneEdit label="Verified" onEdit={() => setNameChoicesOpen((o) => !o)} />}
+        below={
+          nameChoicesOpen && billName && profileName ? (
+            <div className="mt-2">
+              <PatientIdentityChoices
+                billName={billName}
+                profileName={profileName}
+                onResolve={(choice, correctedName) => {
+                  onResolvePatient(choice, correctedName);
+                  setNameChoicesOpen(false);
+                }}
+                onCancel={() => setNameChoicesOpen(false)}
+              />
+            </div>
+          ) : undefined
+        }
+      />
     ),
   });
 
@@ -1283,10 +1296,6 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
   // ── counter + tier + grouping ──
   const completed = descs.filter((d) => d.done).length;
   const total = descs.length;
-  const floorMet = readiness
-    ? readiness.state !== "attention"
-    : nameDone && (providerAddressOnFile || (hasInsurer && insurerAddressOnFile));
-  const tier = computeTier(floorMet, descs.map((d) => ({ done: d.done, importance: d.importance })));
 
   // A value row whose editor is open renders full at the top even though it's "done".
   const isEditing = (d: RowDesc) => d.editorKey != null && openEditor === d.editorKey;
@@ -1303,7 +1312,7 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
           : "rounded-2xl border border-gray-200 bg-white p-5 shadow-sm md:p-6"
       }
     >
-      <ReadinessHeader tier={tier} completed={completed} total={total} />
+      <ReadinessHeader completed={completed} total={total} />
 
       <div className="mt-3">
         {openDescs.map((d) => (

@@ -35,15 +35,12 @@ export interface BannerAssumption extends CostShareAssumption {
   serviceSlug: string | null;
 }
 
-export type CostShareOverrideRequest =
-  | { field: "network"; value: "in_network" | "out_of_network" }
-  | { field: "deductible_met"; met: boolean; asOf: string | null }
-  | { field: "oop_met"; met: boolean; asOf: string | null }
-  | { field: "aca"; status: "confirmed" | "non_aca" }
-  /** S291 — "I checked the service list" (guided rail step 2), persisted to claims.metadata. */
-  | { field: "services_confirmed"; confirmed: boolean }
-  /** S291 — re-pin the bill to another plan the user owns. */
-  | { field: "claim_plan"; insurancePlanId: string };
+// S302 — the client's parallel copy of this union is DELETED. It had already
+// drifted from the server's (missing `service_cost` and `patient_paid`), so two
+// real corrections were unrepresentable on the surface that sends them. One
+// type, re-exported here so existing importers of this module keep working.
+import type { CostShareOverrideRequest } from "@/lib/claims/cost-share-override";
+export type { CostShareOverrideRequest };
 
 interface CostShareBannerProps {
   verdict: CostShareVerdict;
@@ -73,6 +70,14 @@ interface CostShareBannerProps {
    */
   onConfirmDefaults?: (bodies: CostShareOverrideRequest[]) => Promise<void>;
   /**
+   * S304 — report an answer the user just made, before the server confirms it.
+   * A PATCH: only the fields this interaction answered. The caller merges it
+   * into `overrides` and hands the merged object back down, so this component
+   * and the guided-rail step badge read the same value in the same render.
+   * Defaults to a no-op for callers that don't track it.
+   */
+  onOptimistic?: (patch: AssumptionOptimistic) => void;
+  /**
    * S291 (Andrew) — rows still missing real input, from
    * `pendingAssumptionFields`. Passed in rather than recomputed so the amber
    * borders here and the amber step badge on the rail read the SAME set.
@@ -86,6 +91,26 @@ interface CostShareBannerProps {
    * pinned bill look broken. `label` null = we have no plan for that period, the
    * honest zero-match state: we ask rather than silently borrowing a plan.
    */
+  /**
+   * S302 — the line-items-vs-summary disagreement. Claim-level, so it arrives
+   * as its own prop rather than through `assumptions[]` (the plan_identity
+   * pattern); null when the totals agree, the user has already answered, or
+   * `bill_totals_source_v1` is OFF.
+   */
+  totalsSource?: {
+    /**
+     * The user's standing answer, or null while the question is still open.
+     * The row does NOT disappear once answered — the copy promises "you can
+     * change it any time", and a row that vanishes makes that untrue.
+     */
+    answered: "summary" | "line_items" | null;
+    /** "what you owe" / "what you've paid" — the field with the largest delta. */
+    label: string;
+    lineItemsTotal: string;
+    summaryTotal: string;
+    /** null clears the answer, reopening the question. */
+    onChoose: (use: "summary" | "line_items" | null) => void;
+  } | null;
   planIdentity?: {
     label: string | null;
     year: number | null;
@@ -222,6 +247,9 @@ export const ASSUMPTION_ANSWERABILITY = {
   aca_preventive: "input",
   service_cost: "input",
   plan_identity: "input",
+  // S302 — answered by picking one of two already-parsed numbers, so it is an
+  // "input" row like plan_identity: "Done" cannot answer it on the user's behalf.
+  totals_source: "input",
   // Emitted for transparency only — never gates the step. `denial` states what
   // the insurer said; `plan_provenance` names WHY a verdict was degraded and is
   // resolved by uploading a plan document, not by answering a row.
@@ -267,6 +295,15 @@ export function pendingAssumptionFields(
     /** the ACA question block renders (exists and not "Not sure"-dismissed). */
     acaRowVisible?: boolean;
   },
+  /**
+   * S302 — an unanswered line-items-vs-summary disagreement. Truthy only while
+   * the question is live (the caller passes null once answered), so it enters
+   * the pending set through the SAME path every other row does, rather than a
+   * second independent amber condition — the S292 lesson on this exact component.
+   * APPENDED, never inserted: a new positional arg in the middle silently
+   * re-maps every existing caller's arguments.
+   */
+  totalsSource?: unknown,
 ): Set<string> {
   const has = (field: string) => assumptions.some((a) => a.field === field);
   const pending = new Set<string>();
@@ -345,6 +382,10 @@ export function pendingAssumptionFields(
   // this step open forever on a bill the engine considers fully answered —
   // which is what produced a green badge sitting above an amber row.
   if (planIdentity && planIdentity.label == null) pending.add("plan_identity");
+  // S302 — an unanswered totals disagreement is PENDING: it changes which
+  // numbers every downstream citation reads, so the step is not done until the
+  // user has adjudicated it.
+  if (totalsSource) pending.add("totals_source");
   for (const a of assumptions) {
     if (a.field === "service_cost") pending.add(`service_cost:${a.serviceSlug ?? a.serviceLabel}`);
   }
@@ -408,7 +449,26 @@ function Segment({ seg }: { seg: Seg }) {
 
 // ── main ────────────────────────────────────────────────────────────────────
 
-interface Optimistic {
+/**
+ * S304 — the answers a click has made but the server has not yet confirmed.
+ *
+ * OWNED BY ClaimDetail, not by this component. It used to be local `useState`
+ * here, which meant three surfaces derived "what have you answered" from two
+ * different places: this banner's rows read the overlay and moved instantly,
+ * while the guided-rail step badge read `costShareOverrides` straight from the
+ * server and sat unchanged until the refetch landed — the lag Andrew saw on
+ * "Done". Worse, this component renders TWICE on the page (the rail step's
+ * `variant="assumptions"` instance and the standalone one), so there were two
+ * independent overlays that could disagree with each other as well as with the
+ * badge.
+ *
+ * Lifting it means the caller merges these answers into `overrides` ONCE and
+ * hands the same object to every consumer, so the badge and the rows are
+ * reading the identical value and cannot drift. The same defect class —
+ * "press Done, still says needs review" — has been patched three times in this
+ * file; two sources of truth was the shape behind all three.
+ */
+export interface AssumptionOptimistic {
   network?: "in_network" | "out_of_network";
   deductibleMet?: boolean;
   deductibleMetAsOf?: string | null;
@@ -426,8 +486,10 @@ export function CostShareBanner({
   fmtMoney,
   onOverride,
   onConfirmDefaults,
+  onOptimistic = () => {},
   pendingFields,
   planIdentity,
+  totalsSource = null,
   flagUnanswered = false,
   errorMsg,
   onShouldBeCovered,
@@ -450,17 +512,10 @@ export function CostShareBanner({
   };
   const [dismissed, setDismissed] = useState(false); // "Done" collapses the section (accept as-is)
   const [confirming, setConfirming] = useState(false); // Done is now a WRITE — guard the double-click
-  const [optimistic, setOptimistic] = useState<Optimistic>({});
-
-  // Reconcile during render (not in an effect — that trips set-state-in-effect):
-  // if a save errors, drop the optimistic overlay so the toggle snaps back to
-  // server truth. On success the overlay just matches the refreshed props
-  // (display = optimistic ?? props), so no explicit clear is needed.
-  const [seenError, setSeenError] = useState<string | null>(errorMsg);
-  if (errorMsg !== seenError) {
-    setSeenError(errorMsg);
-    if (errorMsg) setOptimistic({});
-  }
+  // S304 — `overrides` ARRIVES already merged with the caller's pending
+  // answers, so every display below reads it directly. The snapback that used
+  // to live here (drop the overlay when a save errors) now lives with the state
+  // in ClaimDetail, which is where both the failure and the state are known.
 
   const money = (n: number) => `$${fmtMoney(n)}`;
 
@@ -532,24 +587,25 @@ export function CostShareBanner({
     return out;
   })();
 
-  // Display values: optimistic overlay wins until the refetch reconciles it.
-  const oonDisplay = optimistic.network !== undefined ? optimistic.network === "out_of_network" : overrides?.userNetworkOverride === "out_of_network";
-  const dedMetDisplay = optimistic.deductibleMet ?? overrides?.deductibleMet === true;
-  const dedAsOfDisplay = optimistic.deductibleMetAsOf ?? overrides?.deductibleMetAsOf ?? null;
-  const oopMetDisplay = optimistic.oopMet ?? overrides?.oopMet === true;
-  const oopAsOfDisplay = optimistic.oopMetAsOf ?? overrides?.oopMetAsOf ?? null;
+  // Display values. S304 — one source: `overrides` already carries any
+  // answer this click made, merged by the caller.
+  const oonDisplay = overrides?.userNetworkOverride === "out_of_network";
+  const dedMetDisplay = overrides?.deductibleMet === true;
+  const dedAsOfDisplay = overrides?.deductibleMetAsOf ?? null;
+  const oopMetDisplay = overrides?.oopMet === true;
+  const oopAsOfDisplay = overrides?.oopMetAsOf ?? null;
   const networkLabel = oonDisplay ? "out-of-network" : "in-network";
 
   const selectNetwork = (value: "in_network" | "out_of_network") => {
-    setOptimistic((o) => ({ ...o, network: value }));
+    onOptimistic({ network: value });
     onOverride({ field: "network", value }, "network");
   };
   const selectDeductible = (met: boolean, asOf: string | null) => {
-    setOptimistic((o) => ({ ...o, deductibleMet: met, deductibleMetAsOf: asOf }));
+    onOptimistic({ deductibleMet: met, deductibleMetAsOf: asOf });
     onOverride({ field: "deductible_met", met, asOf }, "deductible");
   };
   const selectOop = (met: boolean, asOf: string | null) => {
-    setOptimistic((o) => ({ ...o, oopMet: met, oopMetAsOf: asOf }));
+    onOptimistic({ oopMet: met, oopMetAsOf: asOf });
     onOverride({ field: "oop_met", met, asOf }, "oop");
   };
   /**
@@ -613,19 +669,22 @@ export function CostShareBanner({
     const collapseAfter = pendingAfterDone === 0;
     if (bodies.length > 0 && onConfirmDefaults) {
       setConfirming(true);
-      // Mirror the writes locally so the rows don't flicker back to unanswered
-      // between the save and the refetch.
-      setOptimistic((o) => ({
-        ...o,
-        network: networkExists && !netResolved ? (oonDisplay ? "out_of_network" : "in_network") : o.network,
-        deductibleMet: deductibleExists && !dedResolved ? dedMetDisplay : o.deductibleMet,
-        oopMet: oopExists && !oopResolved ? oopMetDisplay : o.oopMet,
-      }));
+      // Mirror the writes upward so the rows don't flicker back to unanswered
+      // between the save and the refetch — and so the step badge above moves in
+      // the SAME render, which is the lag this lift removes. A PATCH: only the
+      // fields this click actually answers, merged by the caller.
+      onOptimistic({
+        ...(networkExists && !netResolved
+          ? { network: (oonDisplay ? "out_of_network" : "in_network") as "in_network" | "out_of_network" }
+          : {}),
+        ...(deductibleExists && !dedResolved ? { deductibleMet: dedMetDisplay } : {}),
+        ...(oopExists && !oopResolved ? { oopMet: oopMetDisplay } : {}),
+      });
       // Collapse NOW (when nothing else pends) — the click's own render is the
       // response. The batch and its ONE refetch reconcile in the background;
-      // rejection = snap back open + drop nothing else (errorMsg arrives via
-      // props and the existing render-time reconcile clears the optimistic
-      // overlay). When other rows still pend, stay OPEN so the flagged rows
+      // rejection = snap back open + drop nothing else (the caller clears the
+      // overlay on a failed write, which snaps the rows back too). When other
+      // rows still pend, stay OPEN so the flagged rows
       // remain visible under the amber badge.
       if (collapseAfter) setDismissed(true);
       onConfirmDefaults(bodies)
@@ -651,9 +710,9 @@ export function CostShareBanner({
   // persisting the displayed defaults, whole rows (deductible, OOP max) began
   // vanishing the moment they were confirmed. Transparency over tidiness: a
   // resolved row stays visible, states its source, and stays editable.
-  const netResolved = optimistic.network !== undefined || overrides?.userNetworkOverride != null;
-  const dedResolved = optimistic.deductibleMet !== undefined || overrides?.deductibleMet != null;
-  const oopResolved = optimistic.oopMet !== undefined || overrides?.oopMet != null;
+  const netResolved = overrides?.userNetworkOverride != null;
+  const dedResolved = overrides?.deductibleMet != null;
+  const oopResolved = overrides?.oopMet != null;
   const networkExists = !!networkA || netResolved;
   const deductibleExists = !!deductibleA || dedResolved;
   const oopExists = !!oopA || oopResolved;
@@ -671,9 +730,11 @@ export function CostShareBanner({
   // pending = assumptions still awaiting a first pick (drives the headline copy).
   // S293 (#1) — derived from the ONE pending set the badge reads
   // (pendingAssumptionFields, passed in as `pendingFields`) instead of a
-  // second local tally that could disagree with it. The set is persisted-truth
-  // only, so overlay the in-flight optimistic answers on top (a toggle click
-  // must drop the count in its own render, not after the refetch). Legacy
+  // second local tally that could disagree with it. `pendingFields` is
+  // persisted-truth only BY DESIGN (see pendingAssumptionFields) — S304 keeps
+  // that contract intact and instead has the caller compute it from an
+  // already-merged overrides object, so a toggle click drops the count in its
+  // own render without this function ever learning about optimism. Legacy
   // callers without the prop keep the local tally.
   const pendingCount = pendingFields
     ? Array.from(pendingFields).filter((f) => {
@@ -688,7 +749,7 @@ export function CostShareBanner({
       ((oopExists && !oopResolved) ? 1 : 0) +
       serviceCostChips.length +
       (showAca ? 1 : 0);
-  const rawSectionHasRows = !!planIdentity || showNetwork || showDeductible || showOop || hasServiceCostGap || showAca || hasEditableCost;
+  const rawSectionHasRows = !!totalsSource || !!planIdentity || showNetwork || showDeductible || showOop || hasServiceCostGap || showAca || hasEditableCost;
   // Section is OPEN unless the user dismissed it via "Done"; when closed but
   // assumptions exist, "Update assumptions" brings it back.
   const sectionOpen = !dismissed && rawSectionHasRows;
@@ -789,6 +850,53 @@ export function CostShareBanner({
           >
             {!assumptionsOnly && (
               <div className="border-t border-gray-100 pt-3 text-[11px] font-semibold uppercase tracking-[0.1em] text-gray-400">What we assumed</div>
+            )}
+
+            {/* S302 — a bill is internally consistent on paper, so a mismatch
+                means one of OUR parses is wrong. Both candidates below are real
+                parsed numbers; the user only picks which to trust. */}
+            {totalsSource && (
+              <Row
+                flagged={flagRow("totals_source")}
+                icon={DocIcon}
+                label={
+                  totalsSource.answered
+                    ? "Which numbers we're using"
+                    : "These numbers don't match"
+                }
+                control={
+                  totalsSource.answered ? (
+                    <button
+                      type="button"
+                      onClick={() => totalsSource.onChoose(null)}
+                      className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-[13px] font-medium text-gray-700 hover:bg-gray-50"
+                    >
+                      Change
+                    </button>
+                  ) : (
+                    <span className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => totalsSource.onChoose("summary")}
+                        className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-[13px] font-medium text-gray-700 hover:bg-gray-50"
+                      >
+                        Use the summary
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => totalsSource.onChoose("line_items")}
+                        className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-[13px] font-medium text-gray-700 hover:bg-gray-50"
+                      >
+                        Use the line items
+                      </button>
+                    </span>
+                  )
+                }
+              >
+                {totalsSource.answered
+                  ? `You told us the bill's ${totalsSource.answered === "summary" ? "summary" : "line items"} is right, so we're using it for this bill's totals.`
+                  : `Adding up the line items on this bill gives ${totalsSource.lineItemsTotal} for ${totalsSource.label}, but the bill's own summary says ${totalsSource.summaryTotal}. Which is right? We'll use the same answer for the other totals on this bill, and you can change it any time.`}
+              </Row>
             )}
 
             {planIdentity && (

@@ -107,6 +107,44 @@ export function mapOutcomeToStatus(detail: OutcomeDetail): DisputeStatus {
   }
 }
 
+/**
+ * Is this an ADVERSE answer — one where a regulator door is a real option?
+ *
+ * S303. The rail used to decide this from the LADDER (stage `next`, or a
+ * resolved terminal rung), which is a proxy and wrong at both ends: it HID the
+ * doors on a partially-paid letter the user had escalated, and it SHOWED them
+ * after a WON external review — telling someone who had just won to go
+ * complain about it. Whether a door is relevant is a fact about the ANSWER,
+ * not about where the letter sits in its ladder.
+ *
+ * Adverse = they gave you a bad answer, or sent you to collections. `needs_info`
+ * and `no_response` are deliberately NOT adverse: nothing has been refused yet,
+ * and the deadline/follow-up machinery owns those. `new_problem` is a change of
+ * subject, not a refusal.
+ *
+ * Exhaustive by construction — a new OutcomeDetail must declare itself here,
+ * the same discipline {@link mapOutcomeToStatus} enforces.
+ */
+export function isAdverseOutcome(detail: OutcomeDetail): boolean {
+  switch (detail) {
+    case "denied_fully":
+    case "denied_partial":
+    case "denied_some_covered":
+    case "denied_counteroffer":
+    case "collections":
+      return true;
+    case "resolved_win":
+    case "needs_info":
+    case "no_response":
+    case "new_problem":
+      return false;
+    default: {
+      const _exhaustive: never = detail;
+      return _exhaustive;
+    }
+  }
+}
+
 /** Advisory next-rung suggestion — the user chooses whether to act on it. */
 export interface NextStepSuggestion {
   nextLetterType: DisputeLetterType;
@@ -138,6 +176,59 @@ const INSURER_LETTER_TYPES: readonly DisputeLetterType[] = [
  * Ladder (map §2): INSURER I1(insurance_appeal) → I2(external_review); PROVIDER
  * R0..R2 → R3(final_notice); collections interrupts any track → C1(debt_validation).
  */
+/** One letter on the case, as the open-rung test needs to see it. */
+export interface CaseLetterRef {
+  disputeId: string;
+  /** Render letter type (resolveLetterTypeFromDispute), not the raw column. */
+  letterType: string;
+  /** Coarse status — only `cancelled` means the rung was NOT taken. */
+  status: string | null;
+}
+
+/**
+ * Is there a next rung STILL TO TAKE — the one question three surfaces ask.
+ *
+ * {@link suggestNextStep} answers *"does the ladder have a rung above this
+ * one"*. That is not the same question, and treating it as one is the S303
+ * defect: on a case escalated to the end, the appeal kept offering an external
+ * review that already existed, so it never reached `resolved` and the case
+ * could never fold.
+ *
+ * ⚠ It is not only cosmetic. `persistDisputeLetter`'s dedupe deliberately
+ * excludes resolved statuses ("the user may legitimately open a fresh fight
+ * after a prior one closed"), so acting on the stale offer INSERTS a second
+ * letter of a rung already taken — corrupting exactly the per-case aggregates
+ * the flywheel reads. Hence one implementation, three callers: the projector
+ * (so stages are honest), the letter page (ungated, so the offer disappears in
+ * production without waiting on a flag), and the escalate gate (so a stale
+ * client cannot create the row at all).
+ *
+ * Self-exclusion by `disputeId` is load-bearing for one real case: a
+ * `debt_validation` letter whose outcome is `collections` suggests its own type.
+ */
+export function nextRungStillOpen(input: {
+  disputeId: string;
+  letterType: string;
+  outcomeDetail: OutcomeDetail | null;
+  /** Every letter on the CLAIM, including this one. */
+  caseLetters: CaseLetterRef[];
+}): NextStepSuggestion | null {
+  const { disputeId, letterType, outcomeDetail, caseLetters } = input;
+  if (!outcomeDetail) return null;
+  const raw = suggestNextStep(letterType as DisputeLetterType, outcomeDetail);
+  if (!raw) return null;
+  // A withdrawn letter is not a rung taken; anything else is — including a
+  // DRAFT, because starting the next letter is what moves the work there, and
+  // offering it again would simply produce a second draft.
+  const taken = caseLetters.some(
+    (x) =>
+      x.disputeId !== disputeId &&
+      x.letterType === raw.nextLetterType &&
+      x.status !== "cancelled",
+  );
+  return taken ? null : raw;
+}
+
 export function suggestNextStep(
   currentLetterType: DisputeLetterType,
   detail: OutcomeDetail,

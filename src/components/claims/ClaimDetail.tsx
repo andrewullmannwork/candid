@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
 import type { BillState } from "@/lib/claims/derive-bill-state";
@@ -22,15 +22,38 @@ import { AddPlanDetailsModal } from "@/components/claims/AddPlanDetailsModal";
 import type { CostShareAssumption, CostShareOverrides } from "@/lib/claims/recovery-math";
 import { useFeatureFlag } from "@/lib/config/use-feature-flag";
 import { GuidedPhoneSteps, ShowFullStepButton, derivePhonePackState, type GuideStepState, type PhonePackState } from "@/components/claims/GuidedPhoneSteps";
-import { CaseRail, RailStep } from "@/components/claims/CaseRail";
+import { CaseRail, CaseResolvedFold, RailStep } from "@/components/claims/CaseRail";
 import { OutcomeReportingModal } from "@/components/disputes/OutcomeReportingModal";
 import { CollectorModal, type CollectorSubmit } from "@/components/disputes/CollectorModal";
 import { ExhaustionAttestModal } from "@/components/disputes/ExhaustionAttestModal";
-import { railHasExtension, fmtRailDate } from "@/lib/case/rail-steps";
-import type { ProjectedLetterStep } from "@/lib/case/timeline-projector";
+import {
+  railHasExtension,
+  composeRail,
+  fmtRailDate,
+  letterOfferSkipStepId,
+  type RailLetterOffer,
+} from "@/lib/case/rail-steps";
+import {
+  readUserTotalsSource,
+  type UserTotalsSource,
+  type PerLineFieldFact,
+} from "@/lib/claims/effective-totals";
+import type { AssumptionOptimistic } from "@/components/claims/CostShareBanner";
+import {
+  SEND_GATE_COPY,
+  type ReadinessBlocker,
+} from "@/lib/disputes/dispute-readiness";
+import {
+  EMPTY_PROJECTED_REGULATOR,
+  type ProjectedLetterStep,
+  type ProjectedRegulatorComplaint,
+} from "@/lib/case/timeline-projector";
 import { letterRecipientKind } from "@/lib/disputes";
-import { UnsendControl } from "@/components/disputes/UnsendControl";
-import { OUTCOME_LABELS } from "@/lib/disputes/outcome-taxonomy";
+import {
+  deriveLetterTracks,
+  letterTypeHintFromTypes,
+  type LetterTrack,
+} from "@/lib/disputes/letter-type";
 import {
   markSentPayload,
   undoResultPayload,
@@ -157,6 +180,21 @@ interface LineItem {
   // Cost-Share v2 (W2) — per-line assumptions behind the verdict (§5 banner
   // chips). Same flag-gated presence as costShareVerdict.
   costShareAssumptions?: CostShareAssumption[];
+  /**
+   * Cost-Share v2 — "the insurer assigned the patient MORE than the plan says"
+   * (positive delta). Same flag-gated presence as costShareVerdict.
+   *
+   * S305 — it has ridden this payload since the engine landed and NOTHING read
+   * it. It is the one signal that can warrant an insurer appeal on a claim with
+   * zero audit findings against it, because it comes from plan math rather than
+   * from an audit rule — which is exactly why the insurer track cannot be
+   * derived from findings alone.
+   */
+  insurerDiscrepancy?: {
+    planDerivedShare: number;
+    insurerAssignedShare: number;
+    delta: number;
+  } | null;
 }
 
 interface CatalogSlug {
@@ -216,6 +254,9 @@ interface ClaimData {
     waitingCount: number;
     soonestResponseDue: { date: string; disputeId: string } | null;
     sentLetterMeta: { responseDueDate: string | null; daysRemaining: number | null; amber: boolean } | null;
+    /** S303 — the case-level regulator complaint (per-agency filings + the
+     *  declination). Never null: an empty record IS "nothing filed yet". */
+    regulator: ProjectedRegulatorComplaint;
     /** Per-letter insurer display names (pinned plan), for wait titles. */
     insurerNameByDispute: Record<string, string>;
   };
@@ -256,6 +297,18 @@ interface ClaimData {
       insurancePaidSource: "per_line_sum" | "claim_header";
       insuranceAdjustedSource: "per_line_sum" | "claim_header";
       patientResponsibilitySource: "per_line_sum" | "claim_header";
+    };
+    // S304 — what the LINES say, computed by the resolver and forwarded whole by
+    // the GET. `contradictsHeader` is the one condition worth a question: line
+    // values that EXIST and disagree with the bill's own summary. A bill that
+    // states a total only in its summary block has no per-line values to
+    // disagree with, and asking about it produced a choice whose "line items"
+    // answer was $0.00.
+    perLine?: {
+      patientPaid: PerLineFieldFact;
+      insurancePaid: PerLineFieldFact;
+      insuranceAdjusted: PerLineFieldFact;
+      patientResponsibility: PerLineFieldFact;
     };
   };
   flags?: {
@@ -548,7 +601,63 @@ export function ClaimDetail({
   // S299 phase 1a — the extended rail's UI flag (the event spine is gated
   // separately by case_timeline_v1; see mig 222).
   const caseRailFlag = useFeatureFlag("case_rail_v1");
-  const [fourBFullOpen, setFourBFullOpen] = useState(false);
+  // S302 — the line-items-vs-summary question. OFF = the row never renders and
+  // nothing writes the answer, so decideField keeps today's header-wins rule.
+  const billTotalsSourceFlag = useFeatureFlag("bill_totals_source_v1");
+  /**
+   * S302 round 3 (Andrew: "the click takes a while — use optimistic with
+   * snapback"). Every other assumption row awaits the claim refetch because the
+   * ENGINE re-derives its value server-side, so flipping early would show the
+   * pre-answer number for a beat. This row is different: the answer IS the
+   * user's click, so the client already knows the outcome and can show it now.
+   * `{ value }` wrapper so an optimistic CLEAR (value: null) is distinguishable
+   * from "no override". Dropped once the refetch lands; snapped back on failure.
+   * The double `bill_totals_adjudicated` event in the S302 E2E was this exact
+   * latency — a click with no feedback gets clicked twice.
+   */
+  const [totalsOverride, setTotalsOverride] = useState<{ value: UserTotalsSource } | null>(null);
+  /**
+   * S304 — assumption answers this click has made, before the server confirms.
+   *
+   * Lifted out of CostShareBanner, which used to keep it locally. Three surfaces
+   * derived "what have you answered" from two different sources: the banner's
+   * rows read its overlay and moved instantly, while the step badge below reads
+   * `costShareOverrides` from the server and sat unchanged until the refetch —
+   * the lag on "Done". And the banner renders TWICE here, so there were two
+   * independent overlays that could disagree with each other as well.
+   *
+   * Held here, merged ONCE into `effectiveCostShareOverrides` below, and handed
+   * to every consumer. Cleared on settle: on success the refetch has landed the
+   * truth, on failure clearing IS the snapback — the same discipline
+   * `totalsOverride` above uses, for the same reason.
+   */
+  const [assumptionOptimistic, setAssumptionOptimistic] = useState<AssumptionOptimistic>({});
+
+  /**
+   * S304 — THE overrides object every assumption consumer reads: what the server
+   * has, plus what this click just answered. One merge, so the step badge, the
+   * "has any rows" test, the engaged test and both banner instances can never
+   * disagree about whether a question has been answered.
+   *
+   * `pendingAssumptionFields` stays persisted-truth-only by its own contract —
+   * it is handed an already-merged object rather than taught about optimism.
+   */
+  const effectiveCostShareOverrides = useMemo(() => {
+    const base = data?.costShareOverrides ?? null;
+    const o = assumptionOptimistic;
+    if (!base && Object.keys(o).length === 0) return null;
+    return {
+      deductibleMet: o.deductibleMet ?? base?.deductibleMet ?? null,
+      deductibleMetAsOf: o.deductibleMetAsOf ?? base?.deductibleMetAsOf ?? null,
+      oopMet: o.oopMet ?? base?.oopMet ?? null,
+      oopMetAsOf: o.oopMetAsOf ?? base?.oopMetAsOf ?? null,
+      userNetworkOverride: o.network ?? base?.userNetworkOverride ?? null,
+    };
+  }, [data?.costShareOverrides, assumptionOptimistic]);
+
+  // S302 — resolved-case fold, expanded on demand (§2.2: no collapse in this
+  // product is ever permanent, and every expanded step stays interactive).
+  const [caseExpanded, setCaseExpanded] = useState(false);
   // S299 — the rail's inline actions (shared dispute-side modals; see the
   // CaseRail mount + the modal mounts below).
   const [railOutcomeDisputeId, setRailOutcomeDisputeId] = useState<string | null>(null);
@@ -844,6 +953,25 @@ export function ClaimDetail({
           body: JSON.stringify(sent ? markSentPayload(disputeId) : unsendPayload(disputeId)),
         });
         if (!res.ok) {
+          // S302 — the send gate answers 409 with the FLOOR items that are
+          // missing. Saying "please try again" to that would be the S301
+          // mistake exactly: an error message pointing away from the cause,
+          // on an action that will never succeed by retrying. Name what's
+          // missing and where to fix it.
+          if (res.status === 409) {
+            const body = (await res.json().catch(() => null)) as {
+              blockers?: ReadinessBlocker[];
+            } | null;
+            const missing = (body?.blockers ?? [])
+              .map((b) => SEND_GATE_COPY.blocker(b, "both").what.toLowerCase())
+              .join(", ");
+            setRailActionError(
+              missing
+                ? `${SEND_GATE_COPY.error} Still missing: ${missing}. Open the letter to add it.`
+                : `${SEND_GATE_COPY.error} Open the letter to see what's missing.`,
+            );
+            return false;
+          }
           // S301 — the old message here BLAMED the §0.9b guard, which disguised
           // a malformed request as correct behavior. Unsend now clears the
           // outcome in the same patch, so there is no prerequisite to name.
@@ -947,12 +1075,14 @@ export function ClaimDetail({
   const [csOverridePending, setCsOverridePending] = useState<string | null>(null);
   const [csOverrideError, setCsOverrideError] = useState<string | null>(null);
   const submitCostShareOverride = useCallback(
-    async (body: CostShareOverrideRequest, pendingKey: string) => {
+    // S302 round 3 — returns whether the write landed, so an OPTIMISTIC caller
+    // can snap back. Existing callers ignore it and are unaffected.
+    async (body: CostShareOverrideRequest, pendingKey: string): Promise<boolean> => {
       setCsOverridePending(pendingKey);
       setCsOverrideError(null);
       try {
         const token = await getAuthToken();
-        if (!token) return;
+        if (!token) return false;
         const res = await fetch(`/api/claims/${claimId}/cost-share-override`, {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -961,7 +1091,7 @@ export function ClaimDetail({
         if (!res.ok) {
           const d = await res.json().catch(() => ({}));
           setCsOverrideError(d.error || `Couldn't save your change (${res.status}).`);
-          return;
+          return false;
         }
         // S295 — the answered row's value is re-derived by the ENGINE server-side,
         // so `refetchClaim` stays awaited: unpinning before it lands would show
@@ -973,8 +1103,10 @@ export function ClaimDetail({
         // audit inline. Fire it in the background instead.
         await refetchClaim();
         if (onClaimUpdated) void onClaimUpdated();
+        return true;
       } catch {
         setCsOverrideError("Couldn't save your change. Please try again.");
+        return false;
       } finally {
         setCsOverridePending(null);
       }
@@ -1030,6 +1162,11 @@ export function ClaimDetail({
         failMsg = failMsg ?? "Couldn't save your answers. Please try again.";
       } finally {
         setCsOverridePending(null);
+        // S304 — settle the optimistic overlay. On success the refetch above has
+        // already landed the truth, so dropping it is a no-op; on failure
+        // dropping it IS the snapback. Both paths clear, for different reasons —
+        // the same discipline the totals-source row uses.
+        setAssumptionOptimistic({});
       }
       if (failMsg) {
         setCsOverrideError(failMsg);
@@ -1282,6 +1419,77 @@ export function ClaimDetail({
   // §5 banner chips + W3 override calls need (lineId + service label/slug). Over
   // primaryLineItems only — zero-charge reporting codes carry no cost-share stake
   // (the engine resolves them `confident`/no-assumptions), so they never chip here.
+  /**
+   * S302 — the line-items-vs-summary disagreement, assembled from
+   * `effectiveTotals.provenance`, which the claim GET has always sent and
+   * nothing has ever read. A `claim_header` source MEANS the line items did not
+   * sum to the bill's own summary on that field.
+   *
+   * ONE question, not four rows: a bill is internally consistent on paper, so a
+   * mismatch is one parser error of ours, not four independent ones — and the
+   * answer applies to every disagreeing total on the bill. We ask on the field
+   * with the largest delta (deterministic, and the biggest problem first).
+   *
+   * Null once answered (`userTotalsSource` set) — the row is the question, and a
+   * question that has been answered is not pending.
+   */
+  const totalsSourceRow = (() => {
+    if (!billTotalsSourceFlag.enabled) return null;
+    const eff = data.effectiveTotals;
+    if (!eff) return null;
+    const answered = totalsOverride ? totalsOverride.value : readUserTotalsSource(claim.metadata);
+    // S302 round 4 — keyed on the FACT, not on provenance. Provenance was a
+    // PROXY for "the two disagree", and it stops saying `claim_header` the
+    // moment the user answers (it becomes user_summary / user_line_items). So an
+    // optimistic CLEAR produced answered=null AND worst=null, the row returned
+    // null, and it VANISHED for the length of a refetch before reappearing amber
+    // (Andrew: "it disappears for a few seconds then reappears").
+    //
+    // S304 — the fact now comes FROM the resolver instead of being re-derived
+    // here. This block used to re-sum the raw lines with its own header-column →
+    // line-column mapping, a third implementation of a comparison
+    // `resolveEffectiveClaimTotals` had already made. It could not tell "the
+    // bill states this only in its summary" from "the lines say zero", so it
+    // asked users to settle a conflict that did not exist — 14 of 17 DEV claims,
+    // none of them a real disagreement. `contradictsHeader` requires the line
+    // values to EXIST, which is the whole difference.
+    const FIELDS = [
+      { fact: eff.perLine?.patientResponsibility, label: "what you owe", header: "total_patient_responsibility" },
+      { fact: eff.perLine?.patientPaid, label: "what you've paid", header: "total_patient_paid" },
+      { fact: eff.perLine?.insurancePaid, label: "what your insurer paid", header: "total_insurance_paid" },
+      { fact: eff.perLine?.insuranceAdjusted, label: "the insurer's adjustments", header: "total_insurance_adjusted" },
+    ] as const;
+    let worst: { label: string; lineSum: number; header: number; delta: number } | null = null;
+    for (const f of FIELDS) {
+      if (!f.fact?.contradictsHeader) continue;
+      const header = Number((claim as Record<string, unknown>)[f.header] ?? 0);
+      const delta = Math.abs(f.fact.sum - header);
+      if (worst == null || delta > worst.delta) {
+        worst = { label: f.label, lineSum: f.fact.sum, header, delta };
+      }
+    }
+    // Answered → the row STAYS, in its confirmed state, because the copy
+    // promises the answer can be changed at any time. (Once answered the
+    // provenance is user_*, so `worst` is null — the numbers are carried only
+    // for the open question.)
+    if (!worst && !answered) return null;
+    return {
+      answered,
+      label: worst?.label ?? "",
+      lineItemsTotal: worst ? `$${fmtMoney(worst.lineSum)}` : "",
+      summaryTotal: worst ? `$${fmtMoney(worst.header)}` : "",
+      onChoose: (use: "summary" | "line_items" | null) => {
+        setTotalsOverride({ value: use });
+        // BOTH paths clear the override, for different reasons: on success the
+        // refetch has already landed the truth, and on failure clearing IS the
+        // snap-back (the row reverts to whatever metadata still says).
+        void submitCostShareOverride({ field: "totals_source", use }, "totals_source").finally(
+          () => setTotalsOverride(null),
+        );
+      },
+    };
+  })();
+
   const bannerAssumptions: BannerAssumption[] = primaryLineItems.flatMap((li) =>
     (li.costShareAssumptions ?? []).map((a) => ({
       ...a,
@@ -1368,8 +1576,9 @@ export function ClaimDetail({
   const visibleClaimLevelFindings = showDismissed
     ? allClaimLevelFindings
     : allClaimLevelFindings.filter((f) => !f.dismissed);
-  const dismissedClaimLevelCount =
-    allClaimLevelFindings.length - visibleClaimLevelFindings.length;
+  // S305 — the dismissed COUNT died with the banner that showed it. The list
+  // itself stays: it feeds the rung's reason, the dispute bundle and the
+  // letter-type derivation, all of which read the live findings.
 
   // §3.8 — throttle toast state. /api/claims/[claimId] surfaces re-audit
   // outcome reasons; we surface a friendly toast for the two throttle paths
@@ -1402,7 +1611,7 @@ export function ClaimDetail({
   // assumption rows to edit; every later step renumbers off that.
   const railHasAssumptions =
     !!data.costShareBill &&
-    hasAssumptionRows(bannerAssumptions, data.costShareOverrides ?? null, bannerEditableCost);
+    hasAssumptionRows(bannerAssumptions, effectiveCostShareOverrides, bannerEditableCost);
   const railStepServices = railHasAssumptions ? 2 : 1;
   const railStepSave = railStepServices + 1;
   const railStepRecover = railStepSave + 1;
@@ -1415,7 +1624,7 @@ export function ClaimDetail({
   const assumptionsPendingFields = railHasAssumptions
     ? pendingAssumptionFields(
         bannerAssumptions,
-        data.costShareOverrides ?? null,
+        effectiveCostShareOverrides,
         // S292 — the plan-identity row's amber now comes from this ONE set,
         // so the step badge and the row border can never disagree again.
         // S293 (#1) — and the badge input now MIRRORS the row's own render
@@ -1433,6 +1642,9 @@ export function ClaimDetail({
           acaRowVisible:
             bannerAssumptions.some((a) => a.field === "aca_preventive") && !acaDismissed,
         },
+        // S302 — same object the banner renders from, so the badge and the row
+        // can never disagree about whether the question is outstanding.
+        totalsSourceRow?.answered == null ? totalsSourceRow : null,
       )
     : new Set<string>();
   const assumptionsPending = assumptionsPendingFields.size;
@@ -1444,9 +1656,9 @@ export function ClaimDetail({
   // amber across reloads instead of resetting to a fresh blue "1".
   const assumptionsEngaged =
     svcOk ||
-    (data.costShareOverrides?.userNetworkOverride ?? null) != null ||
-    (data.costShareOverrides?.deductibleMet ?? null) != null ||
-    (data.costShareOverrides?.oopMet ?? null) != null;
+    (effectiveCostShareOverrides?.userNetworkOverride ?? null) != null ||
+    (effectiveCostShareOverrides?.deductibleMet ?? null) != null ||
+    (effectiveCostShareOverrides?.oopMet ?? null) != null;
   const assumptionsAttention = railHasAssumptions && assumptionsPending > 0 && assumptionsEngaged;
 
   // S291 (Andrew) — a drafted letter completes BOTH the savings step and the
@@ -1456,16 +1668,31 @@ export function ClaimDetail({
   // don't count — the letter has to actually exist.
   const hasDraftedDispute = data.disputes.some((d) => d.status !== "cancelled");
   // S299 phase 1a — the extended rail (projection attached by the GET only
-  // when case_rail_v1 is ON). The PRIMARY letter is the one 4b renders — its
-  // send step is never duplicated on the extension (rail-steps contract).
+  // when case_rail_v1 is ON).
+  //
+  // S302 — there is no PRIMARY letter any more. Once ANY letter exists the rail
+  // owns every letter's send step, rendered with one anatomy; 4b (and the
+  // flag-OFF "Recover the money" step) shrink to what they uniquely are — the
+  // affordance that CREATES the first letter — and stop rendering entirely once
+  // one exists. That also retires 4b's done-state bug rather than patching it:
+  // it was titled "Send the appeal" but keyed on `hasDraftedDispute`, so it went
+  // green when a DRAFT existed and stayed green through an unsend.
   const railTimeline = caseRailFlag.enabled ? (data.caseTimeline ?? null) : null;
-  const railPrimaryDisputeId =
-    railTimeline?.letters.find((l) => l.stage !== "none")?.disputeId ?? null;
-  const railPrimaryLetter =
-    railTimeline?.letters.find((l) => l.disputeId === railPrimaryDisputeId) ?? null;
-  const railExtends =
-    railTimeline != null && railHasExtension(railTimeline.letters, railPrimaryDisputeId);
-  const railPrimarySent = railExtends && railPrimaryLetter?.latestSendAt != null;
+  // S305 — `railExtends` moved DOWN, next to the composition, because it now
+  // also depends on the offered tracks. One definition, three readers.
+  // S302 — the resolved fold (agenda §2.2). Derived from the projection, never
+  // stored: "every letter reached a terminal outcome" is already answerable.
+  // Distinct from "the user closed the case", which is real server state and
+  // its own unit. The whole rail folds — prep steps included — because a
+  // finished case should read as one line, not thirteen.
+  //
+  // ⚠ Gated on `isFlagged` for the same reason the rail itself is (agenda §2.1:
+  // v1 gives the extended rail to flagged bills only, clean bills keep today's
+  // UI). Without it, a CLEAN bill that happens to carry a resolved letter — an
+  // itemized-bill request, say — would fold away its own line-items table,
+  // because the collapse wrapper spans the whole rail region.
+  // S303 — the rail composition lives below, next to `guidedCtx`, because the
+  // badge numbering depends on it. See `railComposed`.
   // Stage-8 offer router (phase 1b): external_review needs the exhaustion
   // attestation (same modal + fail-closed gate as the dispute page);
   // final_notice goes direct with the prior letter's LOCAL send date
@@ -1499,21 +1726,67 @@ export function ClaimDetail({
   const assumpBodyVisible = !(guidedOn && assumptionsDone && !assumpFullOpen);
   const svcBodyVisible = !(guidedOn && isFlagged && svcOk && !svcFullOpen);
 
+  // ── Parallel letter tracks (S305) ─────────────────────────────────────────
+  //
+  // ONE derivation of "what does this bill warrant", read by the guided track,
+  // the create step, and the rung offers below. It used to be two calls to the
+  // dominant-type hint from two places computing overlapping answers off the
+  // same inputs.
+  // ONE walk of the bill's findings, for every consumer on this page: the
+  // letter-type fallback, the guided track, the rung offers, the create step's
+  // own render gate, and the phone scripts' finding list. It used to be three
+  // walks applying the same two rules (live, and actionable) to the same lines.
+  const disputeEntries = collectDisputeEntries(
+    primaryLineItems,
+    visibleClaimLevelFindings,
+    showDismissed,
+  );
+  const findingTypes = [
+    ...disputeEntries.lineEntries.map((e) => e.finding.type),
+    ...disputeEntries.claimActionable.map((f) => f.type),
+    ...disputeEntries.gapEntries.map((e) => e.finding.type),
+  ];
+  // "Is there anything on this bill to contest?" — the same count
+  // BulkDisputeButton short-circuits on, now that both read the shared builder.
+  // The create step is gated on it too: a "Recover $X" panel wrapping a button
+  // that returns null is a promise with no door behind it.
+  const hasContestableCharges = findingTypes.length > 0;
+  // The cost-share engine's per-line verdict — "the insurer assigned you MORE
+  // than the plan says". Plan math, not a finding, which is why a claim can
+  // warrant an appeal with zero audit findings against it. Absent when
+  // recovery_cost_share_v2 is OFF, so flag-off derives no insurer track.
+  const insurerUnderpaid = primaryLineItems.some(
+    (li) => (li.insurerDiscrepancy?.delta ?? 0) > 0,
+  );
+  const letterTracks = deriveLetterTracks({ findingTypes, insurerUnderpaid });
+  // Which parties already have a letter. Collector letters count as the
+  // provider track (the same fold `guidedTrack` has always applied): a
+  // debt-validation letter means that track is already in flight, and offering
+  // to start it again would put two doors on one act.
+  const partiesWithLetters = new Set<LetterTrack["party"]>(
+    data.disputes
+      .filter((d) => d.status !== "cancelled")
+      .map((d) => (letterRecipientKind(d.dispute_type) === "insurer" ? "insurer" : "provider")),
+  );
+
+  // The single letter the create step drafts when no track derives — today's
+  // behaviour, unchanged, and the reason returning EMPTY is load-bearing.
+  // ONE call: the guided track reads this rather than re-running the heuristic,
+  // so the track the phone scripts speak in and the letter the button drafts
+  // are the same decision, not two that happen to agree.
+  const fallbackLetterType = letterTypeHintFromTypes(findingTypes);
+
   // Track-awareness (§4.5): drafted → the letter's own recipient is the page's
-  // signal; undrafted → the SAME dominant-type hint BulkDisputeButton computes
-  // (shared helpers = one derivation; the subflow and the drafted letter can
-  // never disagree). Collector letters follow the provider branch.
+  // signal; undrafted → the first warranted track, falling back to the
+  // dominant-type hint when no party is obligated (the common case — a
+  // benchmark overcharge obligates nobody).
   const guidedTrack: "insurer" | "provider" = (() => {
     const active = data.disputes.find((d) => d.status !== "cancelled");
     if (active) {
       return letterRecipientKind(active.dispute_type) === "insurer" ? "insurer" : "provider";
     }
-    const types = collectActionableFindingTypes(
-      primaryLineItems,
-      visibleClaimLevelFindings,
-      showDismissed,
-    );
-    return letterTypeHintFromTypes(types) === "insurance_appeal" ? "insurer" : "provider";
+    if (letterTracks.length > 0) return letterTracks[0].party;
+    return letterRecipientKind(fallbackLetterType) === "insurer" ? "insurer" : "provider";
   })();
 
   // Fill context — a projection of values ALREADY rendered on this page
@@ -1527,19 +1800,18 @@ export function ClaimDetail({
     const firstCovered = primaryLineItems.find((li) => li.planCoverage != null) ?? null;
     const dosMonthDay = fmtDateMonthDayUTC((claim.date_of_service as string | null) ?? null);
     const findings: GuideFinding[] = [];
-    for (const li of primaryLineItems) {
-      const all = (li.metadata?.auditFindings || []) as AuditFinding[];
-      const live = showDismissed ? all : all.filter((f) => !f.dismissed);
-      for (const f of live) {
-        if (!f.actionable) continue;
-        findings.push({
-          type: f.type,
-          lineNumber: li.line_number ?? null,
-          dateLabel: dosMonthDay,
-          serviceNoun: li.description ? li.description.toLowerCase() : null,
-          parentLabel: null,
-        });
-      }
+    // The SAME line-level findings the dispute bundle contests (S305) — the
+    // phone scripts must never name a charge the letter would not. This walked
+    // the lines itself with a byte-identical copy of the live/actionable rules.
+    const lineById = new Map(primaryLineItems.map((li) => [li.id, li]));
+    for (const e of disputeEntries.lineEntries) {
+      findings.push({
+        type: e.finding.type,
+        lineNumber: e.lineNumber ?? null,
+        dateLabel: dosMonthDay,
+        serviceNoun: lineById.get(e.lineItemId)?.description?.toLowerCase() ?? null,
+        parentLabel: null,
+      });
     }
     const rawClaimNumber =
       (claim.external_claim_number as string | null | undefined) ??
@@ -1572,10 +1844,90 @@ export function ClaimDetail({
       flaggedTotal: billTotals.potentialRecovery >= 1 ? billTotals.potentialRecovery : null,
     };
   })();
+
+  // S303 — ONE composition for the whole rail. ClaimDetail used to compute the
+  // fold from `letters` alone while CaseRail separately composed the groups, so
+  // the same rail was built TWICE per render from the same inputs — and the
+  // fold, never seeing the steps, could collapse a case whose steps were still
+  // asking (Andrew: "it was collapsed on reload even though steps 7, 14 and 17
+  // are open"). `groups` now goes down to CaseRail, and the summary counts the
+  // very steps it is folding.
+  //
+  // Placed here, after `guidedCtx`, because badge numbering reads it: the rail
+  // starts at 5 behind the guided phone step, and at railStepRecover without it.
   const guideStepsMeta =
     ((claim.metadata as Record<string, unknown>)?.guideSteps as
       | Record<string, GuideStepState>
       | undefined) ?? {};
+
+  // S305 — the letters this claim is OWED but has not written: an obligated
+  // party with no letter of its own yet.
+  //
+  // ⚠ Gated on the FLAG, not on `railTimeline != null`. The projection is
+  // absent for a claim with no letters — `loadCaseProjection` returns null
+  // before the first one, honestly, since there is no case timeline yet — and
+  // that is exactly the claim whose offer matters most. Using its presence as a
+  // proxy for "the rail is on" would have made this feature dead on every fresh
+  // bill while working perfectly on the one test claim that happens to carry a
+  // letter. The offer needs nothing from the projection anyway.
+  //
+  // Also gated on there being something to contest: the draft action is
+  // BulkDisputeButton, which returns null with nothing in the bundle, and an
+  // offer with no way to accept it is worse than no offer.
+  const railOffers: RailLetterOffer[] =
+    isFlagged && caseRailFlag.enabled && hasContestableCharges
+      ? letterTracks
+          .filter((t) => !partiesWithLetters.has(t.party))
+          .map((t) => {
+            // The finding that obligates THIS party, in its own words. Claim-level
+            // only: a per-line finding already renders against its line in the
+            // table, and lifting it into the rung would say it twice.
+            const reason =
+              visibleClaimLevelFindings.find(
+                (f) =>
+                  !f.dismissed &&
+                  f.actionable &&
+                  deriveLetterTracks({ findingTypes: [f.type], insurerUnderpaid: false }).some(
+                    (x) => x.party === t.party,
+                  ),
+              ) ?? null;
+            return {
+              party: t.party,
+              letterType: t.letterType,
+              reason: reason
+                ? { title: reason.title, detail: reason.description ?? null }
+                : null,
+              declinedAt: guideStepsMeta[letterOfferSkipStepId(t.party)]?.skippedAt ?? null,
+            };
+          })
+      : [];
+
+  const railComposed =
+    isFlagged && (railTimeline != null || railOffers.length > 0)
+      ? composeRail({
+          letters: railTimeline?.letters ?? [],
+          // The projection's own zero value when the case has not started.
+          // Provably inert here: `regulator` is read only inside a letter's
+          // steps, and this branch supplies it only when there are none.
+          regulator: railTimeline?.regulator ?? EMPTY_PROJECTED_REGULATOR,
+          offers: railOffers,
+          firstNumber: guidedCtx ? 5 : railStepRecover,
+          insurerNameByDispute: railTimeline?.insurerNameByDispute ?? {},
+          providerName: providerName === "Unknown Provider" ? null : providerName,
+          // Client clock — calendars are the user's timezone (letter-type.ts rule).
+          now: new Date(),
+        })
+      : null;
+  const railResolution = railComposed?.resolution ?? null;
+  const caseFolded = railResolution != null && !caseExpanded;
+  // S305 — ONE predicate for "the rail owns the letter step", read by 4b's
+  // gate, the phone step's 4-vs-4a badge, and the flag-OFF recover gate. A
+  // letter the claim is OWED takes that step onto the rail exactly as a letter
+  // that exists does; leaving 4b up beside it would put two doors on one act.
+  const railExtends = railHasExtension({
+    letters: railTimeline?.letters ?? [],
+    offers: railOffers,
+  });
   // 4a/4b split — pack state for the rail chrome (done pill / resolved chip /
   // skipped) and 4b's activation. Live component state wins once it emits.
   const guidedPack = guidedPackLive ?? derivePhonePackState(guidedTrack, guideStepsMeta);
@@ -1649,15 +2001,14 @@ export function ClaimDetail({
   // greyed button) until the phone question concludes "Not yet"/skip — the
   // button STAYS clickable per the locked contract §3.6 (the pack never blocks
   // letter generation); muted=false emits today's classes byte-identically.
+  //
+  // S302 — the S299 primary-only filter is GONE with the caller that needed it.
+  // Both mount sites now render only while `!railExtends`, i.e. only while no
+  // letter exists, so the drafted-cards branch is reachable exclusively with the
+  // rail OFF — where the full list is the correct, byte-identical behaviour.
   const recoverBranchNode = (muted: boolean) =>
     data.disputes.length > 0 ? (
-      // S299 — when the extension rail owns the escalated letters, 4b lists
-      // only the primary letter's card (rail OFF → full list, byte-identical).
-      railExtends && railPrimaryDisputeId != null ? (
-        disputesListNodeFor(data.disputes.filter((d) => d.id === railPrimaryDisputeId))
-      ) : (
-        disputesListNode
-      )
+      disputesListNode
     ) : (
       <div className={`mb-4 flex flex-col gap-4 rounded-[18px] border ${muted ? "border-gray-200 bg-white" : "border-blue-200 bg-gradient-to-br from-blue-50 to-white"} px-6 py-5 sm:-ml-[43px] sm:flex-row sm:items-center sm:justify-between`}>
         <div className="max-w-[50ch] text-[13px] leading-[1.55] text-gray-600">
@@ -1678,6 +2029,7 @@ export function ClaimDetail({
             primaryLineItems={primaryLineItems}
             claimLevelFindings={visibleClaimLevelFindings}
             showDismissed={showDismissed}
+            letterType={fallbackLetterType}
             getAuthToken={getAuthToken}
             onGenerated={(result) => router.push(disputeUrlForResult(result))}
             existingDisputeId={data.disputes.find((d) => d.status !== "cancelled")?.id ?? null}
@@ -1686,6 +2038,26 @@ export function ClaimDetail({
         </div>
       </div>
     );
+
+  // S305 — the draft control for a parallel-track offer. The SAME button, told
+  // which letter to write; the rail supplies the letter type it composed, so
+  // the rung's title and the letter it drafts cannot describe different things.
+  // `existingDisputeId` is deliberately null: an offer exists precisely because
+  // this track has no letter, and passing the OTHER track's dispute would turn
+  // the button into "Open dispute letter" pointing at the wrong one.
+  const renderOfferAction = (letterType: string) => (
+    <BulkDisputeButton
+      claimId={claimId}
+      claim={claim}
+      primaryLineItems={primaryLineItems}
+      claimLevelFindings={visibleClaimLevelFindings}
+      showDismissed={showDismissed}
+      letterType={letterType}
+      getAuthToken={getAuthToken}
+      onGenerated={(result) => router.push(disputeUrlForResult(result))}
+      existingDisputeId={null}
+    />
+  );
 
   return (
     <div>
@@ -1936,91 +2308,32 @@ export function ClaimDetail({
         </div>
       )}
 
-      {/* S74.5c §1.7 — Claim-level issues (lineItems=[] findings). D15
-          unallocated_balance lives here; future claim-header findings (cross-
-          claim aggregation, frequency violations) will too. Filtered by the
-          same showDismissed toggle as the line-level findings list. */}
-      {flywheelEnabled && (visibleClaimLevelFindings.length > 0 || dismissedClaimLevelCount > 0) && (
-        <div className="mb-4 rounded-xl border border-gray-100 bg-white p-4">
-          <div className="mb-3 flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-gray-900">
-              Claim-level issues
-              {visibleClaimLevelFindings.length > 0 && (
-                <span className="ml-2 inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-red-50 px-1.5 text-[10px] font-semibold text-red-700">
-                  {visibleClaimLevelFindings.length}
-                </span>
-              )}
-            </h3>
-            {dismissedClaimLevelCount > 0 && (
-              <button
-                type="button"
-                onClick={() => setShowDismissed((s) => !s)}
-                className="text-[10px] text-gray-500 hover:text-gray-700"
-              >
-                {showDismissed
-                  ? "Hide dismissed"
-                  : `Show ${dismissedClaimLevelCount} dismissed`}
-              </button>
-            )}
-          </div>
-          <div className="space-y-2">
-            {visibleClaimLevelFindings.map((f) => (
-              <div
-                key={f.id}
-                className={`p-3 rounded-lg border text-xs ${
-                  f.dismissed
-                    ? "text-gray-500 bg-gray-100 border-gray-200 opacity-70"
-                    : SEVERITY_COLORS[f.severity] ||
-                      "text-gray-700 bg-gray-50 border-gray-200"
-                }`}
-              >
-                <div className="flex justify-between items-start gap-2">
-                  <div className="min-w-0">
-                    <p className="font-semibold">{f.title}</p>
-                    {f.description && (
-                      <p className="mt-1 opacity-80">{f.description}</p>
-                    )}
-                    <p className="mt-1 opacity-60">
-                      {friendlyFindingType(f.type)}
-                      {f.dismissed && f.dismissed_reason && (
-                        <>
-                          {" "}· dismissed:{" "}
-                          <span className="italic">
-                            {f.dismissed_reason.replace(/_/g, " ")}
-                          </span>
-                        </>
-                      )}
-                    </p>
-                  </div>
-                  <div className="flex items-start gap-2 shrink-0">
-                    {f.estimatedOvercharge > 0 && (
-                      <p className="font-bold">
-                        -${f.estimatedOvercharge.toLocaleString()}
-                      </p>
-                    )}
-                    {!f.dismissed && (
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          // Cast to AuditFinding shape; DismissFindingModal
-                          // reads only id/title/type/severity/estimatedOvercharge.
-                          setDismissTarget(f as unknown as AuditFinding);
-                        }}
-                        className="rounded border border-current px-2 py-0.5 text-[10px] font-medium opacity-70 hover:opacity-100"
-                        title="Hide this finding with a reason"
-                      >
-                        Dismiss
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      {/* S305 (Andrew) — the "Claim-level issues" banner is GONE. The finding it
+          existed to show is now the REASON on its own rail rung, where the user
+          can act on it; carrying it twice on one page was the duplication he
+          called out. Skip on the rung replaces Dismiss: "I'm not writing this
+          letter" is the answer that matters here, and it stays visible and
+          reversible instead of hiding the finding.
+          ⚠ A claim-level finding that obligates NO party would now render
+          nowhere. Only `unallocated_balance` is emitted claim-level today
+          (claim-header-arithmetic.ts) and it obligates the provider, so the
+          case is unreachable — but a new claim-level rule must come with a
+          rung, or it will be invisible. */}
 
+      {/* S302 — the resolved fold, ABOVE the rail it collapses. */}
+      {railResolution && (
+        <CaseResolvedFold
+          resolution={railResolution}
+          expanded={caseExpanded}
+          onToggle={() => setCaseExpanded((v) => !v)}
+        />
+      )}
+      {/* `display:contents` when open, so the wrapper is layout-invisible and
+          the rail's spacing is byte-identical to before; `hidden` when folded.
+          HIDDEN, not unmounted — the same idiom 4a's body uses, so expanding
+          restores every step with its state (§2.2: expanded steps stay
+          interactive, and nothing here is a one-way collapse). */}
+      <div className={caseFolded ? "hidden" : "contents"}>
       {/* ── Surface 3 (clarity redesign): flagged bills use a numbered guided
           step rail. S291 (Andrew) re-ordered it to confirm-then-reveal —
           1 Verify our assumptions (Cost-Share rows) · 2 Verify the services
@@ -2053,14 +2366,16 @@ export function ClaimDetail({
                 variant="assumptions"
                 verdict={data.costShareBill.verdict}
                 assumptions={bannerAssumptions}
-                overrides={data.costShareOverrides ?? null}
+                overrides={effectiveCostShareOverrides}
                 recoverable={billTotals.potentialRecovery}
                 correctShare={billTotals.shouldOwe}
                 charged={billTotals.shouldOwe + billTotals.potentialRecovery}
                 fmtMoney={fmtMoney}
                 onOverride={submitCostShareOverride}
                 onConfirmDefaults={confirmAssumptionDefaults}
+                onOptimistic={(patch) => setAssumptionOptimistic((prev) => ({ ...prev, ...patch }))}
                 pendingFields={assumptionsPendingFields}
+                totalsSource={totalsSourceRow}
                 planIdentity={
                   planCandidates
                     ? {
@@ -2164,7 +2479,7 @@ export function ClaimDetail({
                       : "inline-flex items-center gap-1.5 rounded-xl bg-blue-600 px-4 py-[9px] text-[13px] font-semibold text-white shadow-[0_0_20px_hsla(217,91%,60%,0.15)] transition-all hover:-translate-y-px hover:bg-blue-700"
                   }
                 >
-                  {svcOk ? "Confirmed" : "All services look right"}
+                  {svcOk ? "Confirmed" : "All services and coverage look right"}
                   {svcOk && (
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
                       <path d="M5 13l4 4L19 7" />
@@ -2223,13 +2538,14 @@ export function ClaimDetail({
         <CostShareBanner
           verdict={data.costShareBill.verdict}
           assumptions={bannerAssumptions}
-          overrides={data.costShareOverrides ?? null}
+          overrides={effectiveCostShareOverrides}
           recoverable={billTotals.potentialRecovery}
           correctShare={billTotals.shouldOwe}
           charged={billTotals.shouldOwe + billTotals.potentialRecovery}
           fmtMoney={fmtMoney}
           onOverride={submitCostShareOverride}
                 onConfirmDefaults={confirmAssumptionDefaults}
+                onOptimistic={(patch) => setAssumptionOptimistic((prev) => ({ ...prev, ...patch }))}
                 pendingFields={assumptionsPendingFields}
                 planIdentity={
                   planCandidates
@@ -2297,8 +2613,8 @@ export function ClaimDetail({
           className="hidden lg:grid gap-2 items-center px-5 py-3 bg-gray-50 text-[10px] font-semibold text-gray-500 uppercase tracking-[0.06em] border-b border-gray-100"
           style={{
             gridTemplateColumns: isMultiLine
-              ? "minmax(0, 1.5fr) 56px 88px 64px 64px 72px 80px 88px 40px"
-              : "minmax(0, 1.5fr) 56px 88px 64px 64px 72px 80px 88px",
+              ? "minmax(0, 1.5fr) 56px 88px 64px 64px 72px 80px 112px 40px"
+              : "minmax(0, 1.5fr) 56px 88px 64px 64px 72px 80px 112px",
           }}
         >
           <div className="min-w-0">Service</div>
@@ -2677,8 +2993,8 @@ export function ClaimDetail({
                 className={`hidden lg:grid w-full gap-2 items-start px-5 py-3.5 text-left transition-colors border-t border-gray-100 cursor-pointer ${isMultiLine && isExpanded ? "bg-blue-50/40 hover:bg-blue-50/60" : "hover:bg-gray-50"}`}
                 style={{
                   gridTemplateColumns: isMultiLine
-                    ? "minmax(0, 1.5fr) 56px 88px 64px 64px 72px 80px 88px 40px"
-                    : "minmax(0, 1.5fr) 56px 88px 64px 64px 72px 80px 88px",
+                    ? "minmax(0, 1.5fr) 56px 88px 64px 64px 72px 80px 112px 40px"
+                    : "minmax(0, 1.5fr) 56px 88px 64px 64px 72px 80px 112px",
                 }}
               >
                 <div className="min-w-0 text-sm text-gray-900">
@@ -2828,10 +3144,21 @@ export function ClaimDetail({
                     picker. UI gated on flywheelEnabled because the backend
                     endpoint requires the same flag (mig 087). */}
                 {/* S139 — flex-wrap allows "Your pick" pill to wrap below "Covered"
-                    when both present, instead of overflowing 88px column into
-                    Forgiveness cell. whitespace-nowrap on each pill prevents
-                    in-pill text wrap ("Your\npick"). */}
-                <div className="flex flex-wrap items-center justify-center gap-1.5">
+                    when both present, instead of overflowing the column into
+                    the Forgiveness cell. whitespace-nowrap on each pill prevents
+                    in-pill text wrap ("Your\npick").
+                    S304 — flex-wrap alone was not enough and this recurred: it
+                    wraps BETWEEN pills, but each pill is nowrap, and S154's
+                    "Likely Covered" (~111px with its icon) and "Verify coverage"
+                    (~103px) each exceed the old 88px track on their own, so a
+                    single pill spilled left over FORGIVENESS. Two fixes, in
+                    order of importance: `min-w-0` makes the cell a containment
+                    boundary so overflow can NEVER escape into a money column
+                    again whatever the label; the track widening to 112px (taken
+                    from Service's 1.5fr) is what keeps today's labels on one
+                    line. Containment first — sizing alone would just wait for
+                    the next longer label. */}
+                <div className="flex min-w-0 flex-wrap items-center justify-center gap-1.5">
                   {coverageBadge ? (
                     flywheelEnabled && (item.coverageStatus === "unknown" || item.coverageStatus === "not_covered" || item.user_corrected_at != null || item.coverageSource === "secondary_match" || item.coverageSource === "aca_preventive") ? (
                       <button
@@ -3362,7 +3689,10 @@ export function ClaimDetail({
           it by phone first" + 4b "Send the appeal / dispute letter" — the
           phone question concludes 4a (auto-collapse; yes carries the resolved
           date, skip goes amber) and 4b's panel activates white/grey → blue on
-          "Not yet"/skip. Flag OFF renders today's single step, byte-identical. */}
+          "Not yet"/skip. Flag OFF renders today's single step, byte-identical.
+          S302 — 4b renders ONLY while no letter exists. Once one does, the rail
+          owns its send step, so the a/b split has nothing left to split and the
+          phone step is simply step 4. */}
       {isFlagged && guidedCtx && (() => {
         const muted4b = !(
           guidedPack.outcome === "no" ||
@@ -3373,7 +3703,7 @@ export function ClaimDetail({
         return (
           <>
             <RailStep
-              n="4a"
+              n={railExtends ? "4" : "4a"}
               done={guidedPack.concluded}
               title={GUIDE_CHROME.packATitle}
               sub={GUIDE_CHROME.packAMeta}
@@ -3421,82 +3751,49 @@ export function ClaimDetail({
                 />
               </div>
             </RailStep>
-            <RailStep
-              n="4b"
-              done={hasDraftedDispute}
-              title={guidedTrack === "insurer" ? GUIDE_4B.titleInsurer : GUIDE_4B.titleProvider}
-              sub={
-                railPrimarySent && railPrimaryLetter ? (
-                  // S299 — the mock's collapsed-4b receipt (history grammar).
-                  <span className="text-[13px] font-semibold text-emerald-700">
-                    {guidedTrack === "insurer"
-                      ? CASE_RAIL.receipt4bInsurer(
-                          railTimeline?.insurerNameByDispute[railPrimaryLetter.disputeId] ?? null,
-                          fmtRailDate(railPrimaryLetter.latestSendAt!),
-                          railPrimaryLetter.mailedCertified,
-                        )
-                      : CASE_RAIL.receipt4bProvider(
-                          providerName === "Unknown Provider" ? null : providerName,
-                          fmtRailDate(railPrimaryLetter.latestSendAt!),
-                          railPrimaryLetter.mailedCertified,
-                        )}
-                  </span>
-                ) : guidedPack.outcome === "yes" ? (
-                  GUIDE_4B.subResolved
-                ) : (
-                  GUIDE_4B.sub
-                )
-              }
-              right={
-                railPrimarySent ? (
-                  <ShowFullStepButton
-                    open={fourBFullOpen}
-                    onToggle={() => setFourBFullOpen((v) => !v)}
-                  />
-                ) : undefined
-              }
-              last={!railExtends}
-            >
-              {/* Mounted-but-hidden while collapsed (the 4a idiom) — the
-                  drafted dispute cards keep their state across toggles. */}
-              <div className={railPrimarySent && !fourBFullOpen ? "hidden" : undefined}>
+            {/* 4b — the CREATE step, and only that. Everything it used to carry
+                about a letter that already exists (the send receipt, the
+                Show-full-step toggle, the bolted-on unsend, the drafted-cards
+                list, the done-state) now belongs to that letter's own rail
+                step, rendered identically to every other letter's. `done` is
+                gone rather than corrected: with no letter, there is nothing to
+                be done about.
+                S305 — it also stands down when there is nothing on this bill to
+                contest. `BulkDisputeButton` already returns null in that case
+                by its own rule, so this rendered a "Recover $X from this bill"
+                promise with no door behind it; the fix is the button's own rule
+                applied one level up, not a new one. */}
+            {!railExtends && hasContestableCharges && (
+              <RailStep
+                n="4b"
+                // KEPT, and inert by construction. `railExtends` is false only
+                // when the rail flag is OFF or no letter exists — and no letter
+                // means `hasDraftedDispute` is false — so this can evaluate true
+                // ONLY in the flag-OFF world, where it reproduces today's
+                // behaviour byte-for-byte. Deleting it would have been an
+                // un-flagged change to production. The bug it caused (green
+                // before anything was sent, still green after an unsend) dies
+                // structurally with the flip: flag ON, this step is gone the
+                // moment a letter exists, and the letter's own send step derives
+                // its state from the send record.
+                done={hasDraftedDispute}
+                title={guidedTrack === "insurer" ? GUIDE_4B.titleInsurer : GUIDE_4B.titleProvider}
+                sub={guidedPack.outcome === "yes" ? GUIDE_4B.subResolved : GUIDE_4B.sub}
+                last
+              >
                 {recoverBranchNode(muted4b)}
-              </div>
-              {/* S301 (Andrew) — unsend on the PRIMARY letter's step too. Its
-                  send step is 4b in the prep rail, never the extension rail
-                  (contributesSendStep excludes the primary), so without this the
-                  case surface offered unsend for every letter EXCEPT the main
-                  one — reachable only by opening the letter page. Same shared
-                  control, same atomic request: unsending here reopens the letter
-                  as a draft, which is exactly what clicking into it then shows. */}
-              {railPrimarySent && fourBFullOpen && railPrimaryLetter && (
-                <div className="mt-3">
-                  <UnsendControl
-                    loggedOutcomeLabel={
-                      railPrimaryLetter.outcome
-                        ? OUTCOME_LABELS[railPrimaryLetter.outcome.detail]
-                        : null
-                    }
-                    loggedOutcomeDateLabel={
-                      railPrimaryLetter.outcome?.loggedAt
-                        ? fmtRailDate(railPrimaryLetter.outcome.loggedAt)
-                        : null
-                    }
-                    onUnsend={() => handleRailMarkSent(railPrimaryLetter.disputeId, false)}
-                  />
-                </div>
-              )}
-            </RailStep>
+              </RailStep>
+            )}
           </>
         );
       })()}
-      {isFlagged && !guidedCtx && (
+      {isFlagged && !guidedCtx && !railExtends && hasContestableCharges && (
         <RailStep
           n={railStepRecover}
           done={hasDraftedDispute}
           title="Recover the money"
           sub="Call the billing office to verify the charge or send the appeal — many members do both."
-          last={!railExtends}
+          last
         >
           {/* S290 (Andrew) — recover card spans the full container: sm:-ml-[43px]
               cancels the rail body's indent so it runs from under the step badge
@@ -3507,9 +3804,16 @@ export function ClaimDetail({
       )}
       {/* S299 phase 1a — the extension rail (approved mock Panels A+B):
           per-letter waiting cards + concurrent waits + collapsed receipts,
-          rendered from the projector via rail-steps. Numbering continues the
-          prep rail (5 after the guided 4a/4b split). */}
-      {isFlagged && railExtends && railTimeline && (
+          rendered from the projector via rail-steps.
+          S302 — numbering continues the prep rail with NO gap, because the step
+          it replaces has stopped rendering: guided → phone step is 4, rail
+          starts at 5; flag-OFF guided → the rail starts AT railStepRecover,
+          whose step no longer renders once a letter exists.
+          S305 — no longer gated on `railTimeline`: a claim whose only rail
+          content is an OFFER has no projection at all (there is no case
+          timeline before the first letter), and that is exactly the claim the
+          offer exists for. `railComposed` carries everything this renders. */}
+      {isFlagged && railExtends && railComposed && (
         <>
           {railActionError && (
             <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
@@ -3525,11 +3829,8 @@ export function ClaimDetail({
             </div>
           )}
           <CaseRail
-            letters={railTimeline.letters}
-            insurerNameByDispute={railTimeline.insurerNameByDispute}
-            providerName={providerName === "Unknown Provider" ? null : providerName}
-            primaryDisputeId={railPrimaryDisputeId}
-            firstNumber={guidedCtx ? 5 : railStepRecover + 1}
+            // S303 — composed ONCE above, alongside the fold that reads it.
+            groups={railComposed.groups}
             claimId={claimId}
             getAuthToken={getAuthToken}
             onLogResponse={(id) => setRailOutcomeDisputeId(id)}
@@ -3539,6 +3840,7 @@ export function ClaimDetail({
             }}
             onUndoResult={handleRailUndoResult}
             onStartNextLetter={handleRailStartNextLetter}
+            renderOfferAction={renderOfferAction}
             escalating={railEscalating}
             // S301 — collections step state + the §1692g anchor ride the
             // PROJECTION (ProjectedLetterStep.collectionsSteps /
@@ -3550,6 +3852,7 @@ export function ClaimDetail({
           />
         </>
       )}
+      </div>{/* /S302 resolved-fold collapse wrapper */}
       {/* S299 — the rail's inline-action modals: the dispute page's OWN
           components mounted here (one modal source; zero new UI machinery).
           Open state is settable only from the rail, so flag-OFF renders
@@ -3719,6 +4022,7 @@ export function ClaimDetail({
               primaryLineItems={primaryLineItems}
               claimLevelFindings={visibleClaimLevelFindings}
               showDismissed={showDismissed}
+              letterType={fallbackLetterType}
               getAuthToken={getAuthToken}
               onGenerated={(result) => router.push(disputeUrlForResult(result))}
               existingDisputeId={data.disputes.find((d) => d.status !== "cancelled")?.id ?? null}
@@ -3739,6 +4043,7 @@ export function ClaimDetail({
           primaryLineItems={primaryLineItems}
           claimLevelFindings={visibleClaimLevelFindings}
           showDismissed={showDismissed}
+          letterType={fallbackLetterType}
           getAuthToken={getAuthToken}
           onGenerated={(result) => router.push(disputeUrlForResult(result))}
           existingDisputeId={data.disputes.find((d) => d.status !== "cancelled")?.id ?? null}
@@ -4076,45 +4381,101 @@ function lineGapFindingKind(li: LineItem): "mystery" | "recovery" | null {
   return isMysteryGap ? "mystery" : hasRecoveryStory ? "recovery" : null;
 }
 
-/** Every actionable finding type the bulk-dispute path would bundle,
- *  including the synthesized missing_adjustment gap findings. */
-function collectActionableFindingTypes(
+/** One contested charge in the bulk-dispute bundle, keyed to its line. */
+interface DisputeEntry {
+  lineItemId: string;
+  lineNumber: number;
+  finding: AuditFinding;
+  billedAmount: number;
+}
+
+/**
+ * THE bulk-dispute bundle: everything on this bill worth contesting, in three
+ * buckets, from one walk (S305).
+ *
+ *  1. line-level actionable findings, keyed back to their owning line
+ *  2. claim-level actionable findings (lineItems=[], e.g. unallocated_balance)
+ *  3. gap lines — a synthesized `missing_adjustment` for lines no audit rule
+ *     fired on, so the bundle covers them too
+ *
+ * ⚠ The `not_covered` skip that used to sit in bucket 3 is GONE, not moved:
+ * `lineGapFindingKind` already returns null for those lines, so the guard could
+ * never fire. Keeping a redundant copy of a rule is how the two versions of it
+ * eventually disagree.
+ */
+function collectDisputeEntries(
   lineItems: LineItem[],
   claimFindings: ClaimLevelFindingMeta[],
   showDismissed: boolean,
-): string[] {
-  const types: string[] = [];
-  const linesWithReal = new Set<string>();
+): { lineEntries: DisputeEntry[]; claimActionable: ClaimLevelFindingMeta[]; gapEntries: DisputeEntry[] } {
+  const lineEntries: DisputeEntry[] = [];
   for (const li of lineItems) {
     const all = (li.metadata?.auditFindings || []) as AuditFinding[];
     const live = showDismissed ? all : all.filter((f) => !f.dismissed);
     for (const f of live) {
       if (!f.actionable) continue;
-      types.push(f.type);
-      linesWithReal.add(li.id);
+      lineEntries.push({
+        lineItemId: li.id,
+        lineNumber: li.line_number,
+        finding: f,
+        billedAmount: li.billed_amount || 0,
+      });
     }
   }
-  for (const f of claimFindings) {
-    if (!f.dismissed && f.actionable) types.push(f.type);
-  }
-  for (const li of lineItems) {
-    if (linesWithReal.has(li.id)) continue;
-    if (lineGapFindingKind(li) != null) types.push("missing_adjustment");
-  }
-  return types;
-}
 
-/** Dominant type wins; mixed falls back to insurance_appeal (was inline in
- *  BulkDisputeButton pre-S297). */
-function letterTypeHintFromTypes(types: string[]): string {
-  const counts = new Map<string, number>();
-  for (const t of types) counts.set(t, (counts.get(t) ?? 0) + 1);
-  const dominantType = Array.from(counts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
-  if (!dominantType) return "insurance_appeal";
-  if (dominantType === "balance_billing") return "balance_billing";
-  if (dominantType === "duplicate") return "duplicate_charge";
-  if (dominantType === "overcharge") return "overcharge";
-  return "insurance_appeal";
+  const claimActionable = claimFindings.filter((f) => !f.dismissed && f.actionable);
+
+  // Gap lines — two shapes:
+  //   a. Mystery gap: billed > 0 + $0 insurance + $0 patient. No money moved
+  //      despite a charge; the universal "help me dispute" case.
+  //   b. Recovery story: the insurer under-paid relative to plan benefits and
+  //      the recovery math computed refund/forgiveness ≥ $1. Mirrors the
+  //      row-expansion render gate — whenever the row shows the "Your insurer
+  //      should have paid X" panel, the bundle must surface the same finding.
+  // Lines that already carry a real audit finding are skipped so the same
+  // dollar value is never counted twice. The verdict-driven vs deductible-blind
+  // decision lives entirely in `lineGapFindingKind` (S297).
+  const linesWithRealFindings = new Set(lineEntries.map((e) => e.lineItemId));
+  const gapEntries: DisputeEntry[] = [];
+  for (const li of lineItems) {
+    if (linesWithRealFindings.has(li.id)) continue;
+    const gapKind = lineGapFindingKind(li);
+    if (gapKind == null) continue;
+    const billed = li.billed_amount || 0;
+    const ins = li.insurance_paid || 0;
+    const serviceLabel = li.description || li.service_slug?.replace(/_/g, " ") || "service";
+    let title: string;
+    let description: string;
+    let estimatedOvercharge: number;
+    if (gapKind === "mystery") {
+      title = `Unexplained $${billed.toLocaleString()} charge for ${serviceLabel}`;
+      description = `Service ${li.coverageStatus === "covered" ? "covered by plan" : "with no coverage data"} but EOB records $0 insurance payment and $0 patient responsibility. Provider billed $${billed.toLocaleString()}. Code: ${li.billing_code || "N/A"}.`;
+      estimatedOvercharge = billed;
+    } else {
+      const recoveryAmount = (li.recovery?.refundComponent ?? 0) + (li.recovery?.forgivenessComponent ?? 0);
+      const patientPaid = li.recovery?.patientPaid ?? li.patient_paid_amount ?? 0;
+      const shouldOwe = li.recovery?.shouldOwe ?? 0;
+      title = `Insurer under-paid $${recoveryAmount.toLocaleString()} for ${serviceLabel}`;
+      description = `Service covered by plan. Insurance paid $${ins.toLocaleString()} on a $${billed.toLocaleString()} charge; patient paid $${patientPaid.toLocaleString()} out-of-pocket. Plan-stated patient cost-share: $${shouldOwe.toLocaleString()}. Code: ${li.billing_code || "N/A"}.`;
+      estimatedOvercharge = recoveryAmount;
+    }
+    gapEntries.push({
+      lineItemId: li.id,
+      lineNumber: li.line_number,
+      finding: {
+        id: `gap-${li.id}`,
+        type: "missing_adjustment",
+        severity: "high",
+        estimatedOvercharge,
+        title,
+        actionable: true,
+        description,
+      },
+      billedAmount: billed,
+    });
+  }
+
+  return { lineEntries, claimActionable, gapEntries };
 }
 
 /** "Covered · 0% coinsurance" → "covered with 0% coinsurance" — the plan-says
@@ -4682,6 +5043,7 @@ function BulkDisputeButton({
   primaryLineItems,
   claimLevelFindings,
   showDismissed,
+  letterType,
   getAuthToken,
   onGenerated,
   existingDisputeId,
@@ -4693,6 +5055,16 @@ function BulkDisputeButton({
   primaryLineItems: LineItem[];
   claimLevelFindings: ClaimLevelFindingMeta[];
   showDismissed: boolean;
+  /**
+   * The template this button drafts — REQUIRED (S305).
+   *
+   * It used to derive its own from the dominant finding type, which was fine
+   * while a bill produced one letter and nothing else needed the answer. Now
+   * the rail offers a rung per obligated party and each one drafts a different
+   * letter, so the caller decides and this component writes what it is told.
+   * That also collapses the two callers of `letterTypeHintFromTypes` to one.
+   */
+  letterType: string;
   getAuthToken: () => Promise<string | null>;
   onGenerated: (result: { disputeId?: string | null; deduplicated?: boolean }) => void;
   existingDisputeId?: string | null;
@@ -4723,94 +5095,15 @@ function BulkDisputeButton({
   const pinningFlagRef = useRef<boolean | null>(null);
   const preparingRef = useRef(false);
 
-  // 1. Per-line actionable findings keyed back to their owning line item.
-  const lineLevelActionable: Array<{ lineItemId: string; lineNumber: number; finding: AuditFinding; billedAmount: number }> = [];
-  for (const li of primaryLineItems) {
-    const all = ((li.metadata?.auditFindings || []) as AuditFinding[]);
-    const live = showDismissed ? all : all.filter((f) => !f.dismissed);
-    for (const f of live) {
-      if (!f.actionable) continue;
-      lineLevelActionable.push({
-        lineItemId: li.id,
-        lineNumber: li.line_number,
-        finding: f,
-        billedAmount: li.billed_amount || 0,
-      });
-    }
-  }
-
-  // 2. Claim-level actionable un-dismissed findings.
-  const claimActionable = claimLevelFindings.filter((f) => !f.dismissed && f.actionable);
-
-  // 3. Gap lines — synthesize a missing_adjustment finding so the bulk
-  //    dispute bundle can cover lines no audit rule fired on. Two shapes:
-  //      a. Mystery gap: billed > 0 + $0 insurance + $0 patient. No money
-  //         moved despite a charge; universal "help me dispute" case.
-  //      b. Recovery story: insurer under-paid relative to plan benefits and
-  //         the recovery-math computed refund/forgiveness ≥ $1. Mirrors the
-  //         row-expansion render gate at line 1210-1212 — whenever the row
-  //         shows the green/red "Your insurer should have paid X" panel, the
-  //         bulk dispute button must surface the same finding. Previously
-  //         only (a) qualified, which silently hid the dispute CTA on the
-  //         common "insurer paid $0 + you paid OOP" pattern.
-  //    Skip lines that already have a real audit finding (avoid double-
-  //    counting the same dollar value) and skip explicitly not-covered lines.
-  const linesWithRealFindings = new Set(lineLevelActionable.map((e) => e.lineItemId));
-  const gapSynthetic: Array<{ lineItemId: string; lineNumber: number; finding: AuditFinding; billedAmount: number }> = [];
-  for (const li of primaryLineItems) {
-    if (linesWithRealFindings.has(li.id)) continue;
-    if (li.coverageStatus === "not_covered") continue;
-    const billed = li.billed_amount || 0;
-    const ins = li.insurance_paid || 0;
-    const refund = li.recovery?.refundComponent ?? 0;
-    const forgiveness = li.recovery?.forgivenessComponent ?? 0;
-    // Cost-Share v2 (S214) — when the engine ran (verdict present), the dispute
-    // synthesis is VERDICT-DRIVEN: only a 'recovery' verdict surfaces a finding,
-    // and it uses the engine's refund+forgiveness (the recovery-story branch
-    // below), never the deductible-blind gross-billed isMysteryGap amount. Every
-    // other verdict (correct/confident/not_covered/insufficient) is suppressed —
-    // the engine-fed recovery block already corrects the ~10 display surfaces.
-    // OFF (verdict absent) = today's deductible-blind logic, verbatim.
-    // S297 — gate extracted to lineGapFindingKind (shared with the guided-steps
-    // track derivation; one derivation).
-    const gapKind = lineGapFindingKind(li);
-    if (gapKind == null) continue;
-    const isMysteryGap = gapKind === "mystery";
-
-    const syntheticId = `gap-${li.id}`;
-    const serviceLabel = li.description || li.service_slug?.replace(/_/g, " ") || "service";
-    let title: string;
-    let description: string;
-    let estimatedOvercharge: number;
-    if (isMysteryGap) {
-      title = `Unexplained $${billed.toLocaleString()} charge for ${serviceLabel}`;
-      description = `Service ${li.coverageStatus === "covered" ? "covered by plan" : "with no coverage data"} but EOB records $0 insurance payment and $0 patient responsibility. Provider billed $${billed.toLocaleString()}. Code: ${li.billing_code || "N/A"}.`;
-      estimatedOvercharge = billed;
-    } else {
-      const recoveryAmount = refund + forgiveness;
-      const patientPaid = li.recovery?.patientPaid ?? li.patient_paid_amount ?? 0;
-      const shouldOwe = li.recovery?.shouldOwe ?? 0;
-      title = `Insurer under-paid $${recoveryAmount.toLocaleString()} for ${serviceLabel}`;
-      description = `Service covered by plan. Insurance paid $${ins.toLocaleString()} on a $${billed.toLocaleString()} charge; patient paid $${patientPaid.toLocaleString()} out-of-pocket. Plan-stated patient cost-share: $${shouldOwe.toLocaleString()}. Code: ${li.billing_code || "N/A"}.`;
-      estimatedOvercharge = recoveryAmount;
-    }
-    gapSynthetic.push({
-      lineItemId: li.id,
-      lineNumber: li.line_number,
-      finding: {
-        id: syntheticId,
-        type: "missing_adjustment",
-        severity: "high",
-        estimatedOvercharge,
-        title,
-        actionable: true,
-        description,
-      },
-      billedAmount: billed,
-    });
-  }
-
-  const aggregated = [...lineLevelActionable, ...gapSynthetic];
+  // S305 — the three buckets come from the SHARED builder, which the letter-type
+  // fallback and the rung derivation read too. Two walks of the same data is how
+  // "how many issues are there" and "which issues are bundled" drift apart.
+  const { lineEntries, claimActionable, gapEntries } = collectDisputeEntries(
+    primaryLineItems,
+    claimLevelFindings,
+    showDismissed,
+  );
+  const aggregated = [...lineEntries, ...gapEntries];
   const totalContested = aggregated.length + claimActionable.length;
 
   // S132 Item 3: short-circuit when a non-cancelled dispute already exists.
@@ -4839,15 +5132,6 @@ function BulkDisputeButton({
   // totalRecoverable removed Session 86 round 6 — button label is action-only
   // (no specific dollar promise). Recovery info stays visible as DATA in the
   // table column + amber finding card, not as a CTA promise.
-
-  // Letter type: dominant type wins; mixed falls back to insurance_appeal.
-  // S297 — extracted to letterTypeHintFromTypes, shared with the guided-steps
-  // track derivation (one derivation; the subflow's call order and the drafted
-  // letter's recipient can never disagree).
-  const letterTypeHint = letterTypeHintFromTypes([
-    ...aggregated.map((e) => e.finding.type),
-    ...claimActionable.map((f) => f.type),
-  ]);
 
   async function submitDispute(pinnedPlanId?: string) {
     if (loading) return;
@@ -4917,7 +5201,7 @@ function BulkDisputeButton({
         body: JSON.stringify({
           auditReport,
           findingIds: allFindings.map((f) => f.id),
-          letterType: letterTypeHint,
+          letterType,
           claimId,
           claimLineItemIds: distinctLineItemIds,
           insurancePlanId: pinnedPlanId,
@@ -5029,7 +5313,13 @@ function BulkDisputeButton({
           size === "xl"
             ? "flex w-full items-center justify-center gap-2 rounded-[14px] bg-blue-600 px-6 py-3.5 text-[15px] font-semibold text-white shadow-[0_0_20px_hsla(217,91%,60%,0.15)] transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow-[0_0_24px_hsla(217,91%,60%,0.25)] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0"
             : muted
-              ? "inline-flex items-center gap-1.5 rounded-xl bg-gray-200 px-4 py-[9px] text-[13px] font-semibold text-gray-500 transition-colors hover:bg-gray-300 disabled:cursor-not-allowed disabled:opacity-50"
+              // S304 (Andrew) — the muted variant was grey fill on grey text,
+              // which reads as DISABLED on a button that is fully clickable.
+              // De-emphasis should come from weight, not from looking broken:
+              // outlined blue on white, the same treatment "Upload another bill"
+              // already uses on this page, so it still sits below the filled
+              // primary CTA without pretending to be unavailable.
+              ? "inline-flex items-center gap-1.5 rounded-xl border border-blue-600 bg-white px-4 py-[9px] text-[13px] font-semibold text-blue-700 transition-all hover:-translate-y-px hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0"
               : "inline-flex items-center gap-1.5 rounded-xl bg-blue-600 px-4 py-[9px] text-[13px] font-semibold text-white shadow-[0_0_20px_hsla(217,91%,60%,0.15)] transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow-[0_0_24px_hsla(217,91%,60%,0.25)] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0"
         }
       >

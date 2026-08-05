@@ -10,7 +10,10 @@
  * Gates (checkEscalateGate — same posture as /api/disputes/generate, so escalate
  * can't be a laxer bypass): allowlist (only the 3 ladder types) · tier
  * (final_notice/external_review = Pro; debt_validation free) · exhaustion
- * (external_review requires an attested final internal denial).
+ * (external_review requires an attested final internal denial) · S303
+ * rung-already-taken (409 when a letter of the target type is already on the
+ * claim — persistDisputeLetter's dedupe excludes resolved rows by design, so
+ * without this a stale client can insert a second letter on an exhausted rung).
  *
  * Auth: Firebase bearer token; verifies the user owns the SOURCE dispute.
  * Returns: { success, disputeId } — the new (or dedup-updated) dispute to open.
@@ -24,6 +27,8 @@ import { resolveEvidence } from "@/lib/disputes/evidence-resolver";
 import { rerenderDisputeLetter } from "@/lib/disputes/rerender";
 import { persistDisputeLetter } from "@/lib/disputes/persist";
 import { checkEscalateGate } from "@/lib/disputes/escalate-gate";
+import { resolveLetterTypeFromDispute } from "@/lib/disputes/letter-type";
+import type { CaseLetterRef } from "@/lib/disputes/outcome-taxonomy";
 import { evaluateDeadline, readDeadlineConfig } from "@/lib/disputes/deadline-engine";
 import { loadServerSubscription } from "@/lib/subscription/server";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
@@ -94,12 +99,33 @@ export async function POST(
     return NextResponse.json({ error: "Dispute has no linked claim" }, { status: 400 });
   }
 
-  // Gate — allowlist + tier + exhaustion (fail-closed; same posture as generate).
+  // S303 — every letter already on this claim, for the rung-taken gate below.
+  // Same letter-type resolver the projector and the GET's `siblings` use, so
+  // the gate cannot judge a letter's type differently from the surfaces that
+  // decided whether to offer the escalation.
+  const { data: siblingRows } = await userScoped(supabase, user.id)
+    .table("dispute_outcomes")
+    .select("id, dispute_type, status, metadata")
+    .eq("claim_id", dispute.claim_id);
+  const caseLetters: CaseLetterRef[] = ((siblingRows ?? []) as Array<Record<string, unknown>>).map(
+    (r) => ({
+      disputeId: r.id as string,
+      letterType: resolveLetterTypeFromDispute(
+        r as { dispute_type: string; metadata?: Record<string, unknown> | null },
+      ),
+      status: (r.status as string | null) ?? null,
+    }),
+  );
+
+  // Gate — allowlist + tier + exhaustion + rung-already-taken (fail-closed;
+  // same posture as generate).
   const subscription = await loadServerSubscription(supabase, user.id);
   const gate = checkEscalateGate({
     targetLetterType,
     isPro: subscription.isPro,
     appealExhausted,
+    caseLetters,
+    sourceDisputeId: dispute.id as string,
   });
   if (!gate.ok) {
     return NextResponse.json(

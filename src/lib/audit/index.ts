@@ -138,6 +138,9 @@ export async function runAudit(
       title: f.title,
       description: f.description,
       benchmarkSource: f.benchmarkSource,
+      // S304 — carried so the dispute letter can state the arithmetic without
+      // re-deriving it (see AuditFinding.arithmeticGap).
+      arithmeticGap: f.arithmeticGap,
       actionable: f.actionable,
     }));
 

@@ -76,6 +76,7 @@ function citeEffective(lines: Array<Record<string, unknown>>) {
       total_insurance_adjusted: sum("insurance_adjusted_amount"),
       total_patient_responsibility: sum("patient_owes"),
     },
+    userTotalsSource: null,
     lineItems: lines,
   });
 }

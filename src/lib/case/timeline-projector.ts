@@ -14,10 +14,15 @@
  * Parity contract (Phase-0 gate) — reproduces byte-for-byte the derivations
  * today's surfaces display:
  *   - stage:            computeCaseStage(status, !!sent_at, hasNextStep)
- *                       where hasNextStep mirrors the dispute page (S266):
- *                       isOutcomeDetail(metadata.outcomeDetail)
- *                         ? suggestNextStep(letterType, outcomeDetail) != null
- *                         : false
+ *                       ⚠ S303 CHANGED THIS, deliberately and with the diffs
+ *                       recorded (scripts/case-timeline-dev-parity.ts header).
+ *                       hasNextStep is no longer "does the ladder offer a rung"
+ *                       — it is nextRungStillOpen: the ladder offers one AND no
+ *                       other live letter on the claim already IS it. The old
+ *                       reading left every escalated-to-the-end case stuck at
+ *                       `next` forever, so it could never resolve and the rail
+ *                       could never fold. The dispute page runs the same shared
+ *                       rule, so the two surfaces still agree by construction.
  *   - responseDueDate:  governing_deadline_date ?? sent_at + 30d (date-only)
  *                       — persist.ts getUserDisputes, verbatim semantics
  *   - sentLetterMeta:   deriveSentLetterMeta (use-claim-pipeline) semantics —
@@ -37,12 +42,12 @@ import {
 } from "@/lib/disputes/case-stage";
 import {
   isOutcomeDetail,
-  suggestNextStep,
+  nextRungStillOpen,
+  type CaseLetterRef,
   type OutcomeDetail,
 } from "@/lib/disputes/outcome-taxonomy";
 import { letterRecipientKind, type LetterRecipientKind } from "@/lib/disputes";
 import { resolveLetterTypeFromDispute } from "@/lib/disputes/letter-type";
-import type { DisputeLetterType } from "@/lib/billing/types";
 import type { CaseEventKind, CaseEventActor } from "@/lib/case/case-events";
 
 // ── Inputs (narrow row projections — callers select these columns) ──────────
@@ -59,6 +64,10 @@ export interface ProjectorDisputeRow {
   governing_deadline_date: string | null;
   deadline_type: string | null;
   metadata: Record<string, unknown> | null;
+  /** S302 — what the user logged as recovered on this letter; the resolved
+   *  fold sums it across the case. NUMERIC comes back as a number or a
+   *  string depending on the driver, so consumers coerce. */
+  amount_recovered?: number | string | null;
 }
 
 export interface ProjectorClaimRow {
@@ -144,13 +153,20 @@ export interface ProjectedLetterStep {
    * `hasFirstContactDate` into the collections_reported event from this value).
    */
   collectorFirstContactDate: string | null;
-  /** Dispute-side "Mail it certified" attest (metadata.checklist.mailcert === true). */
+  /**
+   * Dispute-side "Mail it certified" attest (metadata.checklist.mailcert === true).
+   * Genuinely per-letter — each letter is mailed on its own. Contrast the
+   * regulator complaint, which is an act against the BILL and therefore lives
+   * on the case (see {@link ProjectedCaseTimeline.regulator}).
+   */
   mailedCertified: boolean;
-  /** Pack-D filed attest (metadata.checklist["packD:filed"]) — S299 phase 1b. */
-  regulatorFiled: boolean;
-  /** Its confirmation note (metadata.checklistNotes["packD:filed"]); null when empty. */
-  regulatorFiledNote: string | null;
   outcome: { detail: OutcomeDetail; status: string; loggedAt: string | null } | null;
+  /**
+   * S302 — dollars this letter recovered, as the user logged them. Null when
+   * unlogged or unparseable; NEVER 0-as-unknown, so the resolved fold can tell
+   * "recovered nothing" from "never said".
+   */
+  amountRecovered: number | null;
 }
 
 export interface ProjectedSentLetterMeta {
@@ -158,6 +174,79 @@ export interface ProjectedSentLetterMeta {
   daysRemaining: number | null;
   amber: boolean;
 }
+
+/** One attested regulator filing: which agency, about which letter, when. */
+export interface ProjectedRegulatorFiling {
+  /** COMPLAINT_DOORS id — doi / ag / cfpb / cms. */
+  doorId: string;
+  /** The letter whose outcome this complaint was filed in response to. */
+  disputeId: string;
+  filedAt: string;
+  /** The confirmation number the agency handed back. */
+  note: string | null;
+}
+
+/**
+ * The regulator complaints on a case (S303, Andrew).
+ *
+ * ⚠ Read the scoping carefully, because it is split deliberately:
+ *
+ *   The NUMBERS are linked; the BEHAVIOUR is per letter.
+ *
+ * A complaint is filed in response to ONE letter's outcome — a denied appeal
+ * and a collector refusing to validate are two wrongs by two parties, and
+ * answering the first does not answer the second. So each filing carries the
+ * letter it was made about, and "have I taken my next move on THIS letter" is
+ * asked again for every letter. What is shared is the RECORD: a confirmation
+ * number logged on the appeal is visible on every later card, marked as
+ * belonging to that earlier letter, so the user can see it and still file
+ * again if the new wrong warrants it.
+ *
+ * What was actually broken before S303 (the scope was not): one bare boolean
+ * per dispute stood for four possible agencies, so "filed" could not say with
+ * WHOM; the three cards rendered the same question with no letter attribution
+ * and different answers; and the declination did not persist at all.
+ *
+ * Everything lives in `claims.metadata.guideSteps` with the letter in the key,
+ * rather than on the dispute checklist which is letter-scoped by nature. That
+ * store holds BARE BOOLEANS — no timestamps, no skip, no note versioning — so
+ * building there would mean porting all three onto it, i.e. growing a second
+ * attestation store with parallel features. One store, one set of guarantees:
+ * server-stamped times, `checkedAt`/`skippedAt` mutually exclusive on write,
+ * `noteHistory` banking, and ledger events, all already built.
+ *
+ * No migration: Pack D has never shipped to production.
+ */
+export interface ProjectedRegulatorComplaint {
+  /** Every filing on the case, ascending by filedAt (ties stable by key). */
+  filings: ProjectedRegulatorFiling[];
+  /**
+   * disputeId → when the user declined to file about THAT letter. Per letter,
+   * so declining on the collector cannot touch what was recorded against the
+   * appeal. Deliberately never a flavour of filed (S297 §3.2): these
+   * attestations feed the recital and the flywheel, so "I chose not to" and
+   * "I did" must stay distinguishable in the DATA, not just in the colour.
+   */
+  declinedByDispute: Record<string, string>;
+}
+
+/**
+ * The regulator record's ZERO VALUE — "nothing filed, nothing declined".
+ *
+ * S305. `loadCaseProjection` returns null for a claim with no letters, by
+ * design: there is no case timeline before a case exists. But the rail can now
+ * carry a letter that has NOT been written yet (a parallel-track offer), and
+ * that rung must render on exactly those letterless claims. Rather than force a
+ * projection into existence for a case that hasn't started — or let the caller
+ * hand-roll an empty — the type owns its own zero, defined once, here.
+ *
+ * Provably inert where it is used: `regulator` is read only inside a letter's
+ * steps, and this value is passed only when there are no letters.
+ */
+export const EMPTY_PROJECTED_REGULATOR: ProjectedRegulatorComplaint = {
+  filings: [],
+  declinedByDispute: {},
+};
 
 export interface ProjectedCaseTimeline {
   claimId: string;
@@ -169,6 +258,13 @@ export interface ProjectedCaseTimeline {
   soonestResponseDue: { date: string; disputeId: string } | null;
   /** Parity-exact fold of deriveSentLetterMeta (null when nothing sent). */
   sentLetterMeta: ProjectedSentLetterMeta | null;
+  /**
+   * S303 — the case-level regulator complaint. NEVER null: an empty record is
+   * "nothing filed yet", which readers must handle anyway, so a nullable field
+   * would only add a second way to say the same thing (S301: an optional field
+   * is what lets a gap compile).
+   */
+  regulator: ProjectedRegulatorComplaint;
   /** Merged history: stored events ∪ row synthesis, deduped, ascending. */
   history: ProjectedHistoryEntry[];
 }
@@ -343,6 +439,7 @@ export function deriveResponseDueDate(d: ProjectorDisputeRow): string | null {
 function projectLetterStep(
   d: ProjectorDisputeRow,
   claimGuideSteps: Record<string, { checkedAt?: string | null; skippedAt?: string | null; note?: string }>,
+  caseLetters: CaseLetterRef[],
 ): ProjectedLetterStep {
   const meta = d.metadata ?? {};
   const letterType = resolveLetterType(d);
@@ -351,11 +448,17 @@ function projectLetterStep(
     typeof meta.outcomeDetail === "string" && isOutcomeDetail(meta.outcomeDetail)
       ? meta.outcomeDetail
       : null;
-  // Dispute page (S266): the escalate CTA exists only once an outcome is
-  // logged and the taxonomy offers a next rung for this letter type.
-  const hasNextStep = outcomeDetail
-    ? suggestNextStep(letterType as DisputeLetterType, outcomeDetail) != null
-    : false;
+  // S303 — a rung STILL TO TAKE, not merely one the ladder offers. Asking the
+  // weaker question left every escalated-to-the-end case stuck at `next`
+  // forever, so it could never resolve and the rail could never fold. The rule
+  // lives in the taxonomy because three surfaces ask it; see nextRungStillOpen.
+  const hasNextStep =
+    nextRungStillOpen({
+      disputeId: d.id,
+      letterType,
+      outcomeDetail,
+      caseLetters,
+    }) != null;
   const collector = meta.collector as { name?: unknown } | null | undefined;
   const checklist = meta.checklist as Record<string, unknown> | null | undefined;
   return {
@@ -405,12 +508,6 @@ function projectLetterStep(
         ? meta.collectorFirstContactDate
         : null,
     mailedCertified: checklist != null && checklist.mailcert === true,
-    regulatorFiled: checklist != null && checklist["packD:filed"] === true,
-    regulatorFiledNote: (() => {
-      const notes = meta.checklistNotes as Record<string, unknown> | null | undefined;
-      const n = notes?.["packD:filed"];
-      return typeof n === "string" && n.length > 0 ? n : null;
-    })(),
     outcome: outcomeDetail
       ? {
           detail: outcomeDetail,
@@ -419,7 +516,97 @@ function projectLetterStep(
             typeof meta.outcomeReportedAt === "string" ? meta.outcomeReportedAt : null,
         }
       : null,
+    amountRecovered: coerceAmount(d.amount_recovered),
   };
+}
+
+/**
+ * `packD:filed:<disputeId>:<doorId>` — one attested filing, per agency, per
+ * letter. `packD:skip:<disputeId>` — that letter's declination.
+ *
+ * BUILT here, not spelled out at the call sites: the rail WRITES these keys
+ * and the projector READS them, and two string literals a file apart is
+ * exactly how the packC:first-contact defect happened (the writer stamped one
+ * field, the reader keyed on another, and the step looked answered forever).
+ *
+ * Both stay inside the route's key rules — 53 and 47 characters against a cap
+ * of 64, and every character is in its allowed set.
+ */
+export const REGULATOR_FILING_PREFIX = "packD:filed:";
+export const REGULATOR_SKIP_PREFIX = "packD:skip:";
+
+export function regulatorFilingStepId(disputeId: string, doorId: string): string {
+  return `${REGULATOR_FILING_PREFIX}${disputeId}:${doorId}`;
+}
+export function regulatorSkipStepId(disputeId: string): string {
+  return `${REGULATOR_SKIP_PREFIX}${disputeId}`;
+}
+
+/**
+ * The case's regulator complaints, read from the claim's guided steps.
+ *
+ * Prefix-scanned rather than matched against the door registry, for the same
+ * reason the collections steps are (`packC:`): the projector stays free of the
+ * guides registry, and a door added there needs no change here.
+ *
+ * Keys for letters that no longer exist (a withdrawn dispute) are simply never
+ * matched by any rendered letter — cancelled rows are filtered out of the
+ * projection upstream, so an orphan key is inert rather than wrong.
+ */
+function projectRegulatorComplaint(
+  claimGuideSteps: Record<
+    string,
+    { checkedAt?: string | null; skippedAt?: string | null; note?: string }
+  >,
+): ProjectedRegulatorComplaint {
+  const filings: ProjectedRegulatorFiling[] = [];
+  const declinedByDispute: Record<string, string> = {};
+
+  for (const [stepId, row] of Object.entries(claimGuideSteps)) {
+    if (stepId.startsWith(REGULATOR_FILING_PREFIX)) {
+      // `packD:filed:<disputeId>:<doorId>` — exactly four segments. A
+      // three-segment key is the pre-S303 claim-wide shape and is ignored
+      // rather than guessed at.
+      const parts = stepId.split(":");
+      if (parts.length !== 4) continue;
+      const [, , disputeId, doorId] = parts;
+      if (!disputeId || !doorId) continue;
+      // A filing is the ATTESTATION, never the note: a confirmation number
+      // typed and not confirmed is not a filing (S301 — a step whose done-ness
+      // comes from a field nothing stamps looks answered forever).
+      if (typeof row?.checkedAt !== "string" || row.checkedAt.length === 0) continue;
+      filings.push({
+        doorId,
+        disputeId,
+        filedAt: row.checkedAt,
+        note: typeof row.note === "string" && row.note.length > 0 ? row.note : null,
+      });
+      continue;
+    }
+    if (stepId.startsWith(REGULATOR_SKIP_PREFIX)) {
+      const disputeId = stepId.slice(REGULATOR_SKIP_PREFIX.length);
+      if (disputeId.length === 0) continue;
+      if (typeof row?.skippedAt !== "string" || row.skippedAt.length === 0) continue;
+      declinedByDispute[disputeId] = row.skippedAt;
+    }
+  }
+
+  filings.sort(
+    (a, b) =>
+      normalizeTs(a.filedAt) - normalizeTs(b.filedAt) ||
+      a.doorId.localeCompare(b.doorId),
+  );
+  return { filings, declinedByDispute };
+}
+
+/** NUMERIC → number. Null/absent/NaN → null (never a silent 0). */
+function coerceAmount(v: number | string | null | undefined): number | null {
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (typeof v === "string" && v.trim() !== "") {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
 }
 
 // ── The projector ───────────────────────────────────────────────────────────
@@ -464,8 +651,17 @@ export function projectCaseTimeline(input: ProjectTimelineInput): ProjectedCaseT
     ((input.claim.metadata ?? {}).guideSteps as
       | Record<string, { checkedAt?: string | null; skippedAt?: string | null; note?: string }>
       | undefined) ?? {};
+  // The open-rung test needs every letter on the case. Both facts it reads —
+  // render letter type and coarse status — are on the raw rows, so this is
+  // computed ONCE before the map rather than as a second pass that would have
+  // to recompute stages it had already produced.
+  const caseLetters: CaseLetterRef[] = claimDisputes.map((d) => ({
+    disputeId: d.id,
+    letterType: resolveLetterType(d),
+    status: d.status,
+  }));
   const letters = claimDisputes
-    .map((d) => projectLetterStep(d, claimGuideSteps))
+    .map((d) => projectLetterStep(d, claimGuideSteps, caseLetters))
     .sort(
       (a, b) =>
         normalizeTs(a.startAt) - normalizeTs(b.startAt) ||
@@ -495,6 +691,7 @@ export function projectCaseTimeline(input: ProjectTimelineInput): ProjectedCaseT
       ? { date: soonest.responseDueDate!, disputeId: soonest.disputeId }
       : null,
     sentLetterMeta: deriveSentLetterMetaParity(claimDisputes, now, amberDays),
+    regulator: projectRegulatorComplaint(claimGuideSteps),
     history,
   };
 }

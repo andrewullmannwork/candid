@@ -16,12 +16,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { userScoped, selectOwnedChildren } from "@/lib/security/user-scoped";
-import {
-  resolvePlanContext,
-  resolveCollectorContact,
-  type InsurerAddressOverride,
-} from "@/lib/disputes/plan-context";
-import { resolveEvidence } from "@/lib/disputes/evidence-resolver";
+import { resolveCollectorContact } from "@/lib/disputes/plan-context";
 import {
   readUserPatientPaidOverride,
   readServicesConfirmedAt,
@@ -30,14 +25,10 @@ import {
   loadDisputeLineResolutions,
   type DisputeLineResolution,
 } from "@/lib/disputes/dispute-ground-basis";
-import {
-  computeDisputeStrength,
-  loadStrengthConfig,
-  type StrengthResult,
-} from "@/lib/disputes/strength-scoring";
-import { resolveAccountName } from "@/lib/disputes/rerender";
+import type { StrengthResult } from "@/lib/disputes/strength-scoring";
 import { letterRecipientKind } from "@/lib/disputes";
 import { resolveLetterTypeFromDispute } from "@/lib/disputes/letter-type";
+import { resolveDisputeReadiness } from "@/lib/disputes/dispute-readiness";
 import {
   captureCoverageSnapshot,
   diffCoverageSnapshots,
@@ -305,6 +296,18 @@ export async function GET(
   // the dispute was drafted.
   let planContext = null;
   let evidence = null;
+  // S302 — the shared readiness bundle (plan context + evidence + patient
+  // identity + strength), resolved ONCE for this request.
+  //
+  // Called UNCONDITIONALLY, outside the claim-linked block below: the identity
+  // half (account name, name compare) does not need a claim, and nesting it
+  // would have quietly emptied "Attesting as" for a legacy dispute with no
+  // claim link. The resolver guards the claim-dependent half internally.
+  const readiness = await resolveDisputeReadiness(supabase, {
+    userId: user.id,
+    dispute,
+    lineItemIds: allLineItemIds,
+  });
   let regeneratedLetterContent: string | null = null;
   // §18.10.D — which user-fixable inputs (deductible/oop/network) would strengthen the
   // letter, surfaced so the page can show the "confirm to strengthen + rebuild" prompt.
@@ -336,68 +339,19 @@ export async function GET(
         }
       }
 
-      // S109 PR #2 (Chunk B) — read user's same-plan confirmation answer.
-      // Drives whether resolveEvidence loads the fallback plan's coverage as
-      // a Case C-fallback proxy citation source. Stored on dispute.metadata
-      // via POST /api/disputes/[disputeId]/confirm-same-plan.
-      const userConfirmedSamePlan = ((): "yes" | "no" | "not_sure" | null => {
-        const v = (dispute.metadata as Record<string, unknown> | null)?.userConfirmedSamePlan;
-        return v === "yes" || v === "no" || v === "not_sure" ? v : null;
-      })();
-      // S110 Chunk D — read user's manual canonical bind for the bill year.
-      // S111 D2 — read BEFORE resolvePlanContext so it can be threaded in to
-      // populate planContext.boundCanonicalPlan (powers templates.ts citation
-      // rendering + the VerifStrip's bound-verified state via the API
-      // response's top-level boundCanonicalPlan field).
-      const canonicalPlanIdForBillYear = ((): string | null => {
-        const v = (dispute.metadata as Record<string, unknown> | null)?.canonicalPlanIdForBillYear;
-        return typeof v === "string" && v.length > 0 ? v : null;
-      })();
-      // Block C2 — read the user's service-not-rendered attestations (claim_line_item
-      // ids) so resolveEvidence reclassifies each attested line to
-      // `service_not_rendered`. Stored via POST /api/disputes/[disputeId]/attest-service.
-      const serviceAttestedLineIds = ((): string[] => {
-        const v = (dispute.metadata as Record<string, unknown> | null)?.serviceAttestedLineIds;
-        return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
-      })();
-      // Block C2.2 (S152) — the user's per-dispute insurer appeals address
-      // override (set via POST /api/disputes/[disputeId]/insurer-address).
-      // Overlaid onto the resolved insurer so this letter uses the user's
-      // address; changes the planContext fingerprint → body re-renders with it.
-      const insurerAddressOverride =
-        ((dispute.metadata as Record<string, unknown> | null)
-          ?.insurerAddressOverride as InsurerAddressOverride | null) ?? null;
-      // The dispute's EXPLICIT user override (null unless the user chose a plan
-      // via the chooser / re-bind). Null → the resolver defaults to the claim's
-      // LIVE DOS-correct plan, so a later correction to the claim flows through
-      // automatically — no frozen copy, no lazy backfill (both removed: the
-      // backfill is exactly what froze a wrong plan onto this dispute).
-      const pinnedInsurancePlanId =
-        (dispute.insurance_plan_id as string | null) ?? null;
-      planContext = await resolvePlanContext(supabase, {
-        userId: user.id,
-        claimId: dispute.claim_id,
-        canonicalPlanIdForBillYear,
-        insurerAddressOverride,
-        pinnedInsurancePlanId,
-      });
-      evidence = await resolveEvidence(supabase, {
-        userId: user.id,
-        claimIds: [dispute.claim_id],
-        lineItemIds: allLineItemIds.length > 0 ? allLineItemIds : undefined,
-        planContext,
-        // Pass the RESOLVED letter type, not the raw dispute_outcomes.dispute_type
-        // vocab ("internal_appeal"). resolveEvidence gates the provider/insurer
-        // address gaps + resolveLegalBasis on `letterType === "insurance_appeal"`,
-        // so feeding raw dispute_type made the provider-address gap wrongly fire on
-        // appeals (and the insurer-address gap + appeal legal-basis wrongly absent).
-        // Matches the generate-route path, which already passes the resolved type.
-        letterType: resolvedLetterType,
-        disputeId: dispute.id,
-        userConfirmedSamePlan,
-        canonicalPlanIdForBillYear,
-        attestedLineItemIds: serviceAttestedLineIds,
-      });
+      // S302 — plan context + evidence come from the ONE shared resolver above
+      // (src/lib/disputes/dispute-readiness.ts). This route's block was the
+      // correct version and the case-file route's hand-rolled twin had drifted
+      // from it; the extraction is a faithful move, so behaviour here is
+      // unchanged. Regeneration, drift and coverage-diff stay HERE — the
+      // resolver is the read half only.
+      planContext = readiness.planContext;
+      evidence = readiness.evidence;
+      // The resolver catches its own failures and returns nulls; the inline
+      // version let them throw into this block's outer catch, skipping
+      // everything below. Rethrowing preserves that EXACTLY — regeneration and
+      // the coverage diff must not run on a plan context that failed to resolve.
+      if (!planContext) throw new Error("plan context unresolved");
 
       // S111 smoke iteration 5 — compute coverage diff vs the stored
       // pre-bind snapshot. The snapshot was captured by bind-canonical
@@ -617,51 +571,27 @@ export async function GET(
   // The letter body always uses the account name (per rerender.ts); this
   // field lets the UI show a subtle "we used your account name — bill said
   // X" note above the letter.
-  let patientNameMismatch: { billName: string; profileName: string } | null = null;
-  // Block C2 item 1 — the account holder's name (users.display_name) is the default
-  // "Attesting as" name for the attestation flow; surfaced in the payload below.
-  let accountName = "";
-  // Dispute Letters v2 (Z1.1c) — the user's confirmed amount-paid override
-  // (claims.metadata.userPatientPaid), read from the same claim load below; prefills the
-  // Zone-1 amount-paid row. Null when unset.
-  let userPatientPaid: number | null = null;
-  // S292 (#7) — when the user confirmed the service list on the CLAIM page
-  // ("All services look right" → claims.metadata.servicesConfirmedAt), the dispute
-  // page must not re-ask. Adopted below as the attestation-reviewed state when the
-  // dispute has no explicit answer of its own.
-  let servicesConfirmedAtClaim: string | null = null;
-  // S292 (#10) — the EOB issue date the parser already extracted (persisted to
-  // claims.metadata.eob_date at claim-persist time). Prefills the denial-date input
-  // (editable, parsed provenance) on the insurer track; null when no EOB parse
-  // carried a date → the question remains.
-  let denialDatePrefill: { date: string; source: "eob_parse" } | null = null;
-  try {
-    const [{ data: claim }, { data: userRow }] = await Promise.all([
-      userScoped(supabase, user.id)
-        .table("claims")
-        .select("metadata")
-        .eq("id", dispute.claim_id)
-        .maybeSingle(),
-      supabase
-        .from("users")
-        .select("display_name, email")
-        .eq("id", user.id)
-        .maybeSingle(),
-    ]);
-    const billName = (claim?.metadata as { patient?: { name?: string } } | undefined)?.patient?.name?.trim() ?? "";
-    userPatientPaid = readUserPatientPaidOverride(claim?.metadata ?? null);
-    servicesConfirmedAtClaim = readServicesConfirmedAt(claim?.metadata ?? null);
-    const eobDateRaw = (claim?.metadata as { eob_date?: unknown } | undefined)?.eob_date;
-    if (typeof eobDateRaw === "string" && /^\d{4}-\d{2}-\d{2}$/.test(eobDateRaw)) {
-      denialDatePrefill = { date: eobDateRaw, source: "eob_parse" };
-    }
-    accountName = resolveAccountName(userRow?.display_name, userRow?.email);
-    if (billName && accountName && normalizeNameForCompare(billName) !== normalizeNameForCompare(accountName)) {
-      patientNameMismatch = { billName, profileName: accountName };
-    }
-  } catch (err) {
-    console.warn("[disputes/[disputeId]] patient-name compare failed (non-fatal):", err);
-  }
+  // S302 — the name compare + the sticky confirm-patient-identity suppression
+  // moved into the shared readiness resolver, alongside the strength axis that
+  // consumes them. This route and the case-file route each had a PRIVATE
+  // `normalizeNameForCompare`; both are gone.
+  const patientNameMismatch = readiness.patientNameMismatch;
+  // Block C2 item 1 — the account holder's name is the default "Attesting as".
+  const accountName = readiness.accountName;
+  // The claim metadata the resolver already read — reused rather than re-fetched.
+  const claimMetadataForPayload = readiness.claimMetadata;
+  // Dispute Letters v2 (Z1.1c) — the user's confirmed amount-paid override.
+  const userPatientPaid = readUserPatientPaidOverride(claimMetadataForPayload);
+  // S292 (#7) — the CLAIM-page service confirmation, adopted when the dispute
+  // has no explicit answer of its own.
+  const servicesConfirmedAtClaim = readServicesConfirmedAt(claimMetadataForPayload);
+  // S292 (#10) — the parsed EOB issue date, prefilling the denial-date input.
+  const denialDatePrefill: { date: string; source: "eob_parse" } | null = (() => {
+    const raw = (claimMetadataForPayload as { eob_date?: unknown } | null)?.eob_date;
+    return typeof raw === "string" && /^\d{4}-\d{2}-\d{2}$/.test(raw)
+      ? { date: raw, source: "eob_parse" as const }
+      : null;
+  })();
 
   // S292 (#7) — effective attestation: the dispute's own explicit answer wins;
   // otherwise the claim-page confirmation is adopted (same human act — the user
@@ -698,37 +628,14 @@ export async function GET(
     console.warn("[disputes/[disputeId]] line cost-share resolution failed (non-fatal):", err);
   }
 
-  // Block C2 — once the user confirms their identity (POST confirm-patient-identity),
-  // the resolved state is sticky: suppress the mismatch regardless of the live name
-  // compare, so patientIdentityResolved (= !patientNameMismatch below) stays true and
-  // the MVDL readiness item is closed even across later profile-name changes. True
-  // ONLY on explicit confirmation — distinct from a natural name match.
+  // S302 — the sticky confirm-patient-identity suppression and the three-axis
+  // strength both live in the shared resolver now. `patientIdentityResolved` is
+  // still surfaced in the payload, so it is read here from the same row.
   const patientIdentityResolved =
     (dispute.metadata as Record<string, unknown> | null)?.patientIdentityResolved === true;
-  if (patientIdentityResolved) {
-    patientNameMismatch = null;
-  }
-
-  // Block A — three-axis strength for the payload + the data-trust HARD STOP.
-  // Computed UNGATED (additive); letterContent suppression applies only when
-  // dispute_letter_v3_design is ON. patientIdentityResolved reuses the
-  // name-match check above. Non-fatal: failure leaves strength null + serves the
-  // letter as before. See plans/dispute_letter_overhaul.md §1a.
-  let strength: StrengthResult | null = null;
-  try {
-    const strengthConfig = await loadStrengthConfig(supabase);
-    strength = computeDisputeStrength(evidence, {
-      config: strengthConfig,
-      patientIdentityResolved: !patientNameMismatch,
-      recipientKind: letterRecipientKind(dispute.dispute_type),
-      // S301 — without this the floor keeps the legacy mapping, where
-      // `collector` falls to the both-addresses branch and a debt-validation
-      // letter stays "Not ready to send" for two addresses it never prints.
-      letterRequirementsOn: await isFeatureEnabled("letter_requirements_v1"),
-    });
-  } catch (err) {
-    console.error("[disputes/[disputeId]] strength computation failed (non-fatal):", err);
-  }
+  // Non-fatal by contract: the resolver returns null strength on failure and the
+  // letter still serves, exactly as the inline version did.
+  const strength: StrengthResult | null = readiness.strength;
 
   // HARD STOP: when the flag is ON and a bill failed reconciliation, serve no
   // letter (the UI renders the banner). Suppression is display-only — the stored
@@ -797,7 +704,12 @@ export async function GET(
         | Record<string, boolean>
         | undefined) ?? {}),
     // Guided Steps v1 (S297) — short per-row notes beside the booleans
-    // (packC:receipt tracking number, packD:filed confirmation number).
+    // (packC:receipt tracking number). ⚠ S303: the regulator complaint's
+    // confirmation number is NO LONGER here — filing with a regulator is an
+    // act against the BILL, so it moved to the claim's guided steps, per
+    // agency (`packD:filed:<doorId>`). Any `packD:filed` still sitting in a
+    // dispute's checklist/checklistNotes is pre-S303 residue and is read by
+    // nothing.
     checklistNotes:
       (((dispute.metadata as Record<string, unknown> | null)?.checklistNotes as
         | Record<string, string>
@@ -998,10 +910,6 @@ export async function GET(
     followups,
     followupPlan,
   });
-}
-
-function normalizeNameForCompare(name: string): string {
-  return name.toLowerCase().replace(/[.,'"()]/g, "").replace(/\s+/g, " ").trim();
 }
 
 // resolveLetterTypeFromDispute — consolidated to src/lib/disputes/letter-type.ts

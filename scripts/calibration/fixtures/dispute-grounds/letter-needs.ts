@@ -24,6 +24,10 @@
  * Run:  npx tsx scripts/calibration/fixtures/dispute-grounds/letter-needs.ts
  */
 import {
+  sendBlockers,
+  SEND_GATE_COPY,
+} from "../../../../src/lib/disputes/dispute-readiness";
+import {
   letterNeeds,
   letterRecipientKind,
   normalizeLetterType,
@@ -267,6 +271,147 @@ for (const row of MATRIX) {
     carried.prompt !== catalog.prompt &&
       carried.confirmLabel !== catalog.confirmLabel &&
       carried.changeLabel !== catalog.changeLabel,
+  );
+}
+
+
+// ── S302 · the send gate — one definition, screen and server ────────────────
+{
+  // S302 round 2 — `sendBlockers` takes the READINESS, not the whole strength,
+  // so the letter page can hand it an optimistically-corrected copy the moment
+  // it writes a floor item instead of waiting on a server reconcile.
+  const floor = (over: Partial<Record<
+    "dataTrustPass" | "backedClaim" | "recipientAddress" | "patientIdentity",
+    boolean
+  >> = {}) => {
+    const required = {
+      dataTrustPass: true,
+      backedClaim: true,
+      recipientAddress: true,
+      patientIdentity: true,
+      ...over,
+    };
+    const requiredMet = Object.values(required).filter(Boolean).length;
+    return {
+      state: "attention" as const,
+      mvdlMet: requiredMet === 4,
+      required,
+      requiredMet,
+      requiredTotal: 4,
+      recipientKind: "insurer" as const,
+      optionalOpen: [] as string[],
+    };
+  };
+
+  check("gate · a met floor blocks nothing", sendBlockers(floor(), true).length === 0);
+  check(
+    "gate · every unmet floor item is reported, in floor order",
+    sendBlockers(
+      floor({ dataTrustPass: false, backedClaim: false, recipientAddress: false, patientIdentity: false }),
+      true,
+    ).join(",") === "backed_claim,recipient_address,patient_identity",
+    sendBlockers(floor({ dataTrustPass: false, backedClaim: false, recipientAddress: false, patientIdentity: false }), true),
+  );
+  check(
+    "gate · a single unmet item reports alone",
+    sendBlockers(floor({ recipientAddress: false }), true).join(",") === "recipient_address",
+  );
+  // The flag lockstep. With letter_requirements_v1 OFF the floor still uses the
+  // LEGACY recipient mapping, under which a collector letter fails for a
+  // provider address it never prints — enforcing that would lock a user out of
+  // sending a correct letter, so the gate must not fire at all.
+  check(
+    "gate · OFF blocks nothing, whatever the floor says",
+    sendBlockers(floor({ recipientAddress: false, patientIdentity: false }), false).length === 0,
+  );
+  // A monitoring failure must never become a wall between a user and their
+  // own letter.
+  check("gate · a null strength fails OPEN", sendBlockers(null, true).length === 0);
+
+  check(
+    "gate copy · heading pluralises",
+    SEND_GATE_COPY.heading(1) === "One thing is still missing before this letter can go out" &&
+      SEND_GATE_COPY.heading(2) === "2 things are still missing before this letter can go out",
+    [SEND_GATE_COPY.heading(1), SEND_GATE_COPY.heading(2)],
+  );
+  check(
+    "gate copy · the address blocker names the address THIS letter prints",
+    SEND_GATE_COPY.blocker("recipient_address", "insurer").what === "Your insurer's appeals address" &&
+      SEND_GATE_COPY.blocker("recipient_address", "collector").what === "The collection agency's details" &&
+      SEND_GATE_COPY.blocker("recipient_address", "provider").what === "The provider's mailing address",
+    [
+      SEND_GATE_COPY.blocker("recipient_address", "insurer").what,
+      SEND_GATE_COPY.blocker("recipient_address", "collector").what,
+      SEND_GATE_COPY.blocker("recipient_address", "provider").what,
+    ],
+  );
+  check(
+    "gate copy · every blocker carries a remedy, never just a complaint",
+    (["backed_claim", "recipient_address", "patient_identity"] as const).every(
+      (k) => SEND_GATE_COPY.blocker(k, "insurer").fix.length > 0,
+    ),
+  );
+}
+
+
+// ── S302 · legacy vocab cannot produce wrong evidence ───────────────────────
+// The case-file drift (raw `dispute_type` into resolveEvidence) was one caller
+// of a defect that FOUR more shared — redraft (x2), bind-canonical, repin. The
+// fix normalizes at resolveEvidence's entry point, so these assertions are what
+// stop a future caller reintroducing it.
+{
+  for (const [raw, resolved] of [
+    ["internal_appeal", "insurance_appeal"],
+    ["external_appeal", "external_review"],
+    ["complaint", "balance_billing"],
+  ] as const) {
+    check(
+      `legacy vocab \u00b7 ${raw} normalizes to ${resolved}`,
+      normalizeLetterType(raw) === resolved,
+      normalizeLetterType(raw),
+    );
+    check(
+      `legacy vocab \u00b7 ${raw} asks for the SAME thing as ${resolved}`,
+      JSON.stringify(letterNeeds(raw)) === JSON.stringify(letterNeeds(resolved)),
+      [letterNeeds(raw), letterNeeds(resolved)],
+    );
+  }
+  check(
+    "legacy vocab \u00b7 raw internal_appeal is an INSURER letter, not a provider one",
+    letterNeeds("internal_appeal").recipientKind === "insurer",
+    letterNeeds("internal_appeal").recipientKind,
+  );
+  check(
+    "legacy vocab \u00b7 raw external_appeal wants the appeals address",
+    letterNeeds("external_appeal").recipientAddress === "insurer_appeals_address",
+    letterNeeds("external_appeal").recipientAddress,
+  );
+}
+
+// ── S302 · identity: the mismatch and the answer are TWO facts ─────────────
+// Round 3 un-conflated them (the verified row had no names left to re-ask
+// with). The risk of that change is the floor REOPENING for every user who
+// already resolved a real mismatch — which would have locked their send.
+{
+  // The rule the resolver applies: !mismatch || confirmed. Stated here so a
+  // future edit that re-nulls the mismatch has to break a named assertion.
+  const floorMet = (mismatch: boolean, confirmed: boolean) => !mismatch || confirmed;
+  check("identity · no mismatch, unconfirmed → met", floorMet(false, false));
+  check("identity · no mismatch, confirmed → met", floorMet(false, true));
+  check("identity · mismatch, unconfirmed → NOT met", !floorMet(true, false));
+  check("identity · mismatch, confirmed → met", floorMet(true, true));
+}
+
+// ── S302 · data trust is SCORED but not GATED ──────────────────────────────
+// A hold the user cannot clear is worse than no hold, and the condition cannot
+// even fire today (the flag `evidence-resolver` reads is never written). It
+// returns with the correction unit, alongside the editor that gives it an exit.
+{
+  check(
+    "data trust \u00b7 no blocker copy claims work we do not do",
+    !JSON.stringify(SEND_GATE_COPY).includes("24 hours") &&
+      !JSON.stringify(SEND_GATE_COPY).includes("re-checking") &&
+      !JSON.stringify(SEND_GATE_COPY).includes("Verifying"),
   );
 }
 

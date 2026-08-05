@@ -302,7 +302,37 @@ export const DISPUTE_GROUND_CATALOG: Record<DisputeGroundType, DisputeGroundSpec
     requestBucket: null,
     fromFindings: ["unallocated_balance"],
     scope: "claim",
-    obligationElements: [], // claim-scope; evidence ask = CLAIM_LEVEL_OBLIGATIONS (itemized + EOB)
+    // S304 — this carried `[]` ("no obligated party"), correctly, while the ground's
+    // only ask WAS the baseline itemized bill and its dollars were recovery math.
+    // The identity path changed that: when a bill's own charges reconcile but its
+    // reductions do not close against what it charged, the gap is the PROVIDER's
+    // arithmetic on the PROVIDER's own printed figures, and the letter now makes a
+    // specific, party-addressed ask ("refund the difference or provide a corrected
+    // statement"). So the ground has an obligated party, and this states it.
+    //
+    // No OBLIGATION_PROSE entry, deliberately: `renderObligationClauses` yields
+    // nothing for an element without one, so this changes NO letter copy. It exists
+    // as the routing fact — which recipient's letter this ground belongs in — and
+    // the ask itself is already composed in templates.ts from the arithmetic the
+    // audit rule emits. Adding prose later is a copy decision, not this one.
+    //
+    // `condition: null` because the predicate is already proven upstream: the
+    // identity path fires ONLY once the per-line charges are verified against the
+    // bill's own total, so by the time this ground exists the obligation is backed.
+    // Voice `demand` (Andrew, S304) — the strongest of demand/raise/request, and
+    // defensible here where `chargemaster` is only "raise", because this is
+    // arithmetic on the provider's own statement rather than an inference from
+    // external reference data.
+    obligationElements: [
+      {
+        element: "unaccounted_balance_explain",
+        party: "provider",
+        authority: "the provider's own itemized statement",
+        condition: null,
+        voiceIfMet: "demand",
+        voiceIfNot: "omit",
+      },
+    ],
   },
   coding_peer: {
     order: 8,
@@ -352,6 +382,37 @@ export const CLAIM_LEVEL_OBLIGATIONS: readonly ObligationElement[] = [
  * here and the consumer's existing `|| "overcharge"` default covers them — byte-identical for all
  * `FindingType`s, pinned by `catalog-projection-parity`.
  */
+/**
+ * S304 — finding type → the PARTIES obligated to fix it, projected from the
+ * catalog exactly as `deriveFindingToLetter` projects letter types.
+ *
+ * WHY THIS AND NOT `autoLetterType`: the letter type answers "which template",
+ * and its values are per-ground defaults — six findings carry `overcharge`
+ * (a provider letter) including `insurance_underpayment` and
+ * `zero_cost_share_overcharge`, which are plainly the insurer's to fix.
+ * `obligationElements[].party` is the CURATED answer to "who is obligated", and
+ * it gets those six right. Routing a letter by the template field would send an
+ * insurer's underpayment to the provider.
+ *
+ * A ground may legitimately obligate BOTH parties — `balance_billing` already
+ * declares insurer and provider — which is precisely the parallel-track case.
+ *
+ * Grounds with no obligation elements are OMITTED, not defaulted: `[]` is the
+ * catalog's deliberate statement that no party is obligated (a benchmark
+ * overcharge is measured against a public reference, so nobody owes a duty
+ * under it). Callers must treat an absent entry as "no track", never as
+ * "assume provider".
+ */
+export function deriveFindingToParties(): Partial<Record<FindingType, readonly ObligationParty[]>> {
+  const out: Partial<Record<FindingType, readonly ObligationParty[]>> = {};
+  for (const spec of Object.values(DISPUTE_GROUND_CATALOG)) {
+    const parties = Array.from(new Set(spec.obligationElements.map((e) => e.party)));
+    if (parties.length === 0) continue;
+    for (const f of spec.fromFindings) out[f] = parties;
+  }
+  return out;
+}
+
 export function deriveFindingToLetter(): Partial<Record<FindingType, DisputeLetterType>> {
   const out: Partial<Record<FindingType, DisputeLetterType>> = {};
   for (const spec of Object.values(DISPUTE_GROUND_CATALOG)) {

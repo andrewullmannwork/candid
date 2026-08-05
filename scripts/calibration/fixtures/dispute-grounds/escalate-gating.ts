@@ -103,6 +103,75 @@ check("access · letterRequiresPro(final_notice) === false (wall removed S299)",
 check("access · letterRequiresPro(debt_validation) === false", !letterRequiresPro("debt_validation"));
 check("access · letterRequiresPro(undefined) === false", !letterRequiresPro(undefined));
 
+// ── rung-already-taken (S303) ───────────────────────────────────────────────
+// The fourth gate. The UI stopped OFFERING a rung the case has taken, but a
+// stale tab or a replayed request still could — and the consequence is a real
+// row, because persistDisputeLetter's dedupe keys on line item + type and
+// DELIBERATELY excludes resolved statuses ("the user may legitimately open a
+// fresh fight after a prior one closed"). A second external review on an
+// exhausted track sails straight past it.
+{
+  const SOURCE = "src";
+  const attested = { attested: true };
+  const gate = (caseLetters: Array<{ disputeId: string; letterType: string; status: string | null }>) =>
+    checkEscalateGate({
+      targetLetterType: "external_review",
+      isPro: true,
+      appealExhausted: attested,
+      caseLetters,
+      sourceDisputeId: SOURCE,
+    });
+  const APPEAL = { disputeId: SOURCE, letterType: "insurance_appeal", status: "lost" };
+
+  check("rung · nothing taken → allowed", gate([APPEAL]).ok === true);
+  const taken = gate([APPEAL, { disputeId: "x", letterType: "external_review", status: "lost" }]);
+  check(
+    "rung · a RESOLVED letter of the target type refuses with 409 (dedupe would have let it through)",
+    taken.ok === false && taken.status === 409 && taken.error === "escalation_rung_already_taken",
+    taken,
+  );
+  check(
+    "rung · a DRAFT of the target type also refuses — starting it is taking it",
+    gate([APPEAL, { disputeId: "x", letterType: "external_review", status: "dispute_letter_drafted" }]).ok === false,
+  );
+  check(
+    "rung · a WITHDRAWN letter is not a rung taken → allowed",
+    gate([APPEAL, { disputeId: "x", letterType: "external_review", status: "cancelled" }]).ok === true,
+  );
+  check(
+    "rung · a letter of a DIFFERENT type does not block",
+    gate([APPEAL, { disputeId: "x", letterType: "debt_validation", status: "filed" }]).ok === true,
+  );
+  check(
+    "rung · the SOURCE dispute never blocks its own escalation",
+    checkEscalateGate({
+      targetLetterType: "debt_validation",
+      isPro: true,
+      caseLetters: [{ disputeId: SOURCE, letterType: "debt_validation", status: "in_progress" }],
+      sourceDisputeId: SOURCE,
+    }).ok === true,
+  );
+  // Omitted case context → the check is SKIPPED, never guessed at. Every
+  // caller passes it today; this keeps the gate's other three rules usable
+  // from a context that cannot see the claim.
+  check(
+    "rung · absent case context skips the check rather than inventing an answer",
+    checkEscalateGate({ targetLetterType: "external_review", isPro: true, appealExhausted: attested }).ok === true,
+  );
+  // Ordering: the cheaper allowlist/tier/exhaustion refusals still win, so an
+  // unsupported type never reports itself as a duplicate rung.
+  check(
+    "rung · exhaustion still refuses first when unattested",
+    checkEscalateGate({
+      targetLetterType: "external_review",
+      isPro: true,
+      appealExhausted: { attested: false },
+      caseLetters: [APPEAL, { disputeId: "x", letterType: "external_review", status: "lost" }],
+      sourceDisputeId: SOURCE,
+    }).ok === false,
+  );
+}
+
 console.log(`\nescalate-gating fixture: ${pass} passed, ${fails.length} failed`);
 if (fails.length) {
   console.log(fails.join("\n"));

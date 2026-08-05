@@ -61,6 +61,18 @@ export const CASE_EVENT_KINDS = [
   "phone_outcome_answered",
   // Case-basis changes the rows overwrite in place
   "plan_repinned",
+  // S302 — the user adjudicated a bill whose line items did not sum to its own
+  // summary. Belongs in THIS group ("case-basis changes the rows overwrite in
+  // place") beside plan_repinned: it changes which numbers every downstream
+  // derivation cites, and the claim row holds only the answer, not the history
+  // of asking. Flywheel value: a bill is internally consistent on paper, so the
+  // disagreement is always OURS — this is a human telling us WHICH of our two
+  // parses was wrong, which is precision-oracle signal for parser calibration.
+  // Payload is `{ chose }` ONLY: which fields disagreed is derivable from the
+  // claim, and money amounts are excluded on principle (payload discipline).
+  // No migration — mig 221 shape-checks `kind` rather than enumerating it,
+  // exactly so the vocabulary grows in TS. Count: 19 → 20.
+  "bill_totals_adjudicated",
   "finding_dismissed",
   "audit_rerun",
 ] as const;

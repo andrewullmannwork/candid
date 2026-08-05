@@ -16,7 +16,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
-import { userScoped, upsertOwnedChildren } from "@/lib/security/user-scoped";
+import { userScoped, upsertOwnedChildren, selectOwnedChildren, updateOwnedChildren } from "@/lib/security/user-scoped";
+import { emitCaseEvents } from "@/lib/case/case-events";
 import { parseCostShareOverride } from "@/lib/claims/cost-share-override";
 import { PLAN_COVERED_ONCONFLICT } from "@/lib/plan/coverage-targeting";
 import { buildDirectEntryProvenance } from "@/lib/parser/provenance-builders";
@@ -118,6 +119,39 @@ export async function POST(
     return NextResponse.json({ ok: true, field: ov.field, applied: true });
   }
 
+  // ── Which of OUR TWO PARSES to trust (per-claim; plan-independent) ───────
+  // S302 — a bill is internally consistent on paper, so when its line items do
+  // not sum to its own summary, one of OUR parses is wrong. The user tells us
+  // which. Durable in claims.metadata (Rule #9 JSONB-first, re-parse-proof,
+  // mirroring userPatientPaid); null clears back to the default header-wins
+  // rule. Records a CHOICE between two already-parsed numbers — no per-line
+  // writes, no redistribution, no invented values.
+  if (ov.field === "totals_source") {
+    const baseMeta = (claim.metadata as Record<string, unknown> | null) ?? {};
+    const nextMeta: Record<string, unknown> = { ...baseMeta };
+    if (ov.use === null) {
+      delete nextMeta.userTotalsSource;
+      delete nextMeta.userTotalsSourceUpdatedAt;
+    } else {
+      nextMeta.userTotalsSource = ov.use;
+      nextMeta.userTotalsSourceUpdatedAt = new Date().toISOString();
+    }
+    const { error } = await userScoped(supabase, user.id)
+      .table("claims")
+      .update({ metadata: nextMeta })
+      .eq("id", claimId);
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    // The case-ledger emit obligation (candid CLAUDE.md Rule #10): a NEW
+    // mutation site emits fail-soft, references-only. This one also carries
+    // flywheel weight — a human telling us which of our two parses was wrong is
+    // precision-oracle signal for parser calibration, and the claim row keeps
+    // only the answer, never the history of asking.
+    await emitCaseEvents(supabase, user.id, [
+      { claimId, kind: "bill_totals_adjudicated", payload: { chose: ov.use } },
+    ]);
+    return NextResponse.json({ ok: true, field: ov.field, applied: true });
+  }
+
   // ── "I checked the service list" (per-claim; plan-independent) ───────────
   // S291 (Andrew) — the guided rail's "Verify the services" step was local
   // useState, so clicking Confirmed looked like it registered and was gone on
@@ -143,6 +177,69 @@ export async function POST(
       .update({ metadata: nextMeta })
       .eq("id", claimId);
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+    // S304 (Andrew) — the button now reads "All services and coverage look
+    // right", so it must actually answer both. Before this, confirming services
+    // left an amber "Verify coverage" chip on the row, which reads as the click
+    // having been ignored — and that chip asks whether OUR category match is
+    // right, a judgement most patients cannot make alone but can reasonably
+    // accept as part of "this all looks right".
+    //
+    // The two attestations stay DISTINCT IN THE DATA (Pattern 1 #14): this
+    // writes the same per-line `coverage_user_confirmed` the dedicated confirm
+    // endpoint writes, so the dispute pipeline's cite-grade decision reads ONE
+    // field with one meaning — never a second fact inferred from claim-level
+    // state.
+    //
+    // An explicit rejection OUTRANKS a blanket confirm: a line the user told us
+    // was wrong is never flipped to confirmed by a bulk action.
+    //
+    // Fail-soft: the services confirmation is already committed above and is the
+    // answer the user actually gave. A failure here leaves the chip visible
+    // rather than losing their click.
+    // B9 B1.2 — claim_line_items has no user_id; the same parent-scoped
+    // primitives the dedicated confirm-coverage endpoint uses verify the claim
+    // is owned, then read/write children scoped by claim_id (fail-closed).
+    if (ov.confirmed) {
+      const ownedLines = await selectOwnedChildren(
+        supabase,
+        user.id,
+        "claim_line_items",
+        [claimId],
+        "id, metadata",
+      );
+      const now = new Date().toISOString();
+      const updates = ownedLines
+        .filter((li) => {
+          const meta = (li.metadata as Record<string, unknown> | null) ?? {};
+          return meta.coverage_user_confirmed !== true && meta.coverage_user_rejected !== true;
+        })
+        .map((li) => ({
+          id: li.id as string,
+          values: {
+            metadata: {
+              ...((li.metadata as Record<string, unknown> | null) ?? {}),
+              coverage_user_confirmed: true,
+              coverage_confirmed_at: now,
+            },
+          },
+        }));
+      if (updates.length > 0) {
+        const { updated } = await updateOwnedChildren(
+          supabase,
+          user.id,
+          "claim_line_items",
+          claimId,
+          updates,
+        );
+        if (updated !== updates.length) {
+          console.error(
+            `[cost-share-override] coverage confirm wrote ${updated}/${updates.length} lines on claim ${claimId}`,
+          );
+        }
+      }
+    }
+
     return NextResponse.json({ ok: true, field: ov.field, applied: true });
   }
 

@@ -231,6 +231,27 @@ export interface AuditFinding {
   // finding card so users have honest signal without being discouraged from
   // disputing. Null/undefined → no chip (boost / baseline tiers).
   cohortAccuracyChip?: string | null;
+  /**
+   * S304 — the components behind a claim-header ARITHMETIC gap, emitted by
+   * `runClaimHeaderArithmeticCheck`'s identity path only.
+   *
+   * The dispute letter states the same gap in provider voice, and it must not
+   * re-derive it: `verifyHeaderReconciliation` is the ONE statement of the
+   * bill's accounting identity, and a second subtraction in the template layer
+   * would silently omit any reduction bucket added later. So the rule that owns
+   * the identity emits the pieces, and every renderer just joins them. Mirrors
+   * `descriptionMatch` above — a typed payload carried by one finding type.
+   */
+  arithmeticGap?: {
+    /** the bill's total charge */
+    billed: number;
+    /** human phrases for each reduction the bill printed, in the identity's order */
+    reductions: string[];
+    /** what the charge less those reductions leaves */
+    leftOver: number;
+    /** what the bill actually charged the patient */
+    billedToPatient: number;
+  };
   // S74.6 D4 §D.1 + §D.2 — description-match metadata for persist-time flywheel
   // writes (recordDescriptionMatchVote / recordAmbiguousCandidate). Populated
   // only on `code_uncategorized_description_match` findings emitted from the
@@ -256,6 +277,8 @@ export interface ClaimLevelFindingMeta {
   title: string;
   description?: string;
   benchmarkSource?: string;
+  /** S304 — see AuditFinding.arithmeticGap. Carried so the letter renders without re-deriving. */
+  arithmeticGap?: AuditFinding["arithmeticGap"];
   actionable: boolean;
   dismissed?: boolean;
   dismissed_at?: string;

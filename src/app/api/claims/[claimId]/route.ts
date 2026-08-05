@@ -36,13 +36,17 @@ import {
 } from "@/lib/claims/resolve-cost-share";
 import {
   resolveEffectiveClaimTotals,
+  readUserTotalsSource,
   resolvePerLineInsurancePaid,
   resolvePerLineBilledToYou,
   readUserPatientPaidOverride,
   applyUserPatientPaidOverride,
 } from "@/lib/claims/effective-totals";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
-import { loadCaseTimelinePayload } from "@/lib/case/load-case-timeline";
+import {
+  loadCaseTimelinePayload,
+  CASE_TIMELINE_DISPUTE_COLUMNS,
+} from "@/lib/case/load-case-timeline";
 import {
   loadFingerprintInputForClaim,
   computeEvidenceFingerprint,
@@ -319,6 +323,8 @@ export async function GET(
   const effectiveTotals = resolveEffectiveClaimTotals({
     claim,
     lineItems: lineItems || [],
+    // S302 — the user's adjudication of a line-items-vs-summary disagreement.
+    userTotalsSource: readUserTotalsSource(claim.metadata),
   });
 
   // Cost-Share v2 — load the per-claim engine context ONCE (plan params, the
@@ -769,8 +775,14 @@ export async function GET(
   // set; appended ADDITIVELY when the rail flag is ON (OFF keeps today's
   // select strings exactly). The raw rows stay server-side — enrichedDisputes
   // below still drops metadata/fingerprint before the payload.
+  //
+  // S302 — appends the SHARED constant rather than a hand-copied list of the
+  // same columns. The two agreed only by maintenance; the first column added
+  // to the projector without also being added here would have been silently
+  // null on the claim page and correct on the letter page. Duplicate names
+  // across the two halves are fine — PostgREST returns each column once.
   const disputeSelect = caseRailV1
-    ? `${disputeSelectBase}, claim_id, created_at, governing_deadline_date, deadline_type, insurance_plan_id${costShareV2 ? "" : ", sent_at, metadata"}`
+    ? `${disputeSelectBase}, ${CASE_TIMELINE_DISPUTE_COLUMNS}`
     : disputeSelectBase;
   const { data: disputes } = await userScoped(supabase, user.id)
     .table("dispute_outcomes")

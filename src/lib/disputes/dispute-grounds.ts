@@ -27,6 +27,7 @@ import type { DisputeEvidence, LineItemEvidence } from "./evidence-resolver";
 import type { CostShareV2Result, CostShareAssumption } from "../claims/recovery-math";
 import type { FindingType } from "../billing/types";
 import { DISPUTE_GROUND_CATALOG } from "./dispute-ground-catalog";
+import { IDENTITY_BENCHMARK_SOURCE } from "../audit/claim-header-arithmetic";
 
 /**
  * The dispute-ground taxonomy keys. Per-ground metadata (render order, scorer class, request
@@ -310,10 +311,29 @@ export interface ClaimRecovery {
   title: string;
   /** the claim-scope dollar (e.g. the unallocated amount). */
   recovery: number;
-  /** patient already PAID it (0 for unallocated — an un-itemized charge, not a payment). */
+  /**
+   * S304 — patient already PAID it → ask for it BACK.
+   *
+   * Was hard-coded 0 on the assumption that an unaccounted balance is always
+   * billed-but-unpaid, so the remedy is forgiveness. That holds for a live
+   * balance and fails for a settled one: on a receipt paid to $0.00, asking a
+   * provider to "write off" money already handed over asks for nothing. Split
+   * by the SAME rule the set tier uses — paid dollars refund, the rest is
+   * forgiven — rather than a second convention for the claim tier.
+   */
   refund: number;
-  /** patient still CHARGED it → forgiveness (= recovery for unallocated). */
+  /** patient still CHARGED it → forgiveness. */
   writeOff: number;
+  /**
+   * S304 — which route produced the finding, so the letter can state the right
+   * thing. Already carried end-to-end on the finding (`AuditFinding` →
+   * `claimLevelFindings` → evidence), so this is a pass-through, not new
+   * plumbing. `claim_header_identity` = the bill's own arithmetic doesn't
+   * close; anything else = the lines don't itemise everything owed.
+   */
+  benchmarkSource?: string;
+  /** S304 — the arithmetic components, so the letter never re-derives the identity. */
+  arithmeticGap?: import("@/lib/billing/types").AuditFinding["arithmeticGap"];
 }
 
 /**
@@ -611,16 +631,43 @@ export function resolveLetterRecovery(
       // R3 step 5.3 — unallocated is billed (not shown paid) → the claim's write-off pool.
       // R3 step 5.4 (1a) — recipient-aware fold (see set-tier note): claim-tier dollars fold into
       // the headline ONLY for the provider letter; the claimRecoveries array still populates below.
+      // S304 — refund vs forgiveness, and the evidence bar for calling it a refund.
+      //
+      // The default stays FORGIVENESS: an unallocated balance is an un-itemised
+      // charge, and whether the patient has paid THAT charge is not knowable
+      // from claim totals. The first cut here used `min(recovery, totalPaid)`,
+      // borrowing the set tier's rule — and the golden fixture caught it: the
+      // claim's total paid is already the evidence backing the LINE tier's
+      // refunds, so spending it again clamped the claim dollars away entirely
+      // (F1: line 100 + set 80 + claim 50 came out 180, not 230). Total-paid is
+      // not proof that a specific unaccounted amount was paid.
+      //
+      // The IDENTITY path is the one case where it IS proof. That path only
+      // fires when the per-line charges reconcile with the bill's own total, so
+      // the document is complete; when the bill is ALSO settled — patient paid
+      // covers the full responsibility — every dollar it charged is out of
+      // pocket, including the unaccounted one. Asking a provider to "write off"
+      // money already handed over on a $0.00 balance asks for nothing.
       const claimPool = pools.get(claim.claimId);
-      if (claimPool && recipient === "provider") claimPool.writeOffRaw += recoveryRaw;
+      const settled =
+        f.benchmarkSource === IDENTITY_BENCHMARK_SOURCE &&
+        claim.effectiveTotals.patientPaid >= claim.effectiveTotals.patientResponsibility - 0.005;
+      const refundRaw = settled ? recoveryRaw : 0;
+      const writeOffRaw = settled ? 0 : recoveryRaw;
+      if (claimPool && recipient === "provider") {
+        claimPool.refundRaw += refundRaw;
+        claimPool.writeOffRaw += writeOffRaw;
+      }
       claimRecoveries.push({
         claimId: claim.claimId,
         type: ground,
         findingId: f.id,
         title: f.title,
         recovery: round2(recoveryRaw),
-        refund: 0,
-        writeOff: round2(recoveryRaw),
+        refund: round2(refundRaw),
+        writeOff: round2(writeOffRaw),
+        benchmarkSource: f.benchmarkSource,
+        arithmeticGap: f.arithmeticGap,
       });
     }
   }

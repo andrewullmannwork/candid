@@ -36,6 +36,7 @@ import {
 } from "@/lib/claims/resolve-cost-share";
 import {
   resolveEffectiveClaimTotals,
+  readUserTotalsSource,
   readUserPatientPaidOverride,
   applyUserPatientPaidOverride,
 } from "@/lib/claims/effective-totals";
@@ -369,7 +370,11 @@ export async function GET(req: NextRequest) {
       // resolveLinePrep (below) always header-prorates insuranceAdjusted from it, so it
       // cannot be null. Mirrors the detail route. Output-neutral when the flag is OFF —
       // that branch ignores lp.insuranceAdjusted (uses the raw per-line value).
-      const csEffectiveTotals = resolveEffectiveClaimTotals({ claim, lineItems: items });
+      const csEffectiveTotals = resolveEffectiveClaimTotals({
+        claim,
+        lineItems: items,
+        userTotalsSource: readUserTotalsSource(claim.metadata),
+      });
       const csMemberSums = { deductible: 0, oop: 0 };
       if (costShareV2) {
         for (const it of items) {

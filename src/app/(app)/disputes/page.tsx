@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useState, useEffect, useRef, useCallback } from "react";
+import { Suspense, useState, useEffect, useRef, useCallback, useMemo} from "react";
 import { useSearchParams } from "next/navigation";
 import type { DisputeLetter } from "@/lib/billing/types";
 import { useAuth } from "@/lib/auth/auth-context";
@@ -38,13 +38,15 @@ import { ProviderAddressModal } from "@/components/disputes/ProviderAddressModal
 import { OutcomeReportingModal } from "@/components/disputes/OutcomeReportingModal";
 import { CollectorModal } from "@/components/disputes/CollectorModal";
 import { ExhaustionAttestModal } from "@/components/disputes/ExhaustionAttestModal";
-import { suggestNextStep, isOutcomeDetail, mapOutcomeToStatus, type NextStepSuggestion } from "@/lib/disputes/outcome-taxonomy";
+import { isOutcomeDetail, mapOutcomeToStatus, nextRungStillOpen, type NextStepSuggestion } from "@/lib/disputes/outcome-taxonomy";
 import {
   CaseNeedsPanel,
   isClaimDetailsConfirmed,
   type PlanCostService,
 } from "@/components/disputes/CaseNeedsPanel";
 import { UnifiedTodo, type CaseLetterSummary } from "@/components/disputes/UnifiedTodo";
+import { sendBlockers as computeSendBlockers } from "@/lib/disputes/dispute-readiness";
+import { deriveReadinessState } from "@/lib/disputes/strength-scoring";
 import { CaseSummary } from "@/components/disputes/CaseSummary";
 import { AddPlanDetailsModal } from "@/components/claims/AddPlanDetailsModal";
 import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
@@ -325,9 +327,6 @@ function DisputesContent() {
   const [providerAddressOpen, setProviderAddressOpen] = useState(false);
   // S74 — Mark-sent button state + transient toast.
   const [markingSent, setMarkingSent] = useState(false);
-  // Surface 4 (clarity redesign) — the letter-card footer "I've sent this"
-  // inline confirm; shares the same mark-sent flow as the UnifiedTodo row.
-  const [footerConfirming, setFooterConfirming] = useState(false);
   const [markSentToast, setMarkSentToast] = useState<string | null>(null);
   // S74.6 D5 §E.2 — outcome reporting modal state.
   const [outcomeModalOpen, setOutcomeModalOpen] = useState(false);
@@ -646,11 +645,32 @@ function DisputesContent() {
       lastServerLetterRef.current = data.letterContent;
       // Zone-3 (S266) — re-derive the advisory next rung from the persisted outcome so
       // the stage-action bar's escalate CTA survives a refresh (not just in-session).
+      //
+      // S303 — through the SHARED open-rung test, so this page cannot offer a
+      // rung the case has already taken. Fed from `siblings`, which the GET
+      // returns UNGATED and builds with the same letter-type resolver the
+      // projector uses. Deliberately not read off `caseTimeline`: that payload
+      // is gated on `case_rail_v1`, which is OFF in production, and the offer
+      // this suppresses is not cosmetic — acting on it inserts a duplicate
+      // letter, because persistDisputeLetter's dedupe excludes resolved rows.
+      // `siblings` is [] only for a dispute with no claim, where there are no
+      // other letters and no suppression to apply.
       const persistedOutcome = data.outcomeDetail;
+      const sibs = Array.isArray(data.siblings) ? (data.siblings as SiblingLetter[]) : [];
       setSuggestedNextStep(
-        isOutcomeDetail(persistedOutcome)
-          ? suggestNextStep(resolvedLetterType, persistedOutcome)
-          : null,
+        nextRungStillOpen({
+          // The FETCHED id, not the state one: state can lag a navigation, and
+          // self-exclusion is what stops a debt_validation letter suppressing
+          // its own collections suggestion.
+          disputeId: id,
+          letterType: resolvedLetterType,
+          outcomeDetail: isOutcomeDetail(persistedOutcome) ? persistedOutcome : null,
+          caseLetters: sibs.map((s) => ({
+            disputeId: s.id,
+            letterType: s.letterType,
+            status: s.status,
+          })),
+        }),
       );
     }
   }, [user]);
@@ -740,6 +760,31 @@ function DisputesContent() {
    * persisted through confirm-patient-identity; the letter name-fill runs only
    * when the write lands (S293 #13 optimistic pattern preserved).
    */
+  /**
+   * S302 round 2 (Andrew: "the flip took so long I thought it was an error").
+   *
+   * `patientIdentityResolved` already flips optimistically, but the PILL and the
+   * SEND GATE read `strength.readiness`, which only refreshes on the debounced
+   * server reconcile — so the user answered the question and watched nothing
+   * happen for seconds. This applies the one floor item the client just wrote
+   * and re-derives the rung with `deriveReadinessState`, the SAME rule the
+   * server uses. Snap-back is free: the reconcile overwrites `strength`.
+   */
+  const effectiveReadiness = useMemo(() => {
+    const r = strength?.readiness ?? null;
+    if (!r || !patientIdentityResolved || r.required.patientIdentity) return r;
+    const required = { ...r.required, patientIdentity: true };
+    const requiredMet = Object.values(required).filter(Boolean).length;
+    const mvdlMet = requiredMet === r.requiredTotal;
+    return {
+      ...r,
+      required,
+      requiredMet,
+      mvdlMet,
+      state: deriveReadinessState(mvdlMet, r.optionalOpen),
+    };
+  }, [strength, patientIdentityResolved]);
+
   const resolvePatientChoice = useCallback(
     async (choice: "me" | "dependent" | "wrong", correctedName?: string) => {
       const mismatch = nameMismatch;
@@ -1851,69 +1896,24 @@ function DisputesContent() {
           Legal basis referenced: <span className="text-slate-700">{letter.legalBasis}</span>
         </div>
       ) : null}
-      {/* Surface 4 — letter footer bar (v3 only): download + "I've sent this"
-          sharing the same sent state as the UnifiedTodo. No draft lock —
-          editing stays available post-send (existing behavior preserved). */}
-      {v3DesignOn && (
+      {/* Surface 4 — letter footer.
+          S302 (Andrew, E2E): its "Download letter" and "I've sent this" buttons
+          are GONE. They were a THIRD path to two acts the spine above already
+          owns ("Download & sign the letter", "Mark it as sent"), with their own
+          duplicate confirm — and, once the send gate landed, a way around it:
+          the spine could be locked for a letter missing its floor while these
+          two sat unlocked at the bottom of the page.
+          The sent RECEIPT stays: it is information, not an action, and it is
+          genuinely useful at the foot of a long letter. */}
+      {v3DesignOn && alreadySent && (
         <div className="border-t border-slate-100 bg-slate-50/50 px-6 py-4 md:px-8">
-          {alreadySent ? (
-            <div className="flex flex-wrap items-center gap-2.5 text-xs text-slate-500">
-              <span className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[12px] font-semibold text-emerald-700">
-                <SentCheckIcon />
-                Marked as sent{(disputeSentAt ?? disputeFiledDate) ? ` · ${formatFiledDate((disputeSentAt ?? disputeFiledDate) as string)}` : ""}
-              </span>
-              <span>Track the response and report the outcome in &ldquo;The case&rdquo; above.</span>
-            </div>
-          ) : footerConfirming ? (
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <span className="text-[13px] text-slate-600">
-                <strong className="font-semibold text-slate-900">Did you actually mail it?</strong>{" "}
-                Confirming starts the response clock and your follow-up reminders.
-              </span>
-              <span className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => setFooterConfirming(false)}
-                  className="rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-[13px] font-semibold text-slate-700 hover:bg-slate-50"
-                >
-                  Not yet
-                </button>
-                <button
-                  type="button"
-                  disabled={markingSent}
-                  onClick={() => {
-                    setFooterConfirming(false);
-                    handleMarkSent();
-                  }}
-                  className="rounded-lg bg-blue-600 px-3.5 py-2 text-[13px] font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
-                >
-                  {markingSent ? "Saving…" : "Yes — start the clock"}
-                </button>
-              </span>
-            </div>
-          ) : (
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <span className="text-xs text-slate-500">
-                Send by certified mail (USPS Form 3811) so you keep a paper trail.
-              </span>
-              <span className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={handleDownload}
-                  className="rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-[13px] font-semibold text-slate-700 hover:bg-slate-50"
-                >
-                  Download letter
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setFooterConfirming(true)}
-                  className="rounded-lg bg-blue-600 px-3.5 py-2 text-[13px] font-semibold text-white shadow-sm hover:bg-blue-700"
-                >
-                  I&rsquo;ve sent this
-                </button>
-              </span>
-            </div>
-          )}
+          <div className="flex flex-wrap items-center gap-2.5 text-xs text-slate-500">
+            <span className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[12px] font-semibold text-emerald-700">
+              <SentCheckIcon />
+              Marked as sent{(disputeSentAt ?? disputeFiledDate) ? ` · ${formatFiledDate((disputeSentAt ?? disputeFiledDate) as string)}` : ""}
+            </span>
+            <span>Track the response and report the outcome on your claim.</span>
+          </div>
         </div>
       )}
     </article>
@@ -2130,7 +2130,6 @@ function DisputesContent() {
       planLabel={planLabel}
       showInsuranceRow={zone1ShowInsuranceRow}
       canChangePlan={planPinningEnabled}
-      readiness={strength?.readiness ?? null}
       coverageVerifyGaps={coverageVerifyGaps}
       onCoverageVerify={handleCoverageVerify}
       rerunAuditEnabled={false}
@@ -2144,7 +2143,14 @@ function DisputesContent() {
       claimFacts={
         v3DesignOn
           ? {
-              patientName: (nameMismatch?.billName ?? nameMismatch?.profileName ?? accountName) || null,
+              // S302 round 3 — `nameMismatch` is now the RAW comparison and no
+              // longer disappears on confirmation, so this keys on the answer
+              // explicitly to reproduce today's display byte-for-byte:
+              // confirmed → the account name the letter actually uses.
+              patientName:
+                (patientIdentityResolved
+                  ? accountName
+                  : (nameMismatch?.billName ?? nameMismatch?.profileName ?? accountName)) || null,
               providerName: evidence?.claims?.[0]?.providerName ?? null,
               serviceDate: evidence?.claims?.[0]?.dateOfService ?? null,
             }
@@ -2387,6 +2393,14 @@ function DisputesContent() {
           : null
       }
       sent={alreadySent}
+      // S302 (tracker Item AB) — ONE readiness signal, at the top of the
+      // spine. Same `strength.readiness` the panel used to consume: the
+      // server's MVDL floor, which is what actually scores the letter.
+      readiness={effectiveReadiness}
+      // S302 — the SAME list the outcome route refuses the mark-sent
+      // transition on, from the same shared helper. The screen and the
+      // server cannot disagree about what is missing.
+      sendBlockers={computeSendBlockers(effectiveReadiness, letterRequirementsOn)}
       letterOnly={letterViewOn}
       sentDateLabel={sentDateLabel}
       responseDueLabel={responseDueLabel}
@@ -2580,8 +2594,6 @@ function DisputesContent() {
   if (letterViewOn && alreadySent && letter && caseTimeline) {
     const entry =
       caseTimeline.letters.find((l) => l.disputeId === disputeId) ?? null;
-    const primaryId =
-      caseTimeline.letters.find((l) => l.stage !== "none")?.disputeId ?? null;
     return (
       <div className="mx-auto max-w-4xl px-4 py-6">
         <LetterView
@@ -2591,7 +2603,6 @@ function DisputesContent() {
           }
           collector={letterCollector}
           providerName={caseTimeline.providerName}
-          stepBadge={disputeId != null && disputeId === primaryId ? "4b" : null}
           claimId={letter.auditReportId}
           sentAtIso={disputeSentAt ?? letter.createdAt}
           certified={entry?.mailedCertified ?? false}
@@ -2968,7 +2979,24 @@ function DisputesContent() {
           // updates instantly (no lingering button); reconcile in the background.
           mutationGenRef.current += 1;
           setDisputeStatus(mapOutcomeToStatus(detail));
-          setSuggestedNextStep(suggestNextStep(letter.letterType, detail));
+          // S303 — the OPTIMISTIC set runs the same open-rung test the fetch
+          // does. It used to call suggestNextStep raw, so for the seconds before
+          // the reconcile landed this bar could offer a rung the case had
+          // already taken — the exact window in which someone clicks. An
+          // optimistic path that derives differently from the settled one is
+          // just the two-derivations bug with a shorter lifetime.
+          setSuggestedNextStep(
+            nextRungStillOpen({
+              disputeId: letter.id,
+              letterType: letter.letterType,
+              outcomeDetail: detail,
+              caseLetters: siblings.map((s) => ({
+                disputeId: s.id,
+                letterType: s.letterType,
+                status: s.status,
+              })),
+            }),
+          );
           if (disputeId) {
             void fetchDispute(disputeId);
           }

@@ -29,7 +29,10 @@ import {
 } from "./cost-share-loader";
 import { resolveLinePrep, type ClaimCostSharePrep } from "./resolve-cost-share";
 import { CANONICAL_IDENTITY_CONFIDENCE_FLOOR } from "../plan/plan-identity";
-import { resolveEffectiveClaimTotals } from "./effective-totals";
+import {
+  resolveEffectiveClaimTotals,
+  readUserTotalsSource,
+} from "./effective-totals";
 import { buildAcaCoverageFallback, detectPreventiveMembership } from "../audit/aca-coverage-fallback";
 import {
   loadPlanCoverageMeta,
@@ -329,7 +332,11 @@ export async function loadAccumulatorLedger(
       acaFallback,
       claimTotalBilled,
       claimStillOutstanding,
-      effectiveTotals: resolveEffectiveClaimTotals({ claim, lineItems: items }),
+      effectiveTotals: resolveEffectiveClaimTotals({
+        claim,
+        lineItems: items,
+        userTotalsSource: readUserTotalsSource(claim.metadata),
+      }),
     };
 
     const lines: AccumulatorLedgerLine[] = items.map((li) => {

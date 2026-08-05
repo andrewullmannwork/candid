@@ -257,10 +257,27 @@ for (const { type, findings } of ZERO_BUG_TYPES) {
   // generate path: real total present, findings detail present
   check(`${type} generate shows real total $${expectedTotal.toFixed(2)}`, gen.includes(`$${expectedTotal.toFixed(2)}`));
   check(`${type} generate lists the finding`, gen.includes(findings[0].title));
-  // rerender path (findings:[], flag OFF): the $0.00 BUG persists — total zeroed, detail gone.
-  // The fix is FLAG-GATED, so these do NOT flip: OFF stays byte-identical (they pin OFF parity);
-  // the grounds-ON block below proves the fix (rerender keeps the real total + detail).
-  check(`${type} rerender ZEROS the total ($0.00) [flag OFF — byte-identical legacy]`, rer.includes("$0.00"));
+  // rerender path (findings:[], flag OFF): the detail is still gone — that half of the $0.00 bug
+  // is flag-gated and the grounds-ON block below proves the fix.
+  //
+  // S305 — but the TOTAL no longer zeroes on the overcharge letter, and this assertion flipped
+  // deliberately. It used to pin "the letter says $0.00" as OFF-parity; a letter that announces a
+  // Medicare comparison, lists nothing, and quotes "$0.00 above the Medicare benchmark" is not
+  // parity worth protecting, it is the bug this file named in its own header. The template now
+  // omits the claim rather than printing a false one — fail-closed, the same rule
+  // renderEvidenceBlock applies — so the OFF path is corrected too rather than left as a legacy
+  // exception nobody would ever revisit. balance_billing and duplicate_charge keep their $0.00:
+  // theirs is the flag-gated detail bug, not a false Medicare assertion, and the flag is ON in
+  // production.
+  if (type === "overcharge") {
+    check(
+      `${type} rerender no longer asserts a Medicare comparison it did not make`,
+      !rer.includes("Medicare") && !rer.includes("$0.00"),
+      rer.includes("Medicare") ? "still claims Medicare" : rer.includes("$0.00") ? "still says $0.00" : undefined,
+    );
+  } else {
+    check(`${type} rerender ZEROS the total ($0.00) [flag OFF — byte-identical legacy]`, rer.includes("$0.00"));
+  }
   check(`${type} rerender DROPS the finding detail [flag OFF — byte-identical legacy]`, !rer.includes(findings[0].title));
   check(`${type} generate≠rerender [flag OFF — the bug diverges them]`, normalize(gen) !== normalize(rer));
 

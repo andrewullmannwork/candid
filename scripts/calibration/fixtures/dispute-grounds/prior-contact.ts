@@ -54,8 +54,6 @@ function letter(
     deadlineType: null,
     counterpartyName: null,
     mailedCertified: false,
-    regulatorFiled: false,
-    regulatorFiledNote: null,
     outcome: outcome
       ? { detail: outcome.detail as never, status: "lost", loggedAt: outcome.loggedAt }
       : null,

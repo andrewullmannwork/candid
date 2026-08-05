@@ -30,6 +30,10 @@ export function DataTrustBanner({
         <div className="flex items-start gap-3">
           <WarnIcon className="mt-0.5 h-5 w-5 flex-shrink-0 text-red-600" />
           <div>
+            {/* Block A copy, LOCKED (dispute_letter_overhaul.md §1a). ⚠ It
+                promises active verification and a 24-hour turnaround, neither of
+                which runs — banked on the tracker with the flag-never-written
+                finding. Unreachable today, so not rewritten unilaterally here. */}
             <div className="text-sm font-semibold text-red-900">
               Verifying this bill
             </div>

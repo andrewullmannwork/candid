@@ -5,7 +5,19 @@ import type { AuditFinding, ParsedBill, DisputeLetterType } from "../billing/typ
 import type { PlanContext, ProviderContact, AppealsAddress } from "./plan-context";
 import type { DisputeEvidence, LineItemEvidence } from "./evidence-resolver";
 import { groundFindingsForEvidence, type GroundFinding, type LineRecovery, type LetterRecoveryResult } from "./dispute-grounds";
-import type { RequestBucket } from "./dispute-ground-catalog";
+import { DISPUTE_GROUND_CATALOG, type RequestBucket } from "./dispute-ground-catalog";
+
+/**
+ * The findings that license Medicare language in a letter (S305).
+ *
+ * DERIVED from the catalog's `benchmark` ground — the one ground defined as a
+ * measurement against a public reference rate. `chargemaster` measures against
+ * a provider's PUBLISHED charge and `zero_cost_share_overcharge` carries a
+ * literal 0, so a benchmark number existing is not the same question.
+ */
+const MEDICARE_BENCHMARK_FINDING_TYPES: ReadonlySet<string> = new Set(
+  DISPUTE_GROUND_CATALOG.benchmark.fromFindings,
+);
 import { buildObligationContext, renderObligationClauses } from "./obligation-render";
 import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
 
@@ -883,12 +895,54 @@ export function buildRequestSection(params: {
   // 7) R3 step 5.3 — CLAIM tier (unallocated balance): the bill total exceeds the sum of the listed
   // charges. Provider letter → itemize the gap. Precise dollar drops for a clamp-bound claim.
   if (!isInsurer && claimRecoveries.length > 0) {
-    const unalloc = claimRecoveries.filter((c) => !clampBound.has(c.claimId)).reduce((s, c) => s + c.writeOff, 0);
-    asks.push(
-      unalloc > 0
-        ? `The bill total exceeds the sum of the listed charges. Itemize the ${formatCurrency(unalloc)} and confirm I owe only the itemized amounts.`
-        : `The bill total exceeds the sum of the listed charges. Itemize any such balance and confirm I owe only the itemized amounts.`,
-    );
+    // S304 — the ask is composed from TWO independent facts, not one branch per
+    // shape:
+    //
+    //   WHAT IS WRONG   the bill's own arithmetic doesn't close, OR the lines
+    //                   don't itemise everything owed          → the statement
+    //   WHAT TO ASK FOR already paid → refund; still owed → write-off
+    //                                                          → the remedy
+    //
+    // They are genuinely orthogonal — an arithmetic gap on an unpaid bill wants
+    // a write-off, an itemisation gap on a paid one wants a refund — so a
+    // combined branch per pair would encode the bill shapes we happen to have
+    // seen. Composed, a third finding route adds ONE statement, not two.
+    //
+    // The old single sentence ("the bill total exceeds the sum of the listed
+    // charges") is FALSE on an arithmetic-gap bill: the identity path only fires
+    // once the line charges have been proven to sum to the bill's own total, so
+    // asserting otherwise hands the provider a one-line rebuttal.
+    const live = claimRecoveries.filter((c) => !clampBound.has(c.claimId));
+    const IDENTITY_SOURCE = "claim_header_identity";
+    const byBasis = [
+      { isIdentity: true, group: live.filter((c) => c.benchmarkSource === IDENTITY_SOURCE) },
+      { isIdentity: false, group: live.filter((c) => c.benchmarkSource !== IDENTITY_SOURCE) },
+    ];
+    for (const { isIdentity, group } of byBasis) {
+      if (group.length === 0) continue;
+      const refund = group.reduce((sum, c) => sum + c.refund, 0);
+      const writeOff = group.reduce((sum, c) => sum + c.writeOff, 0);
+      const total = Math.round((refund + writeOff) * 100) / 100;
+      if (total <= 0) continue;
+
+      // Statement — rendered from components the audit rule emitted; no
+      // subtraction happens here, so a reduction bucket added to the identity
+      // later cannot go silently unmentioned.
+      const gap = group.find((c) => c.arithmeticGap)?.arithmeticGap;
+      const statement =
+        isIdentity && gap
+          ? `This bill's charges, adjustments and payments do not add up to the amount I was billed: the total charge of ${formatCurrency(gap.billed)} less ${gap.reductions.join(" and ")} leaves ${formatCurrency(gap.leftOver)}, but I was billed ${formatCurrency(gap.billedToPatient)}.`
+          : `The bill total exceeds the sum of the listed charges.`;
+
+      // Remedy — refund when the money is already out of pocket, forgiveness
+      // when it is still charged. Mixed claims lead with the refund.
+      const remedy =
+        refund > 0
+          ? `Refund the ${formatCurrency(total)} difference or provide a corrected statement showing how it was calculated.`
+          : `Itemize the ${formatCurrency(total)} and confirm I owe only the itemized amounts.`;
+
+      asks.push(`${statement} ${remedy}`);
+    }
   }
 
   // Fallback — never emit an empty request block. (Substantive asks only; the housekeeping asks
@@ -1433,7 +1487,12 @@ export function formatDate(iso: string): string {
 }
 
 function formatCurrency(amount: number): string {
-  return `$${amount.toFixed(2)}`;
+  // S304 — thousands separators. Letters quote four-figure charges routinely
+  // ("$1,404.00" reads; "$1404.00" is a typo waiting to be argued with), and
+  // ONE formatter keeps every figure in a letter consistent rather than the
+  // arithmetic sentence carrying commas its neighbours lack. Identical output
+  // below $1,000, so existing copy is unchanged.
+  return `$${amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 // ============================================================================
@@ -1470,14 +1529,49 @@ const overchargeTemplate: LetterTemplate = {
     // f.description ?? "" is a no-op there — AuditFinding.description is a required string).
     const effectiveFindings: Array<AuditFinding | GroundFinding> =
       disputeGroundsOn && evidence ? groundFindingsForEvidence(evidence) : findings;
+    // S305 — the letter may only claim a Medicare comparison it actually made.
+    //
+    // The opening clause asserts the charges were "compared to publicly
+    // available Medicare payment data" and the closing line quotes a total
+    // "above the Medicare benchmark". Both were UNCONDITIONAL, so a provider
+    // letter whose grounds are not benchmark-based said so anyway — and on a
+    // claim whose only ground is CLAIM-scoped (`unallocated_balance`, whose
+    // dollars are a deliberately disjoint pool and never reach the per-line
+    // ground findings) it announced discrepancies, listed NONE, and quoted
+    // $0.00 as the amount in dispute, three paragraphs above a $33.85 demand.
+    //
+    // Licensed by the benchmark's SOURCE, not by a benchmark number existing:
+    // chargemaster measures against a provider's published charge and
+    // zero-cost-share carries a literal 0. Same fail-closed rule
+    // `renderEvidenceBlock` applies — an unsupported clause is omitted, never
+    // softened, because asserting what the evidence doesn't carry hands the
+    // provider a one-line rebuttal (the S304 lesson on the claim-tier sentence).
+    // Which findings license it comes from the CATALOG, not a literal here: the
+    // `benchmark` ground is defined as the public-reference-rate ground
+    // (§18.10.A, "public reference rate (Medicare), no obligated party"), and
+    // its `fromFindings` is the list. A second reference-rate finding added
+    // there brings the letter with it; a list retyped here would not.
+    //
+    // ⚠ NOT the benchmarkSource string. That was the first cut and it is
+    // brittle free text — today's rule writes "CMS PPL" while legacy rows and
+    // the golden corpus say "Medicare", so an exact match silently stripped the
+    // paragraph from letters that had genuinely earned it (caught by the golden
+    // corpus, not by reasoning).
+    const isMedicareBenchmarked = (f: AuditFinding | GroundFinding) =>
+      MEDICARE_BENCHMARK_FINDING_TYPES.has(f.type) && f.benchmarkAmount != null;
+    const medicareFindings = effectiveFindings.filter(isMedicareBenchmarked);
+    const comparedToMedicare = medicareFindings.length > 0;
+
     const findingDetails = effectiveFindings
       .map(
         (f, i) =>
-          `${i + 1}. ${f.title}\n   Billed amount: ${formatCurrency(f.billedAmount)}${f.benchmarkAmount ? `\n   Medicare national average: ${formatCurrency(f.benchmarkAmount)}` : ""}\n   Amount above the Medicare benchmark: ${formatCurrency(f.estimatedOvercharge)}\n   ${f.description ?? ""}`
+          `${i + 1}. ${f.title}\n   Billed amount: ${formatCurrency(f.billedAmount)}${isMedicareBenchmarked(f) ? `\n   Medicare national average: ${formatCurrency(f.benchmarkAmount!)}\n   Amount above the Medicare benchmark: ${formatCurrency(f.estimatedOvercharge)}` : ""}\n   ${f.description ?? ""}`
       )
       .join("\n\n");
 
-    const totalOvercharge = effectiveFindings.reduce(
+    // Sums the BENCHMARKED findings only — the old total swept in duplicate and
+    // balance-billing dollars and called them a Medicare overage.
+    const totalOvercharge = medicareFindings.reduce(
       (sum, f) => sum + f.estimatedOvercharge,
       0
     );
@@ -1513,12 +1607,16 @@ ${patientRefBlock}${renderGated(accountNumber, (a) => `\nAccount #: ${a}`)}
 
 To Whom It May Concern:
 
-I am writing to formally dispute charges on my medical bill for services rendered on ${formatDate(serviceDate)}. After reviewing my bill and comparing the charges to publicly available Medicare payment data and standard billing practices, I have identified the following potential discrepancies:
-
-${findingDetails}
-
-The total amount billed above the Medicare benchmark across these items is ${formatCurrency(totalOvercharge)}.
-${evidenceBlock ? `\n${evidenceBlock}` : ""}
+I am writing to formally dispute charges on my medical bill for services rendered on ${formatDate(serviceDate)}. ${
+      comparedToMedicare
+        ? `After reviewing my bill and comparing the charges to publicly available Medicare payment data and standard billing practices, I have identified the following potential discrepancies:`
+        : `After reviewing this bill against my plan's coverage and the bill's own figures, I have identified the problems described below.`
+    }
+${findingDetails ? `\n${findingDetails}\n` : ""}${
+      comparedToMedicare
+        ? `\nThe total amount billed above the Medicare benchmark across these items is ${formatCurrency(totalOvercharge)}.\n`
+        : ""
+    }${evidenceBlock ? `\n${evidenceBlock}` : ""}
 ${planEvidence && planEvidence.length > 0 ? `
 Additionally, according to my insurance plan documents, the following services are covered under my plan:
 

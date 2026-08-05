@@ -117,6 +117,19 @@ jobs:
         # a value the user typed on another bill must never render as a Candid
         # verification with a date belonging to a different claim.
         run: npx tsx scripts/calibration/fixtures/dispute-grounds/letter-needs.ts
+      - name: Bill totals source fixture (S302 line-items vs summary)
+        run: npx tsx scripts/calibration/fixtures/cost-share-v2/totals-source.ts
+      - name: Letter tracks — which parties a claim has evidence against (S304/S305)
+        # Written at S304 and never wired in; registered here now that the rung
+        # offer reads it. Locks the SILENCE cases first: `overcharge` — the
+        # commonest finding — obligates nobody by design, and the insurer signal
+        # is gated on recovery_cost_share_v2, so most claims must derive NO track
+        # and the caller must fall back. Anything that makes empty rarer is a
+        # regression until proven otherwise. Also locks routing by the CURATED
+        # obligationElements[].party rather than the per-ground template default
+        # (which misroutes three insurer findings to the provider), and that
+        # every derived track resolves to a letter addressed to its own party.
+        run: npx tsx scripts/calibration/fixtures/dispute-grounds/letter-tracks.ts
 
       - name: Canonical link is a pair (S292 / mig 218)
         # Fails the build if any code writes insurance_plans.canonical_plan_id

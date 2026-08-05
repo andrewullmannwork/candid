@@ -219,8 +219,13 @@ const project = (
   const t = project(mkClaim(), [appeal, external]);
   const a = t.letters.find((l) => l.disputeId === appeal.id)!;
   const x = t.letters.find((l) => l.disputeId === external.id)!;
-  check("chain · denied appeal has next step", a.hasNextStep === true);
-  check("chain · stage next outranks resolved", a.stage === "next", a.stage);
+  // S303 — INVERTED deliberately. This block used to assert the defect: the
+  // appeal kept `hasNextStep` forever because the taxonomy still named a rung,
+  // even though the user had already started it. Starting the next letter is
+  // what moves the work there, so the appeal is finished — and the case still
+  // does not fold, because the child is a draft.
+  check("chain · a started rung is a rung TAKEN — the appeal is finished", a.hasNextStep === false);
+  check("chain · so the appeal resolves rather than sticking at next", a.stage === "resolved", a.stage);
   check("chain · outcome carried", a.outcome?.detail === "denied_fully" && a.outcome.loggedAt === iso(-5));
   check("chain · child stage draft", x.stage === "draft");
   check("chain · escalated event lands on PARENT", t.history.some((h) => h.kind === "escalated" && h.disputeId === appeal.id && h.payload.toDisputeId === external.id));
@@ -235,6 +240,69 @@ const project = (
   });
   const t2 = project(mkClaim(), [exhausted]);
   check("chain · exhausted track → resolved", t2.letters[0].stage === "resolved", t2.letters[0].stage);
+
+  // ── S303 · the rung-taken rule, at its edges ──────────────────────────────
+  // A denied appeal with NO external review on the case still offers one.
+  const lone = project(mkClaim(), [appeal]);
+  check(
+    "s303 · with no external review on the case, the rung IS still open",
+    lone.letters[0].hasNextStep === true && lone.letters[0].stage === "next",
+    lone.letters[0].stage,
+  );
+  // A CANCELLED letter is not a rung taken — withdrawing it reopens the offer.
+  const withCancelled = project(mkClaim(), [
+    appeal,
+    mkDispute({
+      dispute_type: "external_appeal",
+      status: "cancelled",
+      created_at: iso(-2),
+      metadata: { letterType: "external_review" },
+    }),
+  ]);
+  check(
+    "s303 · a WITHDRAWN letter is not a rung taken — the offer returns",
+    withCancelled.letters.find((l) => l.disputeId === appeal.id)?.hasNextStep === true,
+    withCancelled.letters.find((l) => l.disputeId === appeal.id)?.stage,
+  );
+  // Self-exclusion: a debt_validation letter sent to collections suggests its
+  // OWN type, and must not suppress itself into a dead end.
+  const selfSuggest = project(mkClaim(), [
+    mkDispute({
+      status: "in_progress",
+      sent_at: iso(-3),
+      metadata: {
+        letterType: "debt_validation",
+        outcomeDetail: "collections",
+        outcomeReportedAt: iso(-1),
+      },
+    }),
+  ]);
+  check(
+    "s303 · a letter never suppresses its own suggestion (debt_validation → collections)",
+    selfSuggest.letters[0].hasNextStep === true,
+    selfSuggest.letters[0].stage,
+  );
+  // The whole case reaches resolved once the ladder is genuinely exhausted —
+  // the fold's precondition, which could NEVER be met before S303.
+  const foldable = project(mkClaim(), [
+    appeal,
+    mkDispute({
+      dispute_type: "external_appeal",
+      status: "lost",
+      created_at: iso(-2),
+      sent_at: iso(-2),
+      metadata: {
+        letterType: "external_review",
+        outcomeDetail: "denied_fully",
+        outcomeReportedAt: iso(-1),
+      },
+    }),
+  ]);
+  check(
+    "s303 · an escalated-to-the-end case reaches resolved on EVERY letter",
+    foldable.letters.every((l) => l.stage === "resolved"),
+    foldable.letters.map((l) => `${l.letterType}=${l.stage}`),
+  );
 }
 
 // ── 6 · phone-resolved + never-any-letter (§0: no letter ever) ──────────────
@@ -336,10 +404,14 @@ const project = (
     collector.letters[0].counterpartyName === "Cascade Recovery",
   );
   check("s299 · mailedCertified from checklist attest", collector.letters[0].mailedCertified === true);
-  check("s299 · regulatorFiled from packD:filed attest", collector.letters[0].regulatorFiled === true);
+  // S303 — the DISPUTE-side packD:filed boolean is no longer read at all. The
+  // regulator complaint is an act against the BILL, so it moved to the claim's
+  // guided steps; the stale dispute rows above are inert by construction.
   check(
-    "s299 · regulatorFiledNote passthrough",
-    collector.letters[0].regulatorFiledNote === "DOI #4417",
+    "s303 · dispute-side packD:filed is NOT read into the projection",
+    collector.regulator.filings.length === 0 &&
+      Object.keys(collector.regulator.declinedByDispute).length === 0,
+    collector.regulator,
   );
 
   const insurerLetter = project(mkClaim(), [
@@ -354,10 +426,101 @@ const project = (
     insurerLetter.letters[0].counterpartyName === null,
   );
   check("s299 · mailedCertified defaults false", insurerLetter.letters[0].mailedCertified === false);
+}
+
+// ── S303 · regulator complaints — linked numbers, per-letter behaviour ──────
+{
+  const appeal = mkDispute({ status: "filed", sent_at: iso(-6) });
+  const collections = mkDispute({
+    status: "filed",
+    created_at: iso(-5),
+    sent_at: iso(-4),
+    metadata: { letterType: "debt_validation" },
+  });
+
+  const empty = project(mkClaim(), [appeal]);
   check(
-    "s299 · regulatorFiled defaults false/null",
-    insurerLetter.letters[0].regulatorFiled === false &&
-      insurerLetter.letters[0].regulatorFiledNote === null,
+    "s303 · never null — an empty record IS «nothing filed yet»",
+    empty.regulator != null &&
+      empty.regulator.filings.length === 0 &&
+      Object.keys(empty.regulator.declinedByDispute).length === 0,
+    empty.regulator,
+  );
+
+  const filed = project(
+    { ...mkClaim(), metadata: {
+      guideSteps: {
+        [`packD:filed:${appeal.id}:doi`]: { checkedAt: iso(-3), note: "DOI-2026-4417" },
+        [`packD:filed:${appeal.id}:ag`]: { checkedAt: iso(-2) },
+        // The SAME agency, filed again about a different letter — two real
+        // filings, two confirmation numbers, each on its own letter.
+        [`packD:filed:${collections.id}:ag`]: { checkedAt: iso(-1), note: "AG-2026-88" },
+        // Typed a number, never confirmed → NOT a filing.
+        [`packD:filed:${appeal.id}:cfpb`]: { note: "half-typed" },
+        // Pre-S303 claim-wide shape (3 segments) — ignored, never guessed at.
+        "packD:filed:doi": { checkedAt: iso(-9), note: "STALE" },
+        // A collections step must not be mistaken for a regulator filing.
+        "packC:not-paid": { checkedAt: iso(-5) },
+      },
+    } },
+    [appeal, collections],
+  );
+  check(
+    "s303 · one filing per (letter, agency), ascending by when it was filed",
+    filed.regulator.filings.map((f) => `${f.doorId}@${f.disputeId === appeal.id ? "appeal" : "collections"}`)
+      .join(",") === "doi@appeal,ag@appeal,ag@collections",
+    filed.regulator.filings.map((f) => f.doorId),
+  );
+  check(
+    "s303 · each filing carries its own letter, date and confirmation number",
+    filed.regulator.filings[0].disputeId === appeal.id &&
+      filed.regulator.filings[0].filedAt === iso(-3) &&
+      filed.regulator.filings[0].note === "DOI-2026-4417",
+    filed.regulator.filings[0],
+  );
+  check(
+    "s303 · the same agency filed twice keeps BOTH numbers, on their own letters",
+    filed.regulator.filings.filter((f) => f.doorId === "ag").map((f) => f.note).join("|") ===
+      "|AG-2026-88",
+    filed.regulator.filings.filter((f) => f.doorId === "ag"),
+  );
+  check(
+    "s303 · an agency with a note but no attest is NOT filed",
+    filed.regulator.filings.every((f) => f.doorId !== "cfpb"),
+  );
+  check(
+    "s303 · the pre-S303 claim-wide key shape is ignored, not reinterpreted",
+    filed.regulator.filings.every((f) => f.note !== "STALE"),
+  );
+
+  // Per-letter declinations — the S302 bug was ONE skip for the whole bill, so
+  // declining anywhere greyed every card and any filing withdrew it everywhere.
+  const declined = project(
+    { ...mkClaim(), metadata: { guideSteps: {
+      [`packD:skip:${collections.id}`]: { skippedAt: iso(-1) },
+    } } },
+    [appeal, collections],
+  );
+  check(
+    "s303 · a declination is recorded against ONE letter, not the bill",
+    declined.regulator.declinedByDispute[collections.id] === iso(-1) &&
+      declined.regulator.declinedByDispute[appeal.id] === undefined,
+    declined.regulator.declinedByDispute,
+  );
+  // S297 §3.2 — a declination must never be readable as a filing.
+  const both = project(
+    { ...mkClaim(), metadata: { guideSteps: {
+      [`packD:skip:${appeal.id}`]: { checkedAt: null, skippedAt: iso(-2) },
+      [`packD:filed:${collections.id}:ag`]: { checkedAt: iso(-1), note: "AG-1" },
+    } } },
+    [appeal, collections],
+  );
+  check(
+    "s303 · «I chose not to file» is never a filing, and never touches the other letter",
+    both.regulator.filings.length === 1 &&
+      both.regulator.filings[0].disputeId === collections.id &&
+      both.regulator.declinedByDispute[appeal.id] === iso(-2),
+    both.regulator,
   );
 }
 

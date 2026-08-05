@@ -160,6 +160,74 @@ const notRenderedLine = makeLine({
   patientOwes: 0,
 });
 
+// ── S304 · CLAIM tier, IDENTITY path ─────────────────────────────────────────
+// The bill's own arithmetic doesn't close, on a receipt PAID to $0.00. Two things
+// must differ from the itemisation path above: the remedy is a REFUND (asking a
+// provider to write off money already handed over asks for nothing), and the
+// statement must NOT claim the listed charges fall short of the total — the
+// identity path only fires once those charges have been proven to reconcile, so
+// the old sentence would assert something the bill disproves.
+{
+  // Mirrors 8/21: a $52.82 line recovery against $154.49 paid on the bill, so the
+  // claim tier's $33.85 has paid-dollars left to stand on. (A line recovery that
+  // already consumes the whole payment correctly clamps the claim tier away —
+  // you cannot ask back more than you paid — which is the guard, not a bug.)
+  const paidLine = makeLine({
+    lineItemId: "li-paid",
+    serviceNotRenderedAttested: true,
+    billedAmount: 52.82,
+    patientPaid: 52.82,
+    patientOwes: 0,
+  });
+  const identityFinding = claimFinding({
+    id: "clf-id",
+    estimatedOvercharge: 33.85,
+    title: "Unallocated balance: $33.85",
+    benchmarkSource: "claim_header_identity",
+    arithmeticGap: {
+      billed: 1404,
+      reductions: ["the insurer's $761.91 adjustment", "$521.45 payment"],
+      leftOver: 120.64,
+      billedToPatient: 154.49,
+    },
+  });
+  const ev = makeEvidence({
+    lines: [paidLine],
+    claimFindings: [identityFinding],
+    effectiveTotals: { patientPaid: 154.49, patientResponsibility: 154.49 },
+  });
+  const r = resolveLetterRecovery(ev, EMPTY_BASIS, "provider");
+  const cr = r.claimRecoveries[0];
+  check(
+    "S304 identity · settled bill → REFUND, not write-off",
+    cr && near(cr.refund, 33.85) && near(cr.writeOff, 0),
+    cr,
+  );
+  check(
+    "S304 identity · the gap is asserted ON TOP of the line recovery",
+    near(r.total, 52.82 + 33.85),
+    r.total,
+  );
+
+  const letter = letterFor(ev, "provider");
+  check(
+    "S304 identity · letter states the bill's own arithmetic, with the numbers",
+    letter.includes("do not add up to the amount I was billed") &&
+      letter.includes("$1,404.00") &&
+      letter.includes("$120.64"),
+    letter.slice(0, 400),
+  );
+  check(
+    "S304 identity · letter asks for a REFUND",
+    letter.includes("Refund the $33.85 difference"),
+    letter.slice(0, 400),
+  );
+  check(
+    "S304 identity · letter does NOT claim the listed charges fall short",
+    !letter.includes("bill total exceeds the sum of the listed charges"),
+  );
+}
+
 // ── 5.1 CLAIM tier ───────────────────────────────────────────────────────────
 // CL1 — R3 step 5.3: an unallocated claim finding is FOLDED into the headline (line 420 refund +
 //       claim 146 write-off = 566), and still recorded as a disjoint claim recovery.

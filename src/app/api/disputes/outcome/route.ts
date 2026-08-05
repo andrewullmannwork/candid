@@ -17,6 +17,11 @@ import { updateDisputeOutcome, getUserDisputes } from "@/lib/disputes/persist";
 import { isOutcomeDetail } from "@/lib/disputes/outcome-taxonomy";
 import { emitCaseEvents, type CaseEventInput } from "@/lib/case/case-events";
 import { bankSentVersion, stampUnsent } from "@/lib/disputes/sent-versions";
+import {
+  resolveDisputeReadiness,
+  sendBlockers,
+  SEND_GATE_ERROR,
+} from "@/lib/disputes/dispute-readiness";
 import { isFeatureEnabled, readFeatureFlagConfig } from "@/lib/config/product-flags";
 import {
   computeCooldownUntil,
@@ -145,12 +150,58 @@ export async function POST(req: NextRequest) {
     // could mutate any dispute by knowing its UUID.
     const { data: existing } = await userScoped(supabase, userId)
       .table("dispute_outcomes")
-      .select("id, user_id, status, filed_date, claim_id, letter_content, sent_at, metadata")
+      .select(
+        // S302 — dispute_type / insurance_plan_id / claim_line_item_id feed the
+        // shared readiness resolver used by the send gate below.
+        "id, user_id, status, filed_date, claim_id, letter_content, sent_at, metadata, dispute_type, insurance_plan_id, claim_line_item_id",
+      )
       .eq("id", disputeId)
       .single();
 
     if (!existing || existing.user_id !== userId) {
       return NextResponse.json({ error: "Dispute not found" }, { status: 404 });
+    }
+
+    // ── S302 SEND GATE ────────────────────────────────────────────────────────
+    // Andrew: "make sure the letter can't be sent or used until the required
+    // fields are added." The screen locks the buttons; this is the backstop on
+    // the RECORD — marking a letter sent starts the response clock, schedules
+    // the follow-up chain, and feeds the flywheel, so an unready letter must
+    // not be able to claim any of it.
+    //
+    // Fires ONLY on the genuine mark-sent transition: target `filed`, not an
+    // undo (`clearSentAt`), and not already sent — which is what distinguishes
+    // it from undoResultPayload, whose target status is also `filed` but which
+    // runs on a letter that IS sent.
+    //
+    // Judged by the SAME resolver the letter page renders from, so the button's
+    // state and the route's verdict cannot disagree. Flag-gated in lockstep
+    // with the floor's own definition: with `letter_requirements_v1` OFF the
+    // floor still uses the legacy recipient mapping, under which a collector
+    // letter fails for a provider address it never prints — enforcing that
+    // would lock a user out of sending a correct letter.
+    const isMarkSent = status === "filed" && !clearSentAt && existing.sent_at == null;
+    if (isMarkSent) {
+      const letterRequirementsOn = await isFeatureEnabled("letter_requirements_v1");
+      if (letterRequirementsOn) {
+        const extraLineIds =
+          ((existing.metadata as Record<string, unknown> | null)
+            ?.claimLineItemIds as string[] | undefined) ?? [];
+        const readiness = await resolveDisputeReadiness(supabase, {
+          userId,
+          dispute: existing,
+          lineItemIds: Array.from(
+            new Set([existing.claim_line_item_id, ...extraLineIds].filter(Boolean)),
+          ) as string[],
+        });
+        const blockers = sendBlockers(readiness.strength?.readiness ?? null, letterRequirementsOn);
+        if (blockers.length > 0) {
+          return NextResponse.json(
+            { error: SEND_GATE_ERROR, blockers },
+            { status: 409 },
+          );
+        }
+      }
     }
 
     const success = await updateDisputeOutcome(supabase, disputeId, {

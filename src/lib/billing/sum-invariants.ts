@@ -58,7 +58,20 @@ export interface VerifierTolerances {
  * B-1 / B-2 / B-3 verifiers regardless of which parser path produced the
  * input (raw_json or tool_use).
  */
+// S304 — module cache, 60s, mirroring `config/feature-flags.ts`. The verifiers
+// are now called from TWO places per bill — persist, and the claim-header
+// arithmetic audit rule, which needs the same tolerances to decide whether the
+// charges reconcile. Without this that is a second uncached Supabase round trip
+// on the ingest path. Same TTL as the flag cache, so a tolerance change lands on
+// exactly the same schedule as a flag flip; callers were already reading a value
+// that could be up to a minute stale.
+let _tolCache: VerifierTolerances | null = null;
+let _tolCacheAt = 0;
+const TOL_CACHE_TTL_MS = 60_000;
+
 export async function loadVerifierTolerances(): Promise<VerifierTolerances> {
+  const now = Date.now();
+  if (_tolCache && now - _tolCacheAt < TOL_CACHE_TTL_MS) return _tolCache;
   try {
     const supabase = createServerClient();
     const { data } = await supabase
@@ -67,12 +80,14 @@ export async function loadVerifierTolerances(): Promise<VerifierTolerances> {
       .eq("flag_key", "bill_parser_tool_use_v1")
       .single();
     const cfg = (data?.config ?? {}) as Record<string, unknown>;
-    return {
+    _tolCache = {
       perLineSumAbs: numOr(cfg.per_line_sum_tolerance_abs, DEFAULT_PER_LINE_ABS),
       perLineSumRel: numOr(cfg.per_line_sum_tolerance_rel, DEFAULT_PER_LINE_REL),
       headerReconciliationAbs: numOr(cfg.header_reconciliation_abs, DEFAULT_HEADER_ABS),
       headerReconciliationRel: numOr(cfg.header_reconciliation_rel, DEFAULT_HEADER_REL),
     };
+    _tolCacheAt = now;
+    return _tolCache;
   } catch {
     return {
       perLineSumAbs: DEFAULT_PER_LINE_ABS,
@@ -148,16 +163,49 @@ export interface PerLineSumVerdict {
   delta: number; // |lineSum - header| (NaN if header null)
   tolerance: number; // max(abs, header * rel)
   withinTolerance: boolean; // true when populated=false OR delta ≤ tolerance
+  /** S304 — may persist null this field out on a mismatch? False for billed_amount. */
+  droppable: boolean;
 }
 
 const PER_LINE_FIELD_SPEC: Array<{
   field: string;
   headerKey: keyof ParsedBill["totals"];
   perLineKey: keyof BillLineItem;
+  /**
+   * S304 — sum the RAW value instead of its magnitude. Only `billed_amount`
+   * needs this: Rule #5 adjustment-reversal lines legitimately carry a negative
+   * billed, and the reversal is meant to CANCEL its original. Taking magnitudes
+   * would turn a −$100/+$100 pair into $200 and false-fire on every EOB with a
+   * reversal cycle. The other three are positive-magnitude by contract (Rule
+   * #13), where abs() is the guard against a stray sign masking a real mismatch.
+   */
+  signed?: boolean;
+  /**
+   * S304 — may persist null this field out when its sum misses the header?
+   *
+   * True for the three adjudication fields: a mismatch there means the per-line
+   * breakdown is untrustworthy, so dropping it makes the read layer pro-rate
+   * from the header instead. False for `billed_amount` — it is the only per-line
+   * field always populated, and nulling it would erase the bill. Stated HERE, on
+   * the field, so there is one definition rather than a second list persist has
+   * to keep in step.
+   */
+  droppable: boolean;
 }> = [
-  { field: "insurance_paid", headerKey: "totalInsurancePaid", perLineKey: "insurancePaid" },
-  { field: "insurance_adjusted_amount", headerKey: "totalInsAdjusted", perLineKey: "ins_adjusted" },
-  { field: "patient_paid_amount", headerKey: "totalPatientPaid", perLineKey: "patient_paid" },
+  { field: "insurance_paid", headerKey: "totalInsurancePaid", perLineKey: "insurancePaid", droppable: true },
+  { field: "insurance_adjusted_amount", headerKey: "totalInsAdjusted", perLineKey: "ins_adjusted", droppable: true },
+  { field: "patient_paid_amount", headerKey: "totalPatientPaid", perLineKey: "patient_paid", droppable: true },
+  // S304 — the charges column. This is the ONE comparison a provider itemised
+  // receipt genuinely supports: it prints each service's charge AND a "Total
+  // billed" line, so both sides are pre-adjudication and directly comparable.
+  // The other three fields are stated once, in the summary block, and comparing
+  // them to a per-line sum compares a number to its own absence.
+  //
+  // A mismatch here does NOT mean "distrust the breakdown" — it means the
+  // charges do not add up to the total, which is a duplicate, a phantom charge,
+  // an omitted service, or a line we misread. Different problem, different
+  // response, so it carries its own verdict key and is NOT droppable.
+  { field: "billed_amount", headerKey: "totalBilled", perLineKey: "billedAmount", signed: true, droppable: false },
 ];
 
 export function verifyPerLineSums(
@@ -175,12 +223,14 @@ export function verifyPerLineSums(
         populated = true;
         // Use the magnitude so a stray negative doesn't mask a real mismatch.
         // B-3 sign violations are detected upstream; this verifier focuses on
-        // arithmetic-closure of the populated values themselves.
-        lineSum += Math.abs(v);
+        // arithmetic-closure of the populated values themselves. `signed` fields
+        // (billed_amount) keep their sign so reversal cycles cancel — see the
+        // spec comment above.
+        lineSum += spec.signed ? v : Math.abs(v);
       }
     }
     const header = parsedBill.totals[spec.headerKey] ?? null;
-    const headerMag = header != null ? Math.abs(header) : null;
+    const headerMag = header != null ? (spec.signed ? header : Math.abs(header)) : null;
     const tolerance = Math.max(
       tolerances.perLineSumAbs,
       (headerMag ?? 0) * tolerances.perLineSumRel,
@@ -199,6 +249,7 @@ export function verifyPerLineSums(
       delta,
       tolerance,
       withinTolerance,
+      droppable: spec.droppable,
     });
   }
   return out;
@@ -213,13 +264,48 @@ export interface HeaderReconciliationVerdict {
   totalInsAdjusted: number | null;
   totalInsurancePaid: number | null;
   totalPatientPaid: number | null;
+  /**
+   * S304 — the closing term of the identity. Was `totalPatientPaid`, which is a
+   * SETTLEMENT fact (how much of the balance has been handed over), not an
+   * allocation of the charge. The two coincide only on a fully-paid bill — which
+   * every DEV bill happens to be, so the error never surfaced. On an unpaid bill
+   * that prints "Payments: $0.00" the parser emits an explicit zero, the
+   * all-present gate opens, and the old formula declared the bill incoherent:
+   * a `header_reconciliation_failed` flag, and a data-trust hold with no exit.
+   */
+  totalPatientResponsibility: number | null;
+  /**
+   * S304 — the third reduction bucket. Not counted before, so anything the model
+   * placed here fell out of the identity. Defensive rather than a fix for an
+   * observed failure: the prompt's synonym list routes a "Contract Discount"
+   * column into `ins_adjusted`, so this bucket is rarely the one used — but the
+   * schema offers it, and once the identity counts every bucket the schema
+   * offers, mis-bucketing can no longer break reconciliation. Where the money
+   * lands becomes a question of attribution quality, not of whether we flag the
+   * bill as broken.
+   */
+  totalContractDiscount: number | null;
   // PR4b (S143) — provider_adjusted is part of the reconciliation formula:
   // billed = ins_adjusted + provider_adjusted + insurance_paid + patient_paid.
   // PR4 (S142) initial verifier omitted this; Opus calibration baseline
   // (2026-05-29) surfaced false-fires on bills with non-zero provider_adjusted
   // (e.g., Swedish 7_1.pdf $33.85 provider_adjusted, 12_12.pdf $7.00).
   totalProviderAdjusted: number | null;
-  delta: number; // |billed - adjusted - provider_adjusted - paid - patient_paid|
+  // S304 — |billed − ins_adjusted − provider_adjusted − contract_discount
+  //          − insurance_paid − patient_responsibility|
+  delta: number;
+  /**
+   * S304 — the SIGNED residual behind `delta`, so no caller has to restate the
+   * formula to learn which way the bill misses. NaN when the totals are
+   * incomplete.
+   *
+   *   residual < 0 → patient responsibility EXCEEDS what the charge minus the
+   *                  reductions leaves. The patient was billed more than the
+   *                  bill itself accounts for — money owed back to them.
+   *   residual > 0 → charge left over that the bill assigns to nobody, usually
+   *                  a reduction we failed to capture.
+   */
+  residual: number;
   tolerance: number;
   withinTolerance: boolean;
   // Distinguishes "header totals incomplete (NULLs)" from "header totals all
@@ -240,28 +326,47 @@ export function verifyHeaderReconciliation(
   const totalInsurancePaid = parsedBill.totals.totalInsurancePaid ?? null;
   const totalPatientPaid = parsedBill.totals.totalPatientPaid ?? null;
   const totalProviderAdjusted = parsedBill.totals.totalProviderAdjusted ?? null;
+  const totalContractDiscount = parsedBill.totals.totalContractDiscount ?? null;
+  const totalPatientResponsibility = parsedBill.totals.totalPatientResponsibility ?? null;
 
-  // The 4 core totals must all be present for the verifier to fire. provider_adjusted
-  // is OPTIONAL — many bills don't have a provider writeoff at all; treat null as 0
-  // in the formula so the verifier doesn't false-fire on bills that omit it.
+  // S304 — THE bill's accounting identity, stated once:
+  //
+  //   billed = ins_adjusted + provider_adjusted + contract_discount
+  //            + insurance_paid + patient_responsibility
+  //
+  // Every term left of the closing one REDUCES the charge; what survives is what
+  // the patient was asked to pay. `denied` is deliberately NOT a term: a denied
+  // amount normally flows INTO patient responsibility, so subtracting it would
+  // double-count on exactly the bills where the denial is what's being disputed.
+  //
+  // The 3 charge-side totals plus the closing term must be present for the
+  // verifier to fire. provider_adjusted and contract_discount are OPTIONAL —
+  // most bills carry no such line at all — so null is treated as 0 and the
+  // formula degrades without false-firing.
   const allPresent =
     totalBilled != null &&
     totalInsAdjusted != null &&
     totalInsurancePaid != null &&
-    totalPatientPaid != null;
+    totalPatientResponsibility != null;
 
   // Magnitude-only math; B-3 sign violations are detected upstream. Header
   // reconciliation asks "do the totals balance under positive convention?"
   const mag = (n: number | null) => (n != null ? Math.abs(n) : 0);
-  const delta = allPresent
-    ? Math.abs(
-        mag(totalBilled) -
+  // ONE statement of the formula; `delta` is its magnitude and `residual` its
+  // sign. Callers that need to know WHICH WAY the bill misses read `residual`
+  // rather than restating this line.
+  const residual = allPresent
+    ? Math.round(
+        (mag(totalBilled) -
           mag(totalInsAdjusted) -
           mag(totalProviderAdjusted) -
+          mag(totalContractDiscount) -
           mag(totalInsurancePaid) -
-          mag(totalPatientPaid),
-      )
+          mag(totalPatientResponsibility)) *
+          100,
+      ) / 100
     : NaN;
+  const delta = Math.abs(residual);
   const tolerance = Math.max(
     tolerances.headerReconciliationAbs,
     mag(totalBilled) * tolerances.headerReconciliationRel,
@@ -273,8 +378,11 @@ export function verifyHeaderReconciliation(
     totalInsAdjusted,
     totalInsurancePaid,
     totalPatientPaid,
+    totalPatientResponsibility,
     totalProviderAdjusted,
+    totalContractDiscount,
     delta,
+    residual,
     tolerance,
     withinTolerance,
     allHeaderTotalsPresent: allPresent,

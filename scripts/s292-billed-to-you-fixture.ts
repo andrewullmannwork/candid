@@ -64,7 +64,7 @@ console.log("Case 1 — Swedish bill (real data, header-prorated)");
     { code: "58301", billed_amount: 309, insurance_adjusted_amount: 0, insurance_paid: null, patient_paid_amount: 0, patient_owes: null },
     { code: "96127", billed_amount: 17, insurance_adjusted_amount: 0, insurance_paid: null, patient_paid_amount: 0, patient_owes: null },
   ];
-  const effectiveTotals = resolveEffectiveClaimTotals({ claim, lineItems: lines });
+  const effectiveTotals = resolveEffectiveClaimTotals({ claim, lineItems: lines, userTotalsSource: null });
   check(
     "insurer fields resolve from the claim header (sparse per-line)",
     effectiveTotals.provenance.insuranceAdjustedSource === "claim_header" &&
@@ -117,7 +117,7 @@ console.log("Case 2 — fresh unpaid bill (billed-to-you > 0, you-paid $0.00)");
   const lines = [
     { billed_amount: 500, insurance_adjusted_amount: null, insurance_paid: null, patient_paid_amount: null, patient_owes: null },
   ];
-  const effectiveTotals = resolveEffectiveClaimTotals({ claim, lineItems: lines });
+  const effectiveTotals = resolveEffectiveClaimTotals({ claim, lineItems: lines, userTotalsSource: null });
   const bty = resolvePerLineBilledToYou({
     lineBilled: 500,
     lineInsuranceAdjusted: null,
@@ -154,7 +154,7 @@ console.log("Case 3 — no insurer adjustment/payment data at all (honesty fallb
   const lines = [
     { billed_amount: 997.49, insurance_adjusted_amount: null, insurance_paid: null, patient_paid_amount: null, patient_owes: null },
   ];
-  const effectiveTotals = resolveEffectiveClaimTotals({ claim, lineItems: lines });
+  const effectiveTotals = resolveEffectiveClaimTotals({ claim, lineItems: lines, userTotalsSource: null });
   const bty = resolvePerLineBilledToYou({
     lineBilled: 997.49,
     lineInsuranceAdjusted: null,
@@ -182,7 +182,7 @@ console.log("Case 4 — inconsistent data (adjustment + payment exceed the charg
   const lines = [
     { billed_amount: 100, insurance_adjusted_amount: 80, insurance_paid: 30, patient_paid_amount: 0, patient_owes: null },
   ];
-  const effectiveTotals = resolveEffectiveClaimTotals({ claim, lineItems: lines });
+  const effectiveTotals = resolveEffectiveClaimTotals({ claim, lineItems: lines, userTotalsSource: null });
   const bty = resolvePerLineBilledToYou({
     lineBilled: 100,
     lineInsuranceAdjusted: 80,
@@ -210,7 +210,7 @@ console.log("Case 5 — zero-billed line on a bill WITH insurer data");
     { billed_amount: 100, insurance_adjusted_amount: null, insurance_paid: null, patient_paid_amount: null, patient_owes: null },
     { billed_amount: 0, insurance_adjusted_amount: null, insurance_paid: null, patient_paid_amount: null, patient_owes: null },
   ];
-  const effectiveTotals = resolveEffectiveClaimTotals({ claim, lineItems: lines });
+  const effectiveTotals = resolveEffectiveClaimTotals({ claim, lineItems: lines, userTotalsSource: null });
   const charged = resolvePerLineBilledToYou({
     lineBilled: 100,
     lineInsuranceAdjusted: null,
@@ -245,7 +245,7 @@ console.log("Case 5b — fully-covered line ($0.00 remainder, −0 normalized)")
   const lines = [
     { billed_amount: 10, insurance_adjusted_amount: 6, insurance_paid: 4, patient_paid_amount: 0, patient_owes: null },
   ];
-  const effectiveTotals = resolveEffectiveClaimTotals({ claim, lineItems: lines });
+  const effectiveTotals = resolveEffectiveClaimTotals({ claim, lineItems: lines, userTotalsSource: null });
   const bty = resolvePerLineBilledToYou({
     lineBilled: 10,
     lineInsuranceAdjusted: 6,

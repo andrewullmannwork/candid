@@ -25,11 +25,18 @@ export type BillParserVerdict =
   | "sign_violation"
   | "per_line_sparse"
   | "header_reconciliation_failed"
+  // S304 — the CHARGES column doesn't sum to the bill's own total. A different
+  // problem from `per_line_sparse` ("the adjudication breakdown is unreliable,
+  // pro-rate from the header") and it wants a different response: look for a
+  // duplicate, a phantom charge, an omitted service, or a line we misread.
+  | "billed_sum_mismatch"
   | "multi";
 
 export type BillParserPath = "raw_json" | "tool_use";
 
 export interface RecordBillParserDecisionParams {
+  /** S304 — the audit concluded the DOCUMENT is at fault; see computeVerdict. */
+  documentArithmeticFinding?: boolean;
   supabase: SupabaseClient;
   documentId?: string | null;
   claimId?: string | null;
@@ -50,17 +57,43 @@ export function computeVerdict(
   signViolations: SignViolationDetail[],
   perLineVerdicts: PerLineSumVerdict[],
   headerVerdict: HeaderReconciliationVerdict,
+  /**
+   * S304 — the audit already concluded the DOCUMENT's arithmetic is at fault
+   * (an `unallocated_balance` finding via the identity path, which fires only
+   * once the per-line charges are proven to sum to the bill's own total).
+   *
+   * This verdict drives the Slack alert and the admin review queue, both of
+   * which mean "our PARSE needs a human". When the parse is verified against the
+   * document and the document contradicts itself, paging engineering is wrong —
+   * the user gets a finding instead.
+   *
+   * Passed IN rather than re-derived: persist already computes it from the
+   * audit's finding, and this function deciding it independently is precisely
+   * how the claim flag came to be suppressed while Slack still fired.
+   */
+  documentArithmeticFinding = false,
 ): { verdict: BillParserVerdict; categories: string[] } {
   const categories: string[] = [];
   if (signViolations.length > 0) categories.push("sign_violation");
-  // Per-line violation = any populated field whose sum doesn't match header.
-  // Sparse-all-NULL is NOT a per-line violation (frontend Path B fallback);
-  // sparse-with-some-populated-but-arithmetic-broken IS a violation.
+  // Per-line violation = any populated DROPPABLE field whose sum doesn't match
+  // header. Sparse-all-NULL is NOT a per-line violation (frontend Path B
+  // fallback); sparse-with-some-populated-but-arithmetic-broken IS a violation.
+  // S304 — `billed_amount` joined the verifier spec and is NOT droppable; it
+  // carries its own category below rather than being read as a sparse
+  // breakdown.
   const perLineViolation = perLineVerdicts.some(
-    (v) => v.populated && !v.withinTolerance,
+    (v) => v.populated && !v.withinTolerance && v.droppable,
   );
   if (perLineViolation) categories.push("per_line_sparse");
-  if (headerVerdict.allHeaderTotalsPresent && !headerVerdict.withinTolerance) {
+  const billedVerdict = perLineVerdicts.find((v) => v.perLineKey === "billedAmount");
+  if (billedVerdict && billedVerdict.populated && !billedVerdict.withinTolerance) {
+    categories.push("billed_sum_mismatch");
+  }
+  if (
+    headerVerdict.allHeaderTotalsPresent &&
+    !headerVerdict.withinTolerance &&
+    !documentArithmeticFinding
+  ) {
     categories.push("header_reconciliation_failed");
   }
   if (categories.length === 0) return { verdict: "clean", categories };
@@ -83,7 +116,12 @@ export async function recordBillParserDecision(
     metadata,
   } = params;
 
-  const { verdict, categories } = computeVerdict(signViolations, perLineVerdicts, headerVerdict);
+  const { verdict, categories } = computeVerdict(
+    signViolations,
+    perLineVerdicts,
+    headerVerdict,
+    params.documentArithmeticFinding ?? false,
+  );
 
   const signViolationFields =
     signViolations.length > 0
