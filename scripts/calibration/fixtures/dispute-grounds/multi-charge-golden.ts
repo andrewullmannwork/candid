@@ -189,7 +189,6 @@ const notRenderedLine = makeLine({
       reductions: ["the insurer's $761.91 adjustment", "$521.45 payment"],
       leftOver: 120.64,
       billedToPatient: 154.49,
-      unaccounted: 33.85,
     },
   });
   const ev = makeEvidence({

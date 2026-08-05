@@ -901,10 +901,12 @@ export function buildRequestSection(params: {
     // once the line charges have been proven to sum to the bill's own total, so
     // asserting otherwise hands the provider a one-line rebuttal.
     const live = claimRecoveries.filter((c) => !clampBound.has(c.claimId));
-    for (const isIdentity of [true, false]) {
-      const group = live.filter(
-        (c) => (c.benchmarkSource === "claim_header_identity") === isIdentity,
-      );
+    const IDENTITY_SOURCE = "claim_header_identity";
+    const byBasis = [
+      { isIdentity: true, group: live.filter((c) => c.benchmarkSource === IDENTITY_SOURCE) },
+      { isIdentity: false, group: live.filter((c) => c.benchmarkSource !== IDENTITY_SOURCE) },
+    ];
+    for (const { isIdentity, group } of byBasis) {
       if (group.length === 0) continue;
       const refund = group.reduce((sum, c) => sum + c.refund, 0);
       const writeOff = group.reduce((sum, c) => sum + c.writeOff, 0);

@@ -58,7 +58,20 @@ export interface VerifierTolerances {
  * B-1 / B-2 / B-3 verifiers regardless of which parser path produced the
  * input (raw_json or tool_use).
  */
+// S304 — module cache, 60s, mirroring `config/feature-flags.ts`. The verifiers
+// are now called from TWO places per bill — persist, and the claim-header
+// arithmetic audit rule, which needs the same tolerances to decide whether the
+// charges reconcile. Without this that is a second uncached Supabase round trip
+// on the ingest path. Same TTL as the flag cache, so a tolerance change lands on
+// exactly the same schedule as a flag flip; callers were already reading a value
+// that could be up to a minute stale.
+let _tolCache: VerifierTolerances | null = null;
+let _tolCacheAt = 0;
+const TOL_CACHE_TTL_MS = 60_000;
+
 export async function loadVerifierTolerances(): Promise<VerifierTolerances> {
+  const now = Date.now();
+  if (_tolCache && now - _tolCacheAt < TOL_CACHE_TTL_MS) return _tolCache;
   try {
     const supabase = createServerClient();
     const { data } = await supabase
@@ -67,12 +80,14 @@ export async function loadVerifierTolerances(): Promise<VerifierTolerances> {
       .eq("flag_key", "bill_parser_tool_use_v1")
       .single();
     const cfg = (data?.config ?? {}) as Record<string, unknown>;
-    return {
+    _tolCache = {
       perLineSumAbs: numOr(cfg.per_line_sum_tolerance_abs, DEFAULT_PER_LINE_ABS),
       perLineSumRel: numOr(cfg.per_line_sum_tolerance_rel, DEFAULT_PER_LINE_REL),
       headerReconciliationAbs: numOr(cfg.header_reconciliation_abs, DEFAULT_HEADER_ABS),
       headerReconciliationRel: numOr(cfg.header_reconciliation_rel, DEFAULT_HEADER_REL),
     };
+    _tolCacheAt = now;
+    return _tolCache;
   } catch {
     return {
       perLineSumAbs: DEFAULT_PER_LINE_ABS,

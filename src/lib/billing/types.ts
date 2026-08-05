@@ -251,8 +251,6 @@ export interface AuditFinding {
     leftOver: number;
     /** what the bill actually charged the patient */
     billedToPatient: number;
-    /** billedToPatient − leftOver: the money the bill does not account for */
-    unaccounted: number;
   };
   // S74.6 D4 §D.1 + §D.2 — description-match metadata for persist-time flywheel
   // writes (recordDescriptionMatchVote / recordAmbiguousCandidate). Populated

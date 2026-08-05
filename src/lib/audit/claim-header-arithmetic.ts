@@ -188,7 +188,6 @@ export async function runClaimHeaderArithmeticCheck(
           reductions,
           leftOver,
           billedToPatient: headerPatientResp,
-          unaccounted: unallocated,
         },
       }),
     ];
