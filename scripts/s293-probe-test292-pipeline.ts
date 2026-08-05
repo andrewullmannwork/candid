@@ -129,7 +129,7 @@ async function main() {
   console.log("\n═══ C. COMPOSED LETTER (rerenderDisputeLetter, read-only) ═══");
   const { rerenderDisputeLetter } = await import("../src/lib/disputes/rerender");
   const rerendered = await rerenderDisputeLetter(supabase, {
-    disputeId: DISPUTE_ID,
+    composingDisputeId: DISPUTE_ID,
     userId: USER_ID,
     letterType: "insurance_appeal",
     claimId: CLAIM_ID,
