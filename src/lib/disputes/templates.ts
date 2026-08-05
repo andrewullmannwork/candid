@@ -883,12 +883,52 @@ export function buildRequestSection(params: {
   // 7) R3 step 5.3 — CLAIM tier (unallocated balance): the bill total exceeds the sum of the listed
   // charges. Provider letter → itemize the gap. Precise dollar drops for a clamp-bound claim.
   if (!isInsurer && claimRecoveries.length > 0) {
-    const unalloc = claimRecoveries.filter((c) => !clampBound.has(c.claimId)).reduce((s, c) => s + c.writeOff, 0);
-    asks.push(
-      unalloc > 0
-        ? `The bill total exceeds the sum of the listed charges. Itemize the ${formatCurrency(unalloc)} and confirm I owe only the itemized amounts.`
-        : `The bill total exceeds the sum of the listed charges. Itemize any such balance and confirm I owe only the itemized amounts.`,
-    );
+    // S304 — the ask is composed from TWO independent facts, not one branch per
+    // shape:
+    //
+    //   WHAT IS WRONG   the bill's own arithmetic doesn't close, OR the lines
+    //                   don't itemise everything owed          → the statement
+    //   WHAT TO ASK FOR already paid → refund; still owed → write-off
+    //                                                          → the remedy
+    //
+    // They are genuinely orthogonal — an arithmetic gap on an unpaid bill wants
+    // a write-off, an itemisation gap on a paid one wants a refund — so a
+    // combined branch per pair would encode the bill shapes we happen to have
+    // seen. Composed, a third finding route adds ONE statement, not two.
+    //
+    // The old single sentence ("the bill total exceeds the sum of the listed
+    // charges") is FALSE on an arithmetic-gap bill: the identity path only fires
+    // once the line charges have been proven to sum to the bill's own total, so
+    // asserting otherwise hands the provider a one-line rebuttal.
+    const live = claimRecoveries.filter((c) => !clampBound.has(c.claimId));
+    for (const isIdentity of [true, false]) {
+      const group = live.filter(
+        (c) => (c.benchmarkSource === "claim_header_identity") === isIdentity,
+      );
+      if (group.length === 0) continue;
+      const refund = group.reduce((sum, c) => sum + c.refund, 0);
+      const writeOff = group.reduce((sum, c) => sum + c.writeOff, 0);
+      const total = Math.round((refund + writeOff) * 100) / 100;
+      if (total <= 0) continue;
+
+      // Statement — rendered from components the audit rule emitted; no
+      // subtraction happens here, so a reduction bucket added to the identity
+      // later cannot go silently unmentioned.
+      const gap = group.find((c) => c.arithmeticGap)?.arithmeticGap;
+      const statement =
+        isIdentity && gap
+          ? `This bill's charges, adjustments and payments do not add up to the amount I was billed: the total charge of ${formatCurrency(gap.billed)} less ${gap.reductions.join(" and ")} leaves ${formatCurrency(gap.leftOver)}, but I was billed ${formatCurrency(gap.billedToPatient)}.`
+          : `The bill total exceeds the sum of the listed charges.`;
+
+      // Remedy — refund when the money is already out of pocket, forgiveness
+      // when it is still charged. Mixed claims lead with the refund.
+      const remedy =
+        refund > 0
+          ? `Refund the ${formatCurrency(total)} difference or provide a corrected statement showing how it was calculated.`
+          : `Itemize the ${formatCurrency(total)} and confirm I owe only the itemized amounts.`;
+
+      asks.push(`${statement} ${remedy}`);
+    }
   }
 
   // Fallback — never emit an empty request block. (Substantive asks only; the housekeeping asks
@@ -1433,7 +1473,12 @@ export function formatDate(iso: string): string {
 }
 
 function formatCurrency(amount: number): string {
-  return `$${amount.toFixed(2)}`;
+  // S304 — thousands separators. Letters quote four-figure charges routinely
+  // ("$1,404.00" reads; "$1404.00" is a typo waiting to be argued with), and
+  // ONE formatter keeps every figure in a letter consistent rather than the
+  // arithmetic sentence carrying commas its neighbours lack. Identical output
+  // below $1,000, so existing copy is unchanged.
+  return `$${amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 // ============================================================================

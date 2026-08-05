@@ -30,6 +30,7 @@ import { applyEOBPostProcess } from "./eob-postprocess";
 import { isFeatureEnabled } from "../config/product-flags";
 import { scanForSbcMarkers } from "./sbc-marker-scan";
 import { lineIsImplausible } from "./line-plausibility";
+import { applySingleLineHeaderIdentity } from "./header-identity";
 import { recordBillTruncation } from "./truncation-telemetry";
 import { recordCostEvent } from "@/lib/cost/parse-cost-events";
 import { haikuUsageCostUsd } from "@/lib/haiku-client/base";
@@ -718,16 +719,18 @@ export async function parseBillWithHaiku(
     opts?.forceMode ??
     ((await isFeatureEnabled("bill_parser_tool_use_v1")) ? "tool_use" : "raw_json");
   if (mode === "tool_use") {
-    return parseBillWithHaikuToolUse(
-      client,
-      ocrText,
-      documentId,
-      userId,
-      billType,
-      extractionMethod,
-      inputTokens,
-      maxTokens,
-      opts?.onTrace,
+    return finalizeParsedBill(
+      await parseBillWithHaikuToolUse(
+        client,
+        ocrText,
+        documentId,
+        userId,
+        billType,
+        extractionMethod,
+        inputTokens,
+        maxTokens,
+        opts?.onTrace,
+      ),
     );
   }
 
@@ -956,11 +959,32 @@ export async function parseBillWithHaiku(
       durationMs: Date.now() - callStart,
     });
     await recordBillCost(documentId, userId, billType, response.usage, "raw_json");
-    return parsedBill;
+    return finalizeParsedBill(parsedBill);
   } catch (err) {
     console.error("[haiku-bill-parser] Extraction failed:", err);
     return null;
   }
+}
+
+/**
+ * S304 — the single exit every parsed bill passes through, on BOTH parser paths.
+ *
+ * `parseBillWithHaiku` is the one function all three ingest paths call
+ * (process-chunk, process-document, admin resolve-type), and the ParsedBill it
+ * returns is the same object runAudit, the B-1/B-2/B-3 verifiers,
+ * persistAuditResults and collectPricingData all read. Rules that belong to
+ * every consumer therefore belong HERE — stated once — rather than wired into
+ * each ingest path (the preflight slot is only wired into two of the three).
+ */
+function finalizeParsedBill(bill: ParsedBill | null): ParsedBill | null {
+  if (!bill) return null;
+  const identity = applySingleLineHeaderIdentity(bill);
+  if (identity.filled.length > 0) {
+    console.log(
+      `[haiku-bill-parser] single-line header identity: filled ${identity.filled.join(", ")} from the bill's own summary block`,
+    );
+  }
+  return bill;
 }
 
 function numOrUndef(v: unknown): number | undefined {

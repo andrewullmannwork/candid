@@ -19,6 +19,7 @@ import {
   verifyHeaderReconciliation,
   verifyPerLineSums,
 } from "@/lib/billing/sum-invariants";
+import { IDENTITY_BENCHMARK_SOURCE } from "@/lib/audit/claim-header-arithmetic";
 import {
   recordBillParserDecision,
   type BillParserPath,
@@ -180,13 +181,50 @@ export async function persistAuditResults(
     // the header total within tolerance — that means the parser emitted
     // inconsistent values per-line, so the frontend Path B helper should
     // pro-rate from the trustworthy header instead.
+    // S304 — only DROPPABLE fields enter the drop set. `billed_amount` joined
+    // the verifier spec this session (it is the one apples-to-apples comparison
+    // a provider itemised receipt supports), but it must never be nulled: it is
+    // the only per-line field always populated, and dropping it would erase the
+    // bill. The field itself carries that property, so there is no second list
+    // here to keep in step with the spec.
     const perLineDropFields = new Set(
-      perLineVerdicts.filter((v) => v.populated && !v.withinTolerance).map((v) => v.perLineKey),
+      perLineVerdicts
+        .filter((v) => v.populated && !v.withinTolerance && v.droppable)
+        .map((v) => v.perLineKey),
     );
+    const billedVerdict = perLineVerdicts.find((v) => v.perLineKey === "billedAmount");
     const billParserVerdictFlags: Record<string, boolean> = {};
     if (signViolations.length > 0) billParserVerdictFlags.bill_parser_sign_violation = true;
     if (perLineDropFields.size > 0) billParserVerdictFlags.per_line_breakdown_sparse = true;
-    if (headerVerdict.allHeaderTotalsPresent && !headerVerdict.withinTolerance) {
+    // S304 — its OWN key, not `per_line_breakdown_sparse`. That flag means "the
+    // per-line breakdown is unreliable, pro-rate from the header instead". A
+    // charges mismatch means something else entirely — a duplicate, a phantom
+    // charge, an omitted service, or a line we misread — and the response is to
+    // look for the extra or missing line, not to distrust the breakdown. Reusing
+    // one alarm for two different problems would tell downstream code the wrong
+    // thing about both.
+    if (billedVerdict && billedVerdict.populated && !billedVerdict.withinTolerance) {
+      billParserVerdictFlags.billed_sum_mismatch = true;
+    }
+    // S304 — `header_reconciliation_failed` means "we cannot trust OUR reading
+    // of this bill": it pages Slack, queues the bill for admin review, and shows
+    // the user a data-trust banner. When the audit has already concluded the
+    // DOCUMENT is at fault — an `unallocated_balance` finding raised via the
+    // identity path, which fires only once the per-line charges have been proven
+    // to sum to the bill's own total charge — none of that is true. Our reading
+    // was verified against the document; the bill contradicts itself.
+    //
+    // Read off the FINDING rather than recomputing the condition. The audit rule
+    // owns this decision; persist consumes it. Two places deciding the same
+    // thing is how the badge and the row border drifted apart in S292.
+    const documentArithmeticFinding = auditReport.findings.some(
+      (f) => f.type === "unallocated_balance" && f.benchmarkSource === IDENTITY_BENCHMARK_SOURCE,
+    );
+    if (
+      headerVerdict.allHeaderTotalsPresent &&
+      !headerVerdict.withinTolerance &&
+      !documentArithmeticFinding
+    ) {
       billParserVerdictFlags.header_reconciliation_failed = true;
     }
 
@@ -227,6 +265,28 @@ export async function persistAuditResults(
           // for a date the platform already read off the document. Absent on
           // non-EOB docs / when the parser saw no date → key omitted.
           ...(parsedBill.eob_date ? { eob_date: parsedBill.eob_date } : {}),
+          // S304 — the parsed totals that have no column of their own.
+          //
+          // `ParsedBill.totals` carries ten fields; `claims` has columns for six.
+          // The rest were extracted on every bill and thrown away — including
+          // `totalProviderAdjusted`, which is a TERM OF THE ACCOUNTING IDENTITY
+          // above. Without it nothing downstream (re-audit, the Case File, a
+          // letter, an admin reading a claim) can re-run the reconciliation the
+          // parser ran once: on the Swedish bills it is $7.00 and $33.85, and a
+          // check that omits it declares a bill broken that balances to the cent.
+          //
+          // JSONB-first per Rule #9, the same convention `eob_date` uses above —
+          // one consumer today, promote to a column when it becomes a flywheel
+          // aggregate (JSONB is not indexed). Keys omitted when the parser saw
+          // nothing, so a bill without these reads identically to before.
+          ...(() => {
+            const t = parsedBill.totals;
+            const extra: Record<string, number> = {};
+            if (t.totalProviderAdjusted != null) extra.total_provider_adjusted = Math.abs(t.totalProviderAdjusted);
+            if (t.totalContractDiscount != null) extra.total_contract_discount = Math.abs(t.totalContractDiscount);
+            if (t.totalDenied != null) extra.total_denied = t.totalDenied;
+            return Object.keys(extra).length > 0 ? { parsedTotals: extra } : {};
+          })(),
           ...billParserVerdictFlags,
         },
       })
@@ -328,18 +388,25 @@ export async function persistAuditResults(
         billed_amount: item.billedAmount,
         allowed_amount: item.allowedAmount || null,
         insurance_paid: dropInsurancePaid ? null : absOrNull(item.insurancePaid),
-        // Mig 092 — contractual writeoff distinct from insurance_paid. Defaults
-        // to 0 (rather than null) so downstream math can sum without null guards;
-        // null indicates "parser didn't extract" which we treat as 0 too here.
+        // Mig 092 — contractual writeoff distinct from insurance_paid.
         // PR4: when the sum-equals-header verifier failed for this field, drop
         // to null so frontend Path B helper pro-rates from header (which is
         // the trustworthy total per B-2).
-        insurance_adjusted_amount: dropInsAdjusted ? null : absOrNull(item.ins_adjusted) ?? 0,
+        //
+        // S304 — the `?? 0` default is GONE. PR4b/S143 v3 hardened the prompt so
+        // `null` means "this bill does not state the field" (the TABLE-STRUCTURE
+        // rule: a provider itemised receipt with no per-line adjustment column
+        // must emit null, never a derived number). Coercing that null to 0 here
+        // erased the distinction two lines after the B-1 verifier had computed
+        // it, and wrote a zero the page never printed onto every line — 14 of 17
+        // DEV claims carried one. A stored 0 now means the bill displayed $0.00.
+        insurance_adjusted_amount: dropInsAdjusted ? null : absOrNull(item.ins_adjusted),
         patient_owes: item.patientResponsibility ?? null,
-        // Mig 092 — patient out-of-pocket payments. Default 0; populated by
-        // parser when "Paid [date] -$X" footer lines are present on the bill.
+        // Mig 092 — patient out-of-pocket payments; populated by the parser when
+        // "Paid [date] -$X" footer lines are present on the bill.
         // PR4: same sparse-drop semantics as insurance_paid / ins_adjusted.
-        patient_paid_amount: dropPatientPaid ? null : absOrNull(item.patient_paid) ?? 0,
+        // S304: same null-is-meaningful rule as insurance_adjusted_amount above.
+        patient_paid_amount: dropPatientPaid ? null : absOrNull(item.patient_paid),
         // Cost-share v2 (mig 174) — capture the insurer's per-line cost-share
         // split + denial + network the parser already extracts (previously
         // dropped). Additive; consumed only by recovery-math v2 when the flag is
@@ -587,6 +654,10 @@ export async function persistAuditResults(
       signViolations,
       perLineVerdicts,
       headerVerdict,
+      // S304 — the SAME fact that suppresses the claim's data-trust flag above.
+      // One decision, both consumers; deriving it twice is what let the flag be
+      // suppressed while Slack still paged on a perfectly-parsed bill.
+      documentArithmeticFinding,
       metadata: {
         bill_type: parsedBill.billType,
         plan_year: resolvedPlanYear,

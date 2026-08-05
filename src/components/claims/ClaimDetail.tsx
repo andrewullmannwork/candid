@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
 import type { BillState } from "@/lib/claims/derive-bill-state";
@@ -30,7 +30,9 @@ import { railHasExtension, composeRail, fmtRailDate } from "@/lib/case/rail-step
 import {
   readUserTotalsSource,
   type UserTotalsSource,
+  type PerLineFieldFact,
 } from "@/lib/claims/effective-totals";
+import type { AssumptionOptimistic } from "@/components/claims/CostShareBanner";
 import {
   SEND_GATE_COPY,
   type ReadinessBlocker,
@@ -268,6 +270,18 @@ interface ClaimData {
       insurancePaidSource: "per_line_sum" | "claim_header";
       insuranceAdjustedSource: "per_line_sum" | "claim_header";
       patientResponsibilitySource: "per_line_sum" | "claim_header";
+    };
+    // S304 — what the LINES say, computed by the resolver and forwarded whole by
+    // the GET. `contradictsHeader` is the one condition worth a question: line
+    // values that EXIST and disagree with the bill's own summary. A bill that
+    // states a total only in its summary block has no per-line values to
+    // disagree with, and asking about it produced a choice whose "line items"
+    // answer was $0.00.
+    perLine?: {
+      patientPaid: PerLineFieldFact;
+      insurancePaid: PerLineFieldFact;
+      insuranceAdjusted: PerLineFieldFact;
+      patientResponsibility: PerLineFieldFact;
     };
   };
   flags?: {
@@ -575,6 +589,45 @@ export function ClaimDetail({
    * latency — a click with no feedback gets clicked twice.
    */
   const [totalsOverride, setTotalsOverride] = useState<{ value: UserTotalsSource } | null>(null);
+  /**
+   * S304 — assumption answers this click has made, before the server confirms.
+   *
+   * Lifted out of CostShareBanner, which used to keep it locally. Three surfaces
+   * derived "what have you answered" from two different sources: the banner's
+   * rows read its overlay and moved instantly, while the step badge below reads
+   * `costShareOverrides` from the server and sat unchanged until the refetch —
+   * the lag on "Done". And the banner renders TWICE here, so there were two
+   * independent overlays that could disagree with each other as well.
+   *
+   * Held here, merged ONCE into `effectiveCostShareOverrides` below, and handed
+   * to every consumer. Cleared on settle: on success the refetch has landed the
+   * truth, on failure clearing IS the snapback — the same discipline
+   * `totalsOverride` above uses, for the same reason.
+   */
+  const [assumptionOptimistic, setAssumptionOptimistic] = useState<AssumptionOptimistic>({});
+
+  /**
+   * S304 — THE overrides object every assumption consumer reads: what the server
+   * has, plus what this click just answered. One merge, so the step badge, the
+   * "has any rows" test, the engaged test and both banner instances can never
+   * disagree about whether a question has been answered.
+   *
+   * `pendingAssumptionFields` stays persisted-truth-only by its own contract —
+   * it is handed an already-merged object rather than taught about optimism.
+   */
+  const effectiveCostShareOverrides = useMemo(() => {
+    const base = data?.costShareOverrides ?? null;
+    const o = assumptionOptimistic;
+    if (!base && Object.keys(o).length === 0) return null;
+    return {
+      deductibleMet: o.deductibleMet ?? base?.deductibleMet ?? null,
+      deductibleMetAsOf: o.deductibleMetAsOf ?? base?.deductibleMetAsOf ?? null,
+      oopMet: o.oopMet ?? base?.oopMet ?? null,
+      oopMetAsOf: o.oopMetAsOf ?? base?.oopMetAsOf ?? null,
+      userNetworkOverride: o.network ?? base?.userNetworkOverride ?? null,
+    };
+  }, [data?.costShareOverrides, assumptionOptimistic]);
+
   // S302 — resolved-case fold, expanded on demand (§2.2: no collapse in this
   // product is ever permanent, and every expanded step stays interactive).
   const [caseExpanded, setCaseExpanded] = useState(false);
@@ -1082,6 +1135,11 @@ export function ClaimDetail({
         failMsg = failMsg ?? "Couldn't save your answers. Please try again.";
       } finally {
         setCsOverridePending(null);
+        // S304 — settle the optimistic overlay. On success the refetch above has
+        // already landed the truth, so dropping it is a no-op; on failure
+        // dropping it IS the snapback. Both paths clear, for different reasons —
+        // the same discipline the totals-source row uses.
+        setAssumptionOptimistic({});
       }
       if (failMsg) {
         setCsOverrideError(failMsg);
@@ -1353,38 +1411,34 @@ export function ClaimDetail({
     const eff = data.effectiveTotals;
     if (!eff) return null;
     const answered = totalsOverride ? totalsOverride.value : readUserTotalsSource(claim.metadata);
+    // S302 round 4 — keyed on the FACT, not on provenance. Provenance was a
+    // PROXY for "the two disagree", and it stops saying `claim_header` the
+    // moment the user answers (it becomes user_summary / user_line_items). So an
+    // optimistic CLEAR produced answered=null AND worst=null, the row returned
+    // null, and it VANISHED for the length of a refetch before reappearing amber
+    // (Andrew: "it disappears for a few seconds then reappears").
+    //
+    // S304 — the fact now comes FROM the resolver instead of being re-derived
+    // here. This block used to re-sum the raw lines with its own header-column →
+    // line-column mapping, a third implementation of a comparison
+    // `resolveEffectiveClaimTotals` had already made. It could not tell "the
+    // bill states this only in its summary" from "the lines say zero", so it
+    // asked users to settle a conflict that did not exist — 14 of 17 DEV claims,
+    // none of them a real disagreement. `contradictsHeader` requires the line
+    // values to EXIST, which is the whole difference.
     const FIELDS = [
-      { key: "patientResponsibilitySource", label: "what you owe", header: "total_patient_responsibility", value: eff.patientResponsibility },
-      { key: "patientPaidSource", label: "what you've paid", header: "total_patient_paid", value: eff.patientPaid },
-      { key: "insurancePaidSource", label: "what your insurer paid", header: "total_insurance_paid", value: eff.insurancePaid },
-      { key: "insuranceAdjustedSource", label: "the insurer's adjustments", header: "total_insurance_adjusted", value: eff.insuranceAdjusted },
+      { fact: eff.perLine?.patientResponsibility, label: "what you owe", header: "total_patient_responsibility" },
+      { fact: eff.perLine?.patientPaid, label: "what you've paid", header: "total_patient_paid" },
+      { fact: eff.perLine?.insurancePaid, label: "what your insurer paid", header: "total_insurance_paid" },
+      { fact: eff.perLine?.insuranceAdjusted, label: "the insurer's adjustments", header: "total_insurance_adjusted" },
     ] as const;
     let worst: { label: string; lineSum: number; header: number; delta: number } | null = null;
     for (const f of FIELDS) {
-      // S302 round 4 — keyed on the DELTA, not on provenance.
-      //
-      // Provenance was a PROXY for "the two disagree", and it stops saying
-      // `claim_header` the moment the user answers (it becomes user_summary /
-      // user_line_items). So an optimistic CLEAR produced answered=null AND
-      // worst=null, the row returned null, and it VANISHED for the length of a
-      // refetch before reappearing amber (Andrew: "it disappears for a few
-      // seconds then reappears"). The disagreement is a fact about the numbers
-      // and does not change when the user picks a side — so read the fact.
+      if (!f.fact?.contradictsHeader) continue;
       const header = Number((claim as Record<string, unknown>)[f.header] ?? 0);
-      // provenance says header WON, so eff.value IS the header; the per-line sum
-      // is recoverable from the raw lines the page already holds.
-      const lineSum = primaryLineItems.reduce((acc, li) => {
-        const raw = li as unknown as Record<string, unknown>;
-        const k =
-          f.header === "total_patient_responsibility" ? "patient_owes"
-          : f.header === "total_patient_paid" ? "patient_paid_amount"
-          : f.header === "total_insurance_paid" ? "insurance_paid"
-          : "insurance_adjusted_amount";
-        return acc + (raw[k] != null ? Number(raw[k]) : 0);
-      }, 0);
-      const delta = Math.abs(lineSum - header);
-      if (delta > 0.01 && (worst == null || delta > worst.delta)) {
-        worst = { label: f.label, lineSum, header, delta };
+      const delta = Math.abs(f.fact.sum - header);
+      if (worst == null || delta > worst.delta) {
+        worst = { label: f.label, lineSum: f.fact.sum, header, delta };
       }
     }
     // Answered → the row STAYS, in its confirmed state, because the copy
@@ -1529,7 +1583,7 @@ export function ClaimDetail({
   // assumption rows to edit; every later step renumbers off that.
   const railHasAssumptions =
     !!data.costShareBill &&
-    hasAssumptionRows(bannerAssumptions, data.costShareOverrides ?? null, bannerEditableCost);
+    hasAssumptionRows(bannerAssumptions, effectiveCostShareOverrides, bannerEditableCost);
   const railStepServices = railHasAssumptions ? 2 : 1;
   const railStepSave = railStepServices + 1;
   const railStepRecover = railStepSave + 1;
@@ -1542,7 +1596,7 @@ export function ClaimDetail({
   const assumptionsPendingFields = railHasAssumptions
     ? pendingAssumptionFields(
         bannerAssumptions,
-        data.costShareOverrides ?? null,
+        effectiveCostShareOverrides,
         // S292 — the plan-identity row's amber now comes from this ONE set,
         // so the step badge and the row border can never disagree again.
         // S293 (#1) — and the badge input now MIRRORS the row's own render
@@ -1574,9 +1628,9 @@ export function ClaimDetail({
   // amber across reloads instead of resetting to a fresh blue "1".
   const assumptionsEngaged =
     svcOk ||
-    (data.costShareOverrides?.userNetworkOverride ?? null) != null ||
-    (data.costShareOverrides?.deductibleMet ?? null) != null ||
-    (data.costShareOverrides?.oopMet ?? null) != null;
+    (effectiveCostShareOverrides?.userNetworkOverride ?? null) != null ||
+    (effectiveCostShareOverrides?.deductibleMet ?? null) != null ||
+    (effectiveCostShareOverrides?.oopMet ?? null) != null;
   const assumptionsAttention = railHasAssumptions && assumptionsPending > 0 && assumptionsEngaged;
 
   // S291 (Andrew) — a drafted letter completes BOTH the savings step and the
@@ -2236,13 +2290,14 @@ export function ClaimDetail({
                 variant="assumptions"
                 verdict={data.costShareBill.verdict}
                 assumptions={bannerAssumptions}
-                overrides={data.costShareOverrides ?? null}
+                overrides={effectiveCostShareOverrides}
                 recoverable={billTotals.potentialRecovery}
                 correctShare={billTotals.shouldOwe}
                 charged={billTotals.shouldOwe + billTotals.potentialRecovery}
                 fmtMoney={fmtMoney}
                 onOverride={submitCostShareOverride}
                 onConfirmDefaults={confirmAssumptionDefaults}
+                onOptimistic={(patch) => setAssumptionOptimistic((prev) => ({ ...prev, ...patch }))}
                 pendingFields={assumptionsPendingFields}
                 totalsSource={totalsSourceRow}
                 planIdentity={
@@ -2348,7 +2403,7 @@ export function ClaimDetail({
                       : "inline-flex items-center gap-1.5 rounded-xl bg-blue-600 px-4 py-[9px] text-[13px] font-semibold text-white shadow-[0_0_20px_hsla(217,91%,60%,0.15)] transition-all hover:-translate-y-px hover:bg-blue-700"
                   }
                 >
-                  {svcOk ? "Confirmed" : "All services look right"}
+                  {svcOk ? "Confirmed" : "All services and coverage look right"}
                   {svcOk && (
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
                       <path d="M5 13l4 4L19 7" />
@@ -2407,13 +2462,14 @@ export function ClaimDetail({
         <CostShareBanner
           verdict={data.costShareBill.verdict}
           assumptions={bannerAssumptions}
-          overrides={data.costShareOverrides ?? null}
+          overrides={effectiveCostShareOverrides}
           recoverable={billTotals.potentialRecovery}
           correctShare={billTotals.shouldOwe}
           charged={billTotals.shouldOwe + billTotals.potentialRecovery}
           fmtMoney={fmtMoney}
           onOverride={submitCostShareOverride}
                 onConfirmDefaults={confirmAssumptionDefaults}
+                onOptimistic={(patch) => setAssumptionOptimistic((prev) => ({ ...prev, ...patch }))}
                 pendingFields={assumptionsPendingFields}
                 planIdentity={
                   planCandidates
@@ -2481,8 +2537,8 @@ export function ClaimDetail({
           className="hidden lg:grid gap-2 items-center px-5 py-3 bg-gray-50 text-[10px] font-semibold text-gray-500 uppercase tracking-[0.06em] border-b border-gray-100"
           style={{
             gridTemplateColumns: isMultiLine
-              ? "minmax(0, 1.5fr) 56px 88px 64px 64px 72px 80px 88px 40px"
-              : "minmax(0, 1.5fr) 56px 88px 64px 64px 72px 80px 88px",
+              ? "minmax(0, 1.5fr) 56px 88px 64px 64px 72px 80px 112px 40px"
+              : "minmax(0, 1.5fr) 56px 88px 64px 64px 72px 80px 112px",
           }}
         >
           <div className="min-w-0">Service</div>
@@ -2861,8 +2917,8 @@ export function ClaimDetail({
                 className={`hidden lg:grid w-full gap-2 items-start px-5 py-3.5 text-left transition-colors border-t border-gray-100 cursor-pointer ${isMultiLine && isExpanded ? "bg-blue-50/40 hover:bg-blue-50/60" : "hover:bg-gray-50"}`}
                 style={{
                   gridTemplateColumns: isMultiLine
-                    ? "minmax(0, 1.5fr) 56px 88px 64px 64px 72px 80px 88px 40px"
-                    : "minmax(0, 1.5fr) 56px 88px 64px 64px 72px 80px 88px",
+                    ? "minmax(0, 1.5fr) 56px 88px 64px 64px 72px 80px 112px 40px"
+                    : "minmax(0, 1.5fr) 56px 88px 64px 64px 72px 80px 112px",
                 }}
               >
                 <div className="min-w-0 text-sm text-gray-900">
@@ -3012,10 +3068,21 @@ export function ClaimDetail({
                     picker. UI gated on flywheelEnabled because the backend
                     endpoint requires the same flag (mig 087). */}
                 {/* S139 — flex-wrap allows "Your pick" pill to wrap below "Covered"
-                    when both present, instead of overflowing 88px column into
-                    Forgiveness cell. whitespace-nowrap on each pill prevents
-                    in-pill text wrap ("Your\npick"). */}
-                <div className="flex flex-wrap items-center justify-center gap-1.5">
+                    when both present, instead of overflowing the column into
+                    the Forgiveness cell. whitespace-nowrap on each pill prevents
+                    in-pill text wrap ("Your\npick").
+                    S304 — flex-wrap alone was not enough and this recurred: it
+                    wraps BETWEEN pills, but each pill is nowrap, and S154's
+                    "Likely Covered" (~111px with its icon) and "Verify coverage"
+                    (~103px) each exceed the old 88px track on their own, so a
+                    single pill spilled left over FORGIVENESS. Two fixes, in
+                    order of importance: `min-w-0` makes the cell a containment
+                    boundary so overflow can NEVER escape into a money column
+                    again whatever the label; the track widening to 112px (taken
+                    from Service's 1.5fr) is what keeps today's labels on one
+                    line. Containment first — sizing alone would just wait for
+                    the next longer label. */}
+                <div className="flex min-w-0 flex-wrap items-center justify-center gap-1.5">
                   {coverageBadge ? (
                     flywheelEnabled && (item.coverageStatus === "unknown" || item.coverageStatus === "not_covered" || item.user_corrected_at != null || item.coverageSource === "secondary_match" || item.coverageSource === "aca_preventive") ? (
                       <button
@@ -5179,7 +5246,13 @@ function BulkDisputeButton({
           size === "xl"
             ? "flex w-full items-center justify-center gap-2 rounded-[14px] bg-blue-600 px-6 py-3.5 text-[15px] font-semibold text-white shadow-[0_0_20px_hsla(217,91%,60%,0.15)] transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow-[0_0_24px_hsla(217,91%,60%,0.25)] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0"
             : muted
-              ? "inline-flex items-center gap-1.5 rounded-xl bg-gray-200 px-4 py-[9px] text-[13px] font-semibold text-gray-500 transition-colors hover:bg-gray-300 disabled:cursor-not-allowed disabled:opacity-50"
+              // S304 (Andrew) — the muted variant was grey fill on grey text,
+              // which reads as DISABLED on a button that is fully clickable.
+              // De-emphasis should come from weight, not from looking broken:
+              // outlined blue on white, the same treatment "Upload another bill"
+              // already uses on this page, so it still sits below the filled
+              // primary CTA without pretending to be unavailable.
+              ? "inline-flex items-center gap-1.5 rounded-xl border border-blue-600 bg-white px-4 py-[9px] text-[13px] font-semibold text-blue-700 transition-all hover:-translate-y-px hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0"
               : "inline-flex items-center gap-1.5 rounded-xl bg-blue-600 px-4 py-[9px] text-[13px] font-semibold text-white shadow-[0_0_20px_hsla(217,91%,60%,0.15)] transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow-[0_0_24px_hsla(217,91%,60%,0.25)] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0"
         }
       >

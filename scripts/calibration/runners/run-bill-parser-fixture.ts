@@ -147,11 +147,27 @@ function runFixture(fixture: FixtureRow): AssertionResult[] {
     });
   }
 
-  // header reconciliation: fixture has no total_patient_paid → allHeaderTotalsPresent=false
+  // B-2 header reconciliation.
+  //
+  // S304 — this assertion INVERTED, and the old one was encoding the bug.
+  //
+  // It used to read "skipped when totals incomplete", passing because this
+  // fixture has no `total_patient_paid`. But the bill balances to the cent —
+  // 804.00 − 358.87 − 195.66 − 249.47 = 0.00 — and it was skipped only because
+  // the formula closed on patient PAID, a settlement fact, rather than patient
+  // RESPONSIBILITY, which is the term that actually allocates the charge. An EOB
+  // that reports adjudication without any remittance data is the ordinary case,
+  // and the verifier had nothing to say about it.
+  //
+  // The identity now closes on responsibility, so this bill is checked and
+  // passes. Same change stops the inverse false-fire: an unpaid bill printing
+  // "Payments: $0.00" used to open the gate with a zero and be declared
+  // incoherent, which set `header_reconciliation_failed` and put the user behind
+  // a data-trust hold with no exit.
   results.push({
-    name: "B-2 header reconciliation skipped when totals incomplete",
-    passed: !header.allHeaderTotalsPresent,
-    detail: `allHeaderTotalsPresent=${header.allHeaderTotalsPresent} delta=${header.delta} tol=${header.tolerance}`,
+    name: "B-2 header reconciliation closes on patient RESPONSIBILITY, not patient paid",
+    passed: header.allHeaderTotalsPresent && header.withinTolerance,
+    detail: `allHeaderTotalsPresent=${header.allHeaderTotalsPresent} delta=${header.delta} tol=${header.tolerance} (no total_patient_paid on this bill)`,
   });
 
   results.push({

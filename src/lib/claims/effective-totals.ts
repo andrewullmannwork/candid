@@ -68,6 +68,31 @@ export function isPerLineCiteGrade(source: EffectiveTotalsSource): boolean {
   return source === "per_line_sum" || source === "user_line_items";
 }
 
+/**
+ * S304 — what the LINES say about one field, as a fact rather than a proxy.
+ *
+ * The line-items-vs-summary question was computed a second time in ClaimDetail,
+ * from the raw rows, with its own header-column→line-column mapping and its own
+ * null-treated-as-zero sum. That third derivation could not tell "the bill does
+ * not state this per line" from "the lines say zero", so it asked users to
+ * adjudicate a conflict that did not exist on 14 of 17 DEV claims. The resolver
+ * already computes everything the question needs — so it reports it.
+ */
+export interface PerLineFieldFact {
+  /** Sum of the per-line values; lines with no value contribute nothing. */
+  sum: number;
+  /**
+   * Did ANY line carry a value? False means the bill states this field only in
+   * its summary block — an absence, not a competing opinion.
+   */
+  present: boolean;
+  /**
+   * A REAL conflict: line values exist AND disagree with the header beyond a
+   * cent. This — not a bare delta — is the condition worth asking a user about.
+   */
+  contradictsHeader: boolean;
+}
+
 export interface EffectiveClaimTotals {
   patientPaid: number;
   insurancePaid: number;
@@ -78,6 +103,25 @@ export interface EffectiveClaimTotals {
     insurancePaidSource: EffectiveTotalsSource;
     insuranceAdjustedSource: EffectiveTotalsSource;
     patientResponsibilitySource: EffectiveTotalsSource;
+  };
+  /**
+   * S304 — the per-line facts behind each decision.
+   *
+   * OPTIONAL on the type, ALWAYS populated by `resolveEffectiveClaimTotals` —
+   * and the totals-source fixture asserts that, so the guarantee is tested, not
+   * merely commented. Optional deliberately, unlike `userTotalsSource`: that is
+   * an INPUT five production call sites supply, where an optional param lets one
+   * silently keep the old answer. This is an OUTPUT with a single producer and a
+   * single consumer (the claim detail GET → ClaimDetail's question). The only
+   * objects lacking it are dispute-pipeline fixtures that hand-build totals for
+   * unrelated assertions; requiring it there would duplicate the same four
+   * literals across five files, which is the drift, not the guard against it.
+   */
+  perLine?: {
+    patientPaid: PerLineFieldFact;
+    insurancePaid: PerLineFieldFact;
+    insuranceAdjusted: PerLineFieldFact;
+    patientResponsibility: PerLineFieldFact;
   };
 }
 
@@ -108,18 +152,38 @@ function decideField(
   perLineSum: number,
   header: number | null,
   userChoice: UserTotalsSource,
+  /**
+   * S304 — did ANY line carry a value for this field? A bill that states a total
+   * only in its summary block (a provider itemised receipt) has NO per-line
+   * values, which is not the same as per-line values that happen to sum to zero.
+   */
+  perLinePresent: boolean,
 ): { value: number; source: EffectiveTotalsSource } {
-  // S302 — the user's answer OUTRANKS the default rule. It is a choice between
-  // the two numbers already computed below, so nothing else changes shape.
-  if (userChoice === "line_items") {
-    return { value: perLineSum, source: "user_line_items" };
-  }
-  if (userChoice === "summary" && header != null) {
-    return { value: header, source: "user_summary" };
-  }
   // Header absent → trust per-line sum (no other signal to compare against).
   if (header == null) {
     return { value: perLineSum, source: "per_line_sum" };
+  }
+  // S304 — AGREEMENT OUTRANKS A STORED ANSWER. When the per-line values and the
+  // header produce the same number there is nothing to choose between, so the
+  // user's answer is moot and the lines stay cite-grade. This check used to sit
+  // BELOW the user branches, so an answer given once kept suppressing cite-grade
+  // for good — even after a re-parse (or the single-line header identity) made
+  // the two agree. A choice between two identical numbers is not a choice.
+  if (perLinePresent && Math.abs(perLineSum - header) <= CITE_GRADE_TOLERANCE) {
+    return { value: perLineSum, source: "per_line_sum" };
+  }
+  // S302 — the user's answer OUTRANKS the default rule. It is a choice between
+  // the two numbers already computed below, so nothing else changes shape.
+  //
+  // S304 — "the line items are right" requires that there BE line items. On a
+  // header-only bill the per-line sum is 0, so honoring the answer would report
+  // $0.00 for money the bill plainly states. The question no longer fires on
+  // those bills, but a stored answer outlives the question that produced it.
+  if (userChoice === "line_items" && perLinePresent) {
+    return { value: perLineSum, source: "user_line_items" };
+  }
+  if (userChoice === "summary") {
+    return { value: header, source: "user_summary" };
   }
   // Bi-directional cite-grade match — within tolerance means per-line and
   // header agree; either way of mismatch (sparse OR inflated per-line)
@@ -158,11 +222,21 @@ export function resolveEffectiveClaimTotals(args: {
   let sumInsurancePaid = 0;
   let sumInsuranceAdjusted = 0;
   let sumPatientResp = 0;
+  // S304 — presence is tracked alongside the sum, because null and 0 sum
+  // identically and the two mean opposite things.
+  let anyPatientPaid = false;
+  let anyInsurancePaid = false;
+  let anyInsuranceAdjusted = false;
+  let anyPatientResp = false;
   for (const li of lineItems) {
     sumPatientPaid += toNumber(li.patient_paid_amount);
     sumInsurancePaid += toNumber(li.insurance_paid);
     sumInsuranceAdjusted += toNumber(li.insurance_adjusted_amount);
     sumPatientResp += toNumber(li.patient_owes);
+    if (li.patient_paid_amount != null) anyPatientPaid = true;
+    if (li.insurance_paid != null) anyInsurancePaid = true;
+    if (li.insurance_adjusted_amount != null) anyInsuranceAdjusted = true;
+    if (li.patient_owes != null) anyPatientResp = true;
   }
 
   // Header values. patient_responsibility cascades through
@@ -185,10 +259,17 @@ export function resolveEffectiveClaimTotals(args: {
         ? Number(claim.amount_still_outstanding)
         : null;
 
-  const patientPaid = decideField(sumPatientPaid, headerPatientPaid, userTotalsSource);
-  const insurancePaid = decideField(sumInsurancePaid, headerInsurancePaid, userTotalsSource);
-  const insuranceAdjusted = decideField(sumInsuranceAdjusted, headerInsuranceAdjusted, userTotalsSource);
-  const patientResponsibility = decideField(sumPatientResp, headerPatientResp, userTotalsSource);
+  const patientPaid = decideField(sumPatientPaid, headerPatientPaid, userTotalsSource, anyPatientPaid);
+  const insurancePaid = decideField(sumInsurancePaid, headerInsurancePaid, userTotalsSource, anyInsurancePaid);
+  const insuranceAdjusted = decideField(sumInsuranceAdjusted, headerInsuranceAdjusted, userTotalsSource, anyInsuranceAdjusted);
+  const patientResponsibility = decideField(sumPatientResp, headerPatientResp, userTotalsSource, anyPatientResp);
+
+  const fact = (sum: number, present: boolean, header: number | null): PerLineFieldFact => ({
+    sum,
+    present,
+    contradictsHeader:
+      present && header != null && Math.abs(sum - header) > CITE_GRADE_TOLERANCE,
+  });
 
   return {
     patientPaid: patientPaid.value,
@@ -200,6 +281,12 @@ export function resolveEffectiveClaimTotals(args: {
       insurancePaidSource: insurancePaid.source,
       insuranceAdjustedSource: insuranceAdjusted.source,
       patientResponsibilitySource: patientResponsibility.source,
+    },
+    perLine: {
+      patientPaid: fact(sumPatientPaid, anyPatientPaid, headerPatientPaid),
+      insurancePaid: fact(sumInsurancePaid, anyInsurancePaid, headerInsurancePaid),
+      insuranceAdjusted: fact(sumInsuranceAdjusted, anyInsuranceAdjusted, headerInsuranceAdjusted),
+      patientResponsibility: fact(sumPatientResp, anyPatientResp, headerPatientResp),
     },
   };
 }
