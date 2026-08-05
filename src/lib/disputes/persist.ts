@@ -102,13 +102,28 @@ const RESOLVED_STATUSES = [
 ];
 
 /**
+ * S306 — statuses the dedupe must NOT match. Resolved rows (above) don't block
+ * a fresh fight; `cancelled` rows are VOID — every read surface (the projector,
+ * the S303 rung-taken gate, waitingCount) already skips them, so the dedupe
+ * matching one wrote the new letter INTO a row nothing renders: the letter page
+ * showed it (direct-by-id) while the claim rail kept offering the rung as free.
+ * A cancelled letter is not "the same fight again"; a new letter gets a NEW row
+ * and its own event history. Deliberately a separate list: cancelled is not a
+ * RESOLUTION, and resolution semantics must never count voided letters.
+ */
+const DEDUPE_EXCLUDED_STATUSES = [...RESOLVED_STATUSES, "cancelled"];
+
+/**
  * Create or update a dispute_outcomes row when a dispute letter is generated.
  *
- * Dedup key: (user_id, claim_line_item_id, dispute_type) among non-resolved rows.
+ * Dedup key: (user_id, claim_line_item_id, dispute_type) among LIVE rows —
+ * not resolved, not cancelled (DEDUPE_EXCLUDED_STATUSES).
  * A second draft for the same line item updates letter_content + max(amount_disputed)
  * on the existing row instead of creating a duplicate. Resolved disputes
  * (won/lost/settled/withdrawn/*_on_escalation) don't block a new row — the user
- * may legitimately open a fresh fight after a prior one closed.
+ * may legitimately open a fresh fight after a prior one closed — and cancelled
+ * rows are void (S306): matching one buried the new letter in a row no surface
+ * renders.
  *
  * S305 — when there is no line item the key falls back to (user_id, claim_id,
  * dispute_type). It used to fall through to INSERT unconditionally, on the
@@ -145,7 +160,7 @@ export async function persistDisputeLetter(
         .eq("user_id", input.userId)
         .eq(dedupeScope.column, dedupeScope.value)
         .eq("dispute_type", disputeType)
-        .not("status", "in", `(${RESOLVED_STATUSES.join(",")})`);
+        .not("status", "in", `(${DEDUPE_EXCLUDED_STATUSES.join(",")})`);
       // Claim-scoped lookups match claim-scoped rows ONLY. Without this a
       // letter with no line items would merge into one that HAS them — a
       // different letter, covering charges this one never named. Same question,

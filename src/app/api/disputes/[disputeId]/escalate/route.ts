@@ -206,7 +206,11 @@ export async function POST(
   // recite via attested dates, not the audit findings).
   const accountNumber = (meta?.accountNumber as string | null) ?? null;
   const rerendered = await rerenderDisputeLetter(supabase, {
-    disputeId: dispute.id,
+    // S306 — NULL, deliberately: the letter being composed has no row yet
+    // (persist runs below), and the id in hand is the PARENT dispute's. Passing
+    // that here excluded the parent's send from the child's recital — a final
+    // notice that could not recite the very letter it escalates from.
+    composingDisputeId: null,
     userId: user.id,
     letterType,
     claimId: dispute.claim_id,

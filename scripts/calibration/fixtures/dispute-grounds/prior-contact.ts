@@ -150,6 +150,41 @@ const CALLS = [
   check("self · a draft is not a contact", out === "", out);
 }
 
+// ── 3b. Escalate-compose (S306) — null exclusion; the parent's send recites ──
+// The S306 defect: escalate rendered the child BEFORE persisting it and passed
+// the PARENT's id as the exclusion, so the one provider send — the letter the
+// final notice escalates from — vanished, contactCount hit 0, and the recital
+// (with its concluded-insurer clause) rendered as "". On the escalate path the
+// composed letter has no row, so the exclusion is NULL and the parent recites.
+{
+  const history = [
+    ev(PROVIDER_LETTER, "letter_sent", "2026-07-01T17:00:00.000Z"),
+    ev(INSURER_LETTER, "letter_sent", "2026-06-20T17:00:00.000Z"),
+  ];
+  const out = buildPriorContactRecital({
+    variant: "opening",
+    history,
+    letters: [
+      letter(PROVIDER_LETTER, "overcharge", "provider"),
+      letter(INSURER_LETTER, "insurance_appeal", "insurer", {
+        detail: "denied_fully",
+        loggedAt: "2026-07-15T17:00:00.000Z",
+      }),
+    ],
+    callLog: [],
+    recipientKind: "provider",
+    letterType: "final_notice",
+    excludeDisputeId: null,
+    includeOtherTrack: true,
+  });
+  check(
+    "escalate-compose · exact recital: parent send + concluded-insurer clause",
+    out ===
+      "I wrote to you on July 1, 2026 and have not received a resolution. I also appealed to my insurer on June 20, 2026, and that appeal was denied on July 15, 2026.",
+    out,
+  );
+}
+
 // ── 4. Other-track clause — attested conclusions only ───────────────────────
 {
   const history = [

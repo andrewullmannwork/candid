@@ -461,7 +461,9 @@ export async function GET(
       if (shouldRegenerate) {
         const { rerenderDisputeLetter } = await import("@/lib/disputes/rerender");
         const rerendered = await rerenderDisputeLetter(supabase, {
-          disputeId: dispute.id,
+          // S306 — this render composes THIS dispute's own letter (redraft), so
+          // its id is the one the recital must exclude.
+          composingDisputeId: dispute.id,
           userId: user.id,
           letterType: resolvedLetterType,
           claimId: dispute.claim_id,

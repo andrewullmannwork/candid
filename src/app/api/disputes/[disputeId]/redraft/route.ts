@@ -260,7 +260,9 @@ export async function POST(
     return typeof v === "string" && v.trim() ? v.trim() : undefined;
   })();
   const rerendered = await rerenderDisputeLetter(supabase, {
-    disputeId: dispute.id,
+    // S306 — redraft composes THIS dispute's own letter; its id is excluded
+    // from the prior-contact recital.
+    composingDisputeId: dispute.id,
     userId: user.id,
     letterType: letterTypeForRender,
     claimId: dispute.claim_id,

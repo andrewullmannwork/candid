@@ -139,7 +139,7 @@ async function main() {
       : [],
   });
   const rerendered = await rerenderDisputeLetter(supabase, {
-    disputeId: dispute.id,
+    composingDisputeId: dispute.id,
     userId: user.id,
     letterType: "insurance_appeal",
     claimId: claim.id,

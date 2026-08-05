@@ -24,7 +24,19 @@ import { loadDisputeGroundBasis } from "./dispute-ground-basis";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 
 interface RerenderParams {
-  disputeId: string;
+  /**
+   * S306 — the dispute row whose letter THIS render composes, excluded from the
+   * prior-contact recital so a letter can never recite its own send (the only
+   * live case is the legacy flags-OFF path that re-renders sent letters).
+   * REQUIRED but nullable — every caller must state which it is (an optional
+   * param here is how the S301 `guideSteps` gap compiled): pass the dispute id
+   * on redraft; pass NULL on escalate, where the composed letter has no row yet
+   * and the id in hand is the PARENT's — excluding that suppressed the very
+   * send a final notice exists to recite (the S306 defect: the parent's send
+   * vanished, contactCount hit 0, and the whole recital — including the
+   * concluded-insurer clause — rendered as "").
+   */
+  composingDisputeId: string | null;
   userId: string;
   letterType: DisputeLetterType;
   claimId: string;
@@ -179,7 +191,7 @@ export async function rerenderDisputeLetter(
     ),
     recipientKind: recitalRecipient,
     letterType,
-    excludeDisputeId: params.disputeId,
+    excludeDisputeId: params.composingDisputeId,
     includeOtherTrack: true,
   });
 
