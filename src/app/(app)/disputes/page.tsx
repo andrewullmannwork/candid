@@ -1,14 +1,13 @@
 "use client";
 
 import { Suspense, useState, useEffect, useRef, useCallback, useMemo} from "react";
-import { useSearchParams } from "next/navigation";
+import { useSearchParams, useRouter } from "next/navigation";
 import type { DisputeLetter } from "@/lib/billing/types";
 import { useAuth } from "@/lib/auth/auth-context";
 import { useSubscription } from "@/lib/subscription/use-subscription";
 import { useFeatureFlag } from "@/lib/config/use-feature-flag";
 import { LockedOverlay } from "@/components/shared/LockedOverlay";
 import { InlineSubscribePanel } from "@/components/billing/InlineSubscribePanel";
-import { downloadCaseFile } from "@/lib/casefile";
 import { disputeUrlForResult } from "@/lib/disputes/url";
 import { letterRecipientKind } from "@/lib/disputes";
 import { unsendPayload } from "@/lib/disputes/outcome-actions";
@@ -32,7 +31,6 @@ import {
 } from "@/components/disputes/PlanSearchModal";
 import { DisputePlanChooser, type DisputePlanChooserPlan } from "@/components/disputes/DisputePlanChooser";
 import { StrengthenLetterPrompt, type StrengthField } from "@/components/disputes/StrengthenLetterPrompt";
-import { DownloadWarningModal } from "@/components/disputes/DownloadWarningModal";
 import { InsurerAddressCorrectionModal } from "@/components/disputes/InsurerAddressCorrectionModal";
 import { ProviderAddressModal } from "@/components/disputes/ProviderAddressModal";
 import { OutcomeReportingModal } from "@/components/disputes/OutcomeReportingModal";
@@ -198,6 +196,7 @@ Jane Sample`}
 
 function DisputesContent() {
   const searchParams = useSearchParams();
+  const router = useRouter();
   const { user } = useAuth();
   const [letter, setLetter] = useState<DisputeLetter | null>(() => {
     const letterParam = searchParams.get("letter");
@@ -231,7 +230,6 @@ function DisputesContent() {
   );
   const [planContext, setPlanContext] = useState<PlanContext | null>(null);
   const [evidence, setEvidence] = useState<DisputeEvidence | null>(null);
-  const [downloadWarnOpen, setDownloadWarnOpen] = useState(false);
   const [nameMismatch, setNameMismatch] = useState<{ billName: string; profileName: string } | null>(null);
   // Phase 4 Task 4-E: server-authoritative flag state for cite-grade gating on
   // EvidenceBlock UI. Resolved server-side in /api/disputes/[disputeId] GET so
@@ -398,17 +396,6 @@ function DisputesContent() {
   const [siblings, setSiblings] = useState<SiblingLetter[]>([]);
   const [checklist, setChecklist] = useState<Record<string, boolean>>({});
   const disputeId = searchParams.get("dispute");
-  // Stretch 2 — enriched Case File rollout flag (case_file_enriched_v1), read
-  // via /api/feature-flags (a browser-Supabase read returns [] under Firebase auth).
-  const [caseFileEnrichedEnabled, setCaseFileEnrichedEnabled] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    fetch("/api/feature-flags/case_file_enriched_v1")
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => { if (!cancelled && d) setCaseFileEnrichedEnabled(!!d.enabled); })
-      .catch(() => { /* OFF → legacy text export */ });
-    return () => { cancelled = true; };
-  }, []);
 
   // dispute_plan_pinning_v1 (Phase 4) — re-bind control gate + chooser state.
   const [planPinningEnabled, setPlanPinningEnabled] = useState(false);
@@ -976,60 +963,7 @@ function DisputesContent() {
     }
   }
 
-  // Stretch 2 — enriched PDF export via the Pro-gated evidence-package route.
-  // Falls back to the legacy text file on any failure so the user always gets a
-  // download. claimId is carried on letter.auditReportId (set from data.claimId).
-  async function downloadEnrichedCaseFile() {
-    if (!user || !letter) return;
-    const claimId = letter.auditReportId;
-    try {
-      if (!claimId) throw new Error("no claimId");
-      const idToken = await user.firebaseUser.getIdToken();
-      const params = new URLSearchParams({ claimId, format: "pdf" });
-      if (disputeId) params.set("disputeId", disputeId);
-      const res = await fetch(`/api/legal/evidence-package?${params.toString()}`, {
-        headers: { Authorization: `Bearer ${idToken}` },
-      });
-      if (!res.ok) throw new Error(`evidence-package ${res.status}`);
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `candid-case-file-${letter.letterType || "claim"}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    } catch {
-      downloadCaseFile({ ...letter, body: editedBody });
-    }
-  }
 
-  const handleDownloadCaseFile = () => {
-    if (!letter) return;
-    // Phase 3: warn-not-block when plan missing for claim year.
-    // S111 smoke #4 — also skip the warning when the user has bound a
-    // canonical OR explicitly accepted proxy, since either path addresses
-    // the missing-plan gap (letter cites the bound canonical or current
-    // plan as proxy, respectively).
-    const missingYear = letter.missingPlanForYear ?? planContext?.missingForYear ?? null;
-    const planGapAddressed = !!boundCanonicalPlan || userAcceptedProxy;
-    if (missingYear && !planGapAddressed) {
-      setDownloadWarnOpen(true);
-      return;
-    }
-    // Stretch 2 — enriched PDF when the rollout flag is ON; legacy text otherwise.
-    if (caseFileEnrichedEnabled) { void downloadEnrichedCaseFile(); return; }
-    // Use the edited body so any user edits are included
-    downloadCaseFile({ ...letter, body: editedBody });
-  };
-
-  const forceDownloadCaseFile = () => {
-    if (!letter) return;
-    setDownloadWarnOpen(false);
-    if (caseFileEnrichedEnabled) { void downloadEnrichedCaseFile(); return; }
-    downloadCaseFile({ ...letter, body: editedBody });
-  };
 
   const handleConfirmAddress = async (insurerId: string) => {
     if (!user) return;
@@ -1585,7 +1519,6 @@ function DisputesContent() {
     return <CubeLoaderBuilding />;
   }
 
-  const missingYear = letter.missingPlanForYear ?? planContext?.missingForYear ?? null;
   const planLabel = planContext?.plan?.planName
     ? `${planContext.plan.planName}${planContext.plan.planYear ? `, ${planContext.plan.planYear}` : ""}`
     : null;
@@ -1953,23 +1886,33 @@ function DisputesContent() {
     </section>
   );
 
+  // The claim this letter belongs to; the Case File lives there now.
+  const claimIdForCaseFile = letter?.auditReportId ?? null;
+
+  // S305 — the per-letter Case File download is GONE. "No per-letter download.
+  // One artifact, one place" was settled at S302 and restated in the content
+  // spec (§6); the code had never caught up, so a letter could hand over a
+  // claim-scoped document from a letter-scoped button, and its failure path
+  // quietly substituted a legacy per-letter text file instead. The Case File
+  // lives on the claim, below the rail. This is the pointer the spec names.
   const caseFileNode = (
     <section className="@container rounded-2xl border border-blue-100 bg-gradient-to-br from-blue-50 to-indigo-50 p-6 shadow-sm md:p-7">
       <div className="flex flex-col gap-4 @md:flex-row @md:items-center @md:justify-between">
         <div className="min-w-0">
-          <h3 className="text-base font-semibold text-slate-900">Download your full Case File</h3>
+          <h3 className="text-base font-semibold text-slate-900">Your case file lives with the bill</h3>
           <p className="mt-1 text-sm text-slate-600">
-            Dispute letter, audit findings, evidence log, follow-up checklist, and escalation guide — one styled PDF.
+            Everything on this bill — every letter, call and response — is assembled in one document on the claim itself.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={handleDownloadCaseFile}
-          className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow"
-        >
-          <ToolbarIcon name="casefile" />
-          Download Case File
-        </button>
+        {claimIdForCaseFile ? (
+          <button
+            type="button"
+            onClick={() => router.push(`/claim?claim=${claimIdForCaseFile}`)}
+            className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow"
+          >
+            Return to your claim
+          </button>
+        ) : null}
       </div>
     </section>
   );
@@ -2953,16 +2896,6 @@ function DisputesContent() {
           {caseFileNode}
         </>
       )}
-
-      {missingYear ? (
-        <DownloadWarningModal
-          open={downloadWarnOpen}
-          claimYear={missingYear}
-          disputeId={letter.id}
-          onCancel={() => setDownloadWarnOpen(false)}
-          onDownloadAnyway={forceDownloadCaseFile}
-        />
-      ) : null}
 
       {/* S74.6 D5 §E.2 — outcome reporting modal. Rendered alongside the
           existing toolbar modals so state lives at the page level. */}

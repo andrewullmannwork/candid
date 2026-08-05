@@ -25,7 +25,8 @@ export default function SmallClaimsPage() {
 
   const disputeAmount = parseFloat(searchParams.get("amount") || "0");
   const claimId = searchParams.get("claimId") || undefined;
-  const disputeId = searchParams.get("disputeId") || undefined;
+  // S305 — the ?disputeId param is no longer read: the Case File this page
+  // offers is the CLAIM's record. Links carrying it still work; it is ignored.
 
   useEffect(() => {
     const supabase = createBrowserClient();
@@ -99,7 +100,6 @@ export default function SmallClaimsPage() {
           disputeAmount={disputeAmount || 500}
           county={userCounty || undefined}
           claimId={claimId}
-          disputeId={disputeId}
         />
       </div>
     </div>

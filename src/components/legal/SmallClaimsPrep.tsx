@@ -3,6 +3,8 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "@/lib/auth/auth-context";
 import { Disclaimer } from "@/components/shared/Disclaimer";
+import { useCaseFileDownload } from "@/lib/legal/use-case-file-download";
+import { CASE_FILE } from "@/lib/guides/pack-registry";
 
 interface CourtInfo {
   state: string;
@@ -31,18 +33,22 @@ export function SmallClaimsPrep({
   disputeAmount,
   county,
   claimId,
-  disputeId,
 }: {
   state: string;
   disputeAmount: number;
   county?: string;
+  /** S305 — no disputeId. The Case File is the CLAIM's record; a letter-scoped
+   *  id told it nothing and only invited a per-letter variant of one artifact. */
   claimId?: string;
-  disputeId?: string;
 }) {
   const { user } = useAuth();
   const [result, setResult] = useState<EligibilityResult | null>(null);
   const [loading, setLoading] = useState(true);
-  const [downloading, setDownloading] = useState(false);
+  const {
+    download: downloadCaseFile,
+    busy: caseFileBusy,
+    failed: caseFileFailed,
+  } = useCaseFileDownload(async () => (user ? await user.firebaseUser.getIdToken() : null));
 
   useEffect(() => {
     async function check() {
@@ -154,37 +160,23 @@ export function SmallClaimsPrep({
         </div>
       )}
 
-      {/* Evidence package download — gated by SubscriptionGate in Phase 5A */}
+      {/* S305 — the SAME download the claim page uses. This was a second
+          hand-rolled copy of fetch → blob → anchor → click whose catch block was
+          literally `// Silent`, so a failed compile looked identical to a user
+          who simply hadn't clicked yet. One implementation, and failure is now
+          visible. */}
       {claimId && (
         <div className="mt-4">
           <button
-            onClick={async () => {
-              if (!user || downloading) return;
-              setDownloading(true);
-              try {
-                const token = await user.firebaseUser.getIdToken();
-                const res = await fetch(`/api/legal/evidence-package?claimId=${claimId}${disputeId ? `&disputeId=${disputeId}` : ""}`, {
-                  headers: { Authorization: `Bearer ${token}` },
-                });
-                if (res.ok) {
-                  const blob = await res.blob();
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement("a");
-                  a.href = url;
-                  a.download = `evidence-package-${claimId.slice(0, 8)}.txt`;
-                  a.click();
-                  URL.revokeObjectURL(url);
-                }
-              } catch {
-                // Silent
-              }
-              setDownloading(false);
-            }}
-            disabled={downloading}
+            onClick={() => void downloadCaseFile(claimId, "pdf")}
+            disabled={caseFileBusy}
             className="w-full py-2.5 text-sm font-semibold text-white bg-blue-600 rounded-xl hover:bg-blue-700 disabled:opacity-50 transition-colors"
           >
-            {downloading ? "Compiling..." : "Download evidence package"}
+            {caseFileBusy ? "Compiling..." : "Download case file"}
           </button>
+          {caseFileFailed && (
+            <p className="mt-2 text-xs text-red-600">{CASE_FILE.failed}</p>
+          )}
         </div>
       )}
 
