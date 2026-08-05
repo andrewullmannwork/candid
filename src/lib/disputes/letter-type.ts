@@ -453,3 +453,63 @@ export function toLocalDateOnly(iso: string): string {
   const p = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
+
+/**
+ * S306 (UX-2) — the patient identity answer, as the letter composes it.
+ * Persisted by confirm-patient-identity onto dispute.metadata.
+ */
+export interface LetterPatientIdentity {
+  choice: "me" | "dependent" | "wrong";
+  correctedName: string | null;
+}
+
+/**
+ * S306 — THE letter patient name. One derivation for the name every template
+ * prints as the patient, shared by the server compose (rerender) and the
+ * compose-basis hash so the two can never watch different fields.
+ *
+ * Before this there were THREE mechanisms: the server's account-holder default
+ * (pickPatientName, tracker AS), a CLIENT-side body substitution (S294
+ * name-fill) whose "dependent" branch assumed the body carried the bill's name
+ * when the server always rendered the account holder's — a silent no-op — and
+ * a hash watching a key (attestingAsName) the compose never read for this.
+ *
+ *   "me"        → the account holder's name (their explicit confirmation)
+ *   "dependent" → the bill's own patient name (the dependent)
+ *   "wrong"     → the corrected name the user typed
+ *   unanswered  → the account-holder default, UNCHANGED (tracker AS: Andrew's
+ *                 S305 ruling covers the silent case; an explicit answer is a
+ *                 different act and is honored)
+ *
+ * Every branch falls back to the default rather than an empty string — a
+ * missing corrected name or blank bill name must never blank a legal letter.
+ */
+export function letterPatientName(
+  identity: LetterPatientIdentity | null | undefined,
+  billPatientName: string | null | undefined,
+  accountHolderDefault: string,
+): string {
+  const bill = (billPatientName ?? "").trim();
+  if (identity) {
+    if (identity.choice === "me") return accountHolderDefault || bill;
+    if (identity.choice === "dependent") return bill || accountHolderDefault;
+    if (identity.choice === "wrong") {
+      const corrected = (identity.correctedName ?? "").trim();
+      return corrected || accountHolderDefault || bill;
+    }
+  }
+  return accountHolderDefault || bill;
+}
+
+/** Read the persisted identity answer off dispute metadata (null = unanswered). */
+export function letterPatientIdentityFromMeta(
+  meta: Record<string, unknown> | null | undefined,
+): LetterPatientIdentity | null {
+  const choice = meta?.patientIdentityChoice;
+  if (choice !== "me" && choice !== "dependent" && choice !== "wrong") return null;
+  const corrected = meta?.patientCorrectedName;
+  return {
+    choice,
+    correctedName: typeof corrected === "string" && corrected.trim() ? corrected.trim() : null,
+  };
+}

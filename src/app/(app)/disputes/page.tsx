@@ -439,6 +439,12 @@ function DisputesContent() {
   // every tab-refocus. The working copy now resets only when the server letter
   // actually changed (redraft / ?refresh=1 / a different dispute).
   const lastServerLetterRef = useRef<string | null>(null);
+  // S306 (UX-2, T1b) — the last name the user TYPED via "the name is wrong".
+  // The optimistic name-fill substitutes away from whichever name the body
+  // currently shows; a typed correction is neither known name, so without this
+  // memory every later me/dependent switch found nothing to replace and the
+  // screen sat frozen until the server rebuild landed.
+  const lastTypedCorrectionRef = useRef<string | null>(null);
   const fetchDispute = useCallback(async (id: string, opts?: { refresh?: boolean }) => {
     if (!user) return;
     const startGen = mutationGenRef.current;
@@ -784,14 +790,36 @@ function DisputesContent() {
               ? (correctedName ?? "").trim()
               : null;
       const ok = await handleResolvePatientIdentity(true, choice, correctedName);
-      if (ok && mismatch && to && to !== mismatch.billName) {
-        setEditedBody((body: string) =>
-          body
-            .split(mismatch.billName)
-            .join(to)
-            .split(mismatch.billName.toUpperCase())
-            .join(to.toUpperCase()),
-        );
+      // S306 (UX-2) — this fill is the OPTIMISTIC layer only: the server compose
+      // now derives the same name (letterPatientName) and the live rebuild
+      // delivers it on the reconcile, so hint and truth agree. Direction fix:
+      // the old code substituted away from the BILL's name, but the server
+      // renders the ACCOUNT HOLDER's — so "use my dependent" found nothing to
+      // replace and silently no-opped. Replace whichever name the body actually
+      // shows — including a PREVIOUSLY TYPED correction, which is neither known
+      // name (the T1b failure: after "wrong", switching back to me/dependent
+      // found nothing to substitute and the screen sat frozen through the
+      // multi-second server rebuild).
+      if (ok && mismatch) {
+        const target =
+          choice === "dependent" ? mismatch.billName : to;
+        if (target) {
+          const priorTyped = lastTypedCorrectionRef.current;
+          setEditedBody((body: string) => {
+            const from = [mismatch.billName, mismatch.profileName, priorTyped].find(
+              (n): n is string => !!n && n !== target && body.includes(n),
+            );
+            if (!from) return body;
+            return body
+              .split(from)
+              .join(target)
+              .split(from.toUpperCase())
+              .join(target.toUpperCase());
+          });
+        }
+        if (choice === "wrong" && (correctedName ?? "").trim()) {
+          lastTypedCorrectionRef.current = (correctedName ?? "").trim();
+        }
       }
     },
     [nameMismatch, handleResolvePatientIdentity],

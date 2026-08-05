@@ -16,6 +16,7 @@ import type { PlanContext } from "./plan-context";
 import type { DisputeEvidence } from "./evidence-resolver";
 import { LETTER_TEMPLATES } from "./templates";
 import { letterRecipientKind } from "./index";
+import { letterPatientName, type LetterPatientIdentity } from "./letter-type";
 import { buildPriorContactRecital, RECITAL_IN_OPENING } from "./prior-contact";
 import { loadCaseProjection } from "@/lib/case/load-case-timeline";
 import { guidedCallLogFromMeta } from "@/lib/guides/pack-registry";
@@ -50,6 +51,15 @@ interface RerenderParams {
    * templates fall back to patientName when absent.
    */
   attestingName?: string;
+  /**
+   * S306 (UX-2) — the persisted patient-identity answer
+   * (dispute.metadata.patientIdentityChoice / patientCorrectedName, via
+   * letterPatientIdentityFromMeta). Drives letterPatientName — the ONE
+   * derivation of the name every template prints as the patient. Callers that
+   * hold the dispute row pass it; absent → the account-holder default
+   * (tracker AS) exactly as before.
+   */
+  patientIdentity?: LetterPatientIdentity | null;
   /**
    * dispute-letters v2 Zone-3 (S266) — escalation/collections gate inputs threaded
    * to the ladder-advance templates (final_notice / external_review / debt_validation)
@@ -133,7 +143,16 @@ export async function rerenderDisputeLetter(
   }) ?? {};
 
   const profileName = resolveAccountName(userRow?.display_name, userRow?.email);
-  const patientName = pickPatientName(metadata.patient?.name, profileName);
+  // S306 (UX-2) — the identity answer outranks the default: an explicit
+  // "dependent"/"wrong" answer names the bill's patient / the typed correction;
+  // unanswered keeps the account-holder default (pickPatientName, tracker AS).
+  const patientName = params.patientIdentity
+    ? letterPatientName(
+        params.patientIdentity,
+        metadata.patient?.name,
+        pickPatientName(metadata.patient?.name, profileName),
+      )
+    : pickPatientName(metadata.patient?.name, profileName);
 
   const bill = {
     patient: {

@@ -27,7 +27,7 @@ import {
 } from "@/lib/disputes/dispute-ground-basis";
 import type { StrengthResult } from "@/lib/disputes/strength-scoring";
 import { letterRecipientKind } from "@/lib/disputes";
-import { resolveLetterTypeFromDispute } from "@/lib/disputes/letter-type";
+import { resolveLetterTypeFromDispute, letterPatientIdentityFromMeta } from "@/lib/disputes/letter-type";
 import { resolveDisputeReadiness } from "@/lib/disputes/dispute-readiness";
 import {
   captureCoverageSnapshot,
@@ -225,12 +225,27 @@ export async function GET(
   let filingDeadlineDate: string | null = null;
   let followups: Array<{ dueDate: string; kind: string; parentLetterType: string | null }> = [];
   let followupPlan: Array<{ dueDate: string; kind: string }> = [];
+  // S306 (UX-2) — the §1692g window for a REGENERATED letter. Engine path
+  // captures the engine's own verdict (config-driven window); the legacy
+  // fallback below mirrors generate/escalate exactly. Without this, a live
+  // rebuild of a debt_validation draft silently lost its in-window teeth.
+  let composeDebtWithinWindow = false;
   const governingDeadlineDate = deadlineEngineOn
     ? ((dispute.governing_deadline_date as string | null) ?? null)
     : null;
   const deadlineType = deadlineEngineOn
     ? ((dispute.deadline_type as string | null) ?? null)
     : null;
+  if (!deadlineEngineOn) {
+    // Legacy §1692g fallback — byte-identical to generate/escalate's flag-OFF math.
+    const meta = dispute.metadata as Record<string, unknown> | null;
+    const first =
+      typeof meta?.collectorFirstContactDate === "string"
+        ? Date.parse(meta.collectorFirstContactDate)
+        : NaN;
+    composeDebtWithinWindow =
+      !Number.isNaN(first) && Date.now() - first <= 30 * 24 * 60 * 60 * 1000;
+  }
   if (deadlineEngineOn) {
     const meta = dispute.metadata as Record<string, unknown> | null;
     const denial = typeof meta?.denialNoticeDate === "string" ? meta.denialNoticeDate : null;
@@ -242,6 +257,7 @@ export async function GET(
       deadlineConfig,
     );
     deadlineWarning = dr.guard.severity === "ok" ? null : dr.guard;
+    composeDebtWithinWindow = dr.debtWithinWindow;
     // The guard reports daysRemaining but not the filing-deadline DATE — derive it (denial +
     // ERISA window) so the UI can show "file before <date>".
     if (denial && dr.guard.deadlineType === "erisa_appeal_180") {
@@ -285,6 +301,12 @@ export async function GET(
     : null;
   let driftDecision: DriftDecision | null = null;
   let currentEvidenceFingerprint: string | null = null;
+  // UX-2 (S306, tracker AF) — "a draft letter is a live document; a sent letter
+  // is a record" (Andrew). ON: an unsent letter regenerates on view whenever
+  // its fingerprint drifts — no banner, no explicit refresh required — so the
+  // draft is always the letter today's inputs would produce. Sent letters keep
+  // the drift banner unchanged.
+  let liveRebuildOn = false;
   // S111 smoke iteration 5 — coverage diff. Populated when the dispute has
   // a stored pre-bind snapshot and we successfully compute the post-bind
   // snapshot from current evidence. Cleared via
@@ -319,10 +341,20 @@ export async function GET(
       // observability; only acted on when flag is ON. W4 also needs the
       // fingerprint to compute `isStale` for the persistent-letter banner.
       if (flywheelOn || costShareV2) {
+        liveRebuildOn =
+          costShareV2 && (await isFeatureEnabled("dispute_draft_live_rebuild_v1"));
+        // UX-2 — the dispute state is passed EXPLICITLY: unsent + flag ON makes
+        // the hash compose-inclusive (name, addresses, collector), so an edit
+        // that changes only those still drifts it. Sent → evidence-only, which
+        // is the same shape mark-as-sent stamps.
         const fpInput = await loadFingerprintInputForClaim(
           supabase,
           dispute.claim_id as string,
           user.id,
+          {
+            sentAt: (dispute.sent_at as string | null) ?? null,
+            metadata: (dispute.metadata as Record<string, unknown> | null) ?? null,
+          },
         );
         if (fpInput) {
           currentEvidenceFingerprint = computeEvidenceFingerprint(fpInput);
@@ -335,6 +367,10 @@ export async function GET(
             lastRefreshAt: dispute.last_refresh_at
               ? new Date(dispute.last_refresh_at as string)
               : null,
+            // UX-2 — a live draft never waits out a debounce: serving a
+            // just-changed address as stale for up to 5 minutes defeats
+            // "viable to send". Mismatch → regenerate, every time.
+            ...(liveRebuildOn ? { debounceMinutes: 0 } : {}),
           });
         }
       }
@@ -443,8 +479,14 @@ export async function GET(
       // W4: when recovery_cost_share_v2 is ON, a GET (view) NEVER regenerates the body —
       // it serves the saved letter. The body regenerates ONLY on an explicit user refresh
       // (?refresh=1). OFF = the legacy always-regenerate-on-load (debounced) behavior.
+      // UX-2 — under dispute_draft_live_rebuild_v1, the route finally HONORS the
+      // decision function's regenerate_draft branch (W4 suppressed it behind the
+      // explicit ?refresh=1). Drafts self-heal on view; sent letters still never
+      // regenerate here.
       const shouldRegenerate = costShareV2
-        ? refreshRequested && !skipRegenerateForSent
+        ? (refreshRequested ||
+            (liveRebuildOn && driftDecision?.action === "regenerate_draft")) &&
+          !skipRegenerateForSent
         : !skipRegenerateForSent && !skipRegenerateForDebounce;
 
       // Always regenerate on load (unless guarded above). Templating is
@@ -460,6 +502,14 @@ export async function GET(
       const fingerprint = buildFingerprint(planContext, evidence);
       if (shouldRegenerate) {
         const { rerenderDisputeLetter } = await import("@/lib/disputes/rerender");
+        // S306 (UX-2) — a regenerate must compose from EVERYTHING the letter was
+        // born with. This path used to pass only attestingName, so a rebuild of
+        // a ladder letter silently dropped its collector block, account number,
+        // certified notation, exhaustion clause and §1692g teeth (renderGated
+        // omission — invisible until live rebuild made regens routine). All are
+        // re-read from the dispute's own metadata, the same rows the birth
+        // wrote, and the same fields the compose-basis hash watches.
+        const composeMeta = (dispute.metadata as Record<string, unknown> | null) ?? {};
         const rerendered = await rerenderDisputeLetter(supabase, {
           // S306 — this render composes THIS dispute's own letter (redraft), so
           // its id is the one the recital must exclude.
@@ -471,6 +521,20 @@ export async function GET(
           planContext,
           evidence,
           attestingName: attestingAsName ?? undefined,
+          patientIdentity: letterPatientIdentityFromMeta(composeMeta),
+          accountNumber:
+            typeof composeMeta.accountNumber === "string" && composeMeta.accountNumber.trim()
+              ? composeMeta.accountNumber.trim()
+              : undefined,
+          collector:
+            (composeMeta.collector as { name: string; address?: string | null; originalCreditor?: string | null } | undefined) ??
+            undefined,
+          appealExhausted:
+            (composeMeta.appealExhausted as { attested: boolean; denialDate?: string | null } | undefined) ??
+            undefined,
+          certifiedMail:
+            typeof composeMeta.certifiedMail === "boolean" ? composeMeta.certifiedMail : undefined,
+          debtWithinWindow: composeDebtWithinWindow,
         });
         regeneratedLetterContent = rerendered?.body ?? null;
         if (rerendered?.recovery) {

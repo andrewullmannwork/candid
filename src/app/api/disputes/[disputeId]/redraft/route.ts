@@ -31,10 +31,14 @@ import { rerenderDisputeLetter } from "@/lib/disputes/rerender";
 import { reparseField } from "@/lib/plan/reparse-field";
 import { loadDecorationContext } from "@/lib/plan/analyze-decoration";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
+import {
+  computeEvidenceFingerprint,
+  loadFingerprintInputForClaim,
+} from "@/lib/disputes/evidence-fingerprint";
 import { emitCaseEvent } from "@/lib/case/case-events";
 import { loadServerSubscription } from "@/lib/subscription/server";
 import { letterRequiresPro, evaluateLetterAccess } from "@/lib/disputes/letter-access";
-import { resolveLetterTypeFromDispute } from "@/lib/disputes/letter-type";
+import { resolveLetterTypeFromDispute, letterPatientIdentityFromMeta } from "@/lib/disputes/letter-type";
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -259,6 +263,36 @@ export async function POST(
     const v = (dispute.metadata as Record<string, unknown> | null)?.attestingAsName;
     return typeof v === "string" && v.trim() ? v.trim() : undefined;
   })();
+  // S306 (UX-2) — a redraft must compose from EVERYTHING the letter was born
+  // with (same non-lossy rule as the GET regen): collector block, account
+  // number, certified notation, exhaustion clause, §1692g window, identity
+  // answer. All re-read from the dispute's own metadata.
+  const redraftMeta = (dispute.metadata as Record<string, unknown> | null) ?? {};
+  const redraftFirstContact =
+    typeof redraftMeta.collectorFirstContactDate === "string"
+      ? redraftMeta.collectorFirstContactDate
+      : null;
+  const redraftDeadlineEngineOn = await isFeatureEnabled("dispute_deadline_engine_v1");
+  let redraftDebtWithinWindow: boolean;
+  if (redraftDeadlineEngineOn) {
+    const { evaluateDeadline, readDeadlineConfig } = await import(
+      "@/lib/disputes/deadline-engine"
+    );
+    redraftDebtWithinWindow = evaluateDeadline(
+      {
+        letterType: letterTypeForRender,
+        denialNoticeDate:
+          typeof redraftMeta.denialNoticeDate === "string" ? redraftMeta.denialNoticeDate : null,
+        collectorFirstContactDate: redraftFirstContact,
+      },
+      await readDeadlineConfig(supabase),
+    ).debtWithinWindow;
+  } else {
+    // Legacy §1692g fallback — byte-identical to generate/escalate's flag-OFF math.
+    const first = redraftFirstContact ? Date.parse(redraftFirstContact) : NaN;
+    redraftDebtWithinWindow =
+      !Number.isNaN(first) && Date.now() - first <= 30 * 24 * 60 * 60 * 1000;
+  }
   const rerendered = await rerenderDisputeLetter(supabase, {
     // S306 — redraft composes THIS dispute's own letter; its id is excluded
     // from the prior-contact recital.
@@ -270,6 +304,20 @@ export async function POST(
     planContext,
     evidence,
     attestingName: attestingAsName,
+    patientIdentity: letterPatientIdentityFromMeta(redraftMeta),
+    accountNumber:
+      typeof redraftMeta.accountNumber === "string" && redraftMeta.accountNumber.trim()
+        ? redraftMeta.accountNumber.trim()
+        : undefined,
+    collector:
+      (redraftMeta.collector as { name: string; address?: string | null; originalCreditor?: string | null } | undefined) ??
+      undefined,
+    appealExhausted:
+      (redraftMeta.appealExhausted as { attested: boolean; denialDate?: string | null } | undefined) ??
+      undefined,
+    certifiedMail:
+      typeof redraftMeta.certifiedMail === "boolean" ? redraftMeta.certifiedMail : undefined,
+    debtWithinWindow: redraftDebtWithinWindow,
   });
 
   if (!rerendered) {
@@ -300,6 +348,30 @@ export async function POST(
   // stronger letter. Unsent only — a sent dispute's amount stays frozen.
   if (rerendered.recovery && dispute.sent_at == null) {
     updatePayload.amount_disputed = rerendered.recovery.total;
+  }
+  // UX-2 (S306) — restamp the fingerprint with the body it just rebuilt. The
+  // redraft never stamped, so the stored hash stayed pre-redraft; harmless
+  // under W4's serve-cached, but under live rebuild the very next view would
+  // see a mismatch and regenerate a byte-identical letter — one wasted render
+  // per redraft, forever. Same loader, same explicit dispute state as the GET.
+  if (dispute.claim_id) {
+    try {
+      const fpInput = await loadFingerprintInputForClaim(
+        supabase,
+        dispute.claim_id as string,
+        user.id,
+        {
+          sentAt: (dispute.sent_at as string | null) ?? null,
+          metadata: updatePayload.metadata as Record<string, unknown>,
+        },
+      );
+      if (fpInput) {
+        updatePayload.evidence_fingerprint = computeEvidenceFingerprint(fpInput);
+        updatePayload.last_refresh_at = newTimestamp;
+      }
+    } catch (err) {
+      console.error("[disputes/redraft] fingerprint restamp failed (non-fatal):", err);
+    }
   }
   await userScoped(supabase, user.id)
     .table("dispute_outcomes")
