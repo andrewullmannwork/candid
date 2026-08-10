@@ -153,6 +153,14 @@ jobs:
         # stamp guarantees the first post-unsend view rebuilds. The loader's
         # shape rule is DB-coupled — proven by the flag-ON E2E, not here.
         run: npx tsx scripts/calibration/fixtures/dispute-grounds/draft-live-rebuild.ts
+      - name: Bill dedupe — the copy with your work on it wins (S307 / tracker AM)
+        # Locks the S74 fingerprint rules byte-for-byte (composite primary,
+        # doc-id fallback, id last-resort, cents rounding) AND the S307
+        # case-aware representative selection: a duplicate upload must never
+        # displace a claim carrying a live case (letters or guided-step
+        # progress) from the list — the S304 Ballard incident. Ties keep
+        # newest-wins; no id set passed ≡ legacy behavior exactly.
+        run: npx tsx scripts/calibration/fixtures/claims/bill-dedupe.ts
 
       - name: Canonical link is a pair (S292 / mig 218)
         # Fails the build if any code writes insurance_plans.canonical_plan_id

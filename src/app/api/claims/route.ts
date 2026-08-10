@@ -8,6 +8,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { userScoped, selectOwnedChildren } from "@/lib/security/user-scoped";
+import { dedupBillsByFingerprint } from "@/lib/claims/bill-dedupe";
 import {
   computeRecoveryV2,
   rollupCostShareVerdict,
@@ -75,52 +76,6 @@ interface RawClaim {
   [key: string]: unknown;
 }
 
-/**
- * S74 hotfix #3+#4 — collapse duplicate bill uploads at the display layer.
- *
- * Until the ingestion-layer dedup ships (file-hash check on /api/documents/upload),
- * a user re-uploading the same PDF creates multiple `claims` rows AND multiple
- * `documents` rows with DIFFERENT source_document_ids but identical provider +
- * date + total. The earlier hotfix preferred source_document_id when present →
- * distinct doc-ids meant no dedup. Reversed: composite is primary, doc_id is
- * fallback only when the composite can't be computed.
- *
- * Composite key: `(date_of_service, total_billed_cents, normalized_provider)`.
- * Edge case: two genuinely different bills with identical (date, total, provider)
- * from the same user collapse incorrectly — accepted tradeoff (real-world rare,
- * vs. visible duplicates on every test re-upload). The categorization flywheel
- * sprint will replace this with ingestion-layer file-hash dedup.
- *
- * Caller pre-sorts rawClaims DESC by created_at; the first occurrence wins.
- */
-function dedupBillsByFingerprint(rawClaims: RawClaim[]): RawClaim[] {
-  const seen = new Set<string>();
-  const out: RawClaim[] = [];
-  for (const c of rawClaims) {
-    const provider =
-      (c.metadata as { provider?: { name?: string } } | null)?.provider?.name?.trim().toLowerCase() ||
-      "";
-    // Round total to whole cents so floating-point noise from re-parses
-    // (e.g., $1,297.00 vs $1297.0000001) doesn't break the fingerprint.
-    const totalCents = Math.round(Number(c.total_billed ?? 0) * 100);
-    const date = c.date_of_service ?? "";
-
-    // Composite fingerprint is primary; collapses re-uploads of the same bill
-    // even when each upload creates a different documents row.
-    const composable = !!(provider && date && totalCents > 0);
-    const fingerprint = composable
-      ? `fp:${date}|${totalCents}|${provider}`
-      : c.source_document_id
-        ? `doc:${c.source_document_id}`
-        : `id:${c.id}`; // last resort: each row is unique (no dedup happens)
-
-    if (seen.has(fingerprint)) continue;
-    seen.add(fingerprint);
-    out.push(c);
-  }
-  return out;
-}
-
 export async function GET(req: NextRequest) {
   const decoded = await getAuthUser(req);
   if (!decoded) {
@@ -139,6 +94,24 @@ export async function GET(req: NextRequest) {
   if (!user) {
     return NextResponse.json({ error: "User not found" }, { status: 404 });
   }
+
+  // S307 (tracker AM) — case-aware representative selection: the copy of a
+  // duplicate bill carrying the user's work (any non-cancelled dispute letter)
+  // must win the display dedupe over mere recency. One fetch, shared by both
+  // dedupe passes below; on error, degrade to newest-wins rather than 500 the
+  // list (the dedupe treats an empty set as "no letters anywhere").
+  const { data: caseRows, error: caseRowsError } = await userScoped(supabase, user.id)
+    .table("dispute_outcomes")
+    .select("claim_id, status")
+    .neq("status", "cancelled");
+  if (caseRowsError) {
+    console.error("[claims] case-work lookup failed (dedupe falls back to newest-wins):", caseRowsError);
+  }
+  const caseWorkClaimIds = new Set<string>(
+    ((caseRows as Array<{ claim_id: string | null }> | null) ?? [])
+      .map((r) => r.claim_id)
+      .filter((id): id is string => !!id),
+  );
 
   const page = parseInt(req.nextUrl.searchParams.get("page") || "1", 10);
   const limit = Math.min(parseInt(req.nextUrl.searchParams.get("limit") || "20", 10), 50);
@@ -171,7 +144,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  const dedupedClaims = dedupBillsByFingerprint(rawClaims || []);
+  const dedupedClaims = dedupBillsByFingerprint((rawClaims as RawClaim[]) || [], caseWorkClaimIds);
   // Apply pagination AFTER dedup so counts line up.
   const count = dedupedClaims.length;
   const claims = dedupedClaims.slice(offset, offset + limit);
@@ -688,7 +661,7 @@ export async function GET(req: NextRequest) {
     .select("id, status, total_billed, total_patient_responsibility, source_document_id, date_of_service, metadata, created_at, claim_group_id, insurance_plan_id, amount_still_outstanding")
     .is("deleted_at", null)
     .order("created_at", { ascending: false });
-  const allClaims = dedupBillsByFingerprint((allClaimsRaw as RawClaim[]) || []);
+  const allClaims = dedupBillsByFingerprint((allClaimsRaw as RawClaim[]) || [], caseWorkClaimIds);
 
   // Aggregate potential savings across all claims' line items.
   // "Issues flagged" = classic audit findings + unverified-charge review cases.
