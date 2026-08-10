@@ -577,10 +577,16 @@ export async function POST(req: NextRequest) {
           // even if the categorization-flywheel flag is ever turned off.
           const costShareV2 = await isFeatureEnabled("recovery_cost_share_v2");
           if (flywheelOn || costShareV2) {
+            // UX-2 — a freshly generated letter is a DRAFT with no compose
+            // answers yet: metadata null → compose fields all null, matching
+            // what the view-compare reads off the new row. (A dedupe-refresh
+            // onto a row that already carries answers self-heals with one
+            // regenerate on first view.)
             const input = await loadFingerprintInputForClaim(
               supabase,
               body.claimId as string,
               auditReport.userId,
+              { sentAt: null, metadata: null },
             );
             if (input) {
               const evidenceFingerprint = computeEvidenceFingerprint(input);

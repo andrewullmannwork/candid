@@ -143,6 +143,16 @@ jobs:
         # (which misroutes three insurer findings to the provider), and that
         # every derived track resolves to a letter addressed to its own party.
         run: npx tsx scripts/calibration/fixtures/dispute-grounds/letter-tracks.ts
+      - name: Draft live rebuild — a draft is a live document (S306 / UX-2)
+        # Locks the pure halves of dispute_draft_live_rebuild_v1: the compose
+        # extension is present-only (absent ≡ the legacy hash, so flag-off and
+        # sent-letter fingerprints never move), a compose-only edit (provider
+        # address, attested name) drifts the hash, blanks map to null so they
+        # can never spuriously drift it, debounce 0 regenerates immediately
+        # while sent letters still banner, and the mark-sent evidence-only
+        # stamp guarantees the first post-unsend view rebuilds. The loader's
+        # shape rule is DB-coupled — proven by the flag-ON E2E, not here.
+        run: npx tsx scripts/calibration/fixtures/dispute-grounds/draft-live-rebuild.ts
 
       - name: Canonical link is a pair (S292 / mig 218)
         # Fails the build if any code writes insurance_plans.canonical_plan_id

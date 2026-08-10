@@ -27,7 +27,7 @@ import { resolveEvidence } from "@/lib/disputes/evidence-resolver";
 import { rerenderDisputeLetter } from "@/lib/disputes/rerender";
 import { persistDisputeLetter } from "@/lib/disputes/persist";
 import { checkEscalateGate } from "@/lib/disputes/escalate-gate";
-import { resolveLetterTypeFromDispute } from "@/lib/disputes/letter-type";
+import { resolveLetterTypeFromDispute, letterPatientIdentityFromMeta } from "@/lib/disputes/letter-type";
 import type { CaseLetterRef } from "@/lib/disputes/outcome-taxonomy";
 import { evaluateDeadline, readDeadlineConfig } from "@/lib/disputes/deadline-engine";
 import { loadServerSubscription } from "@/lib/subscription/server";
@@ -227,6 +227,10 @@ export async function POST(
     appealExhausted: appealExhausted ?? undefined,
     collector: collector ?? undefined,
     debtWithinWindow,
+    // S306 (UX-2) — the child letter names the SAME patient the parent's
+    // identity answer resolved; without this an escalation reverted to the
+    // account-holder default until the user re-answered on the child.
+    patientIdentity: letterPatientIdentityFromMeta(meta),
   });
   if (!rerendered) {
     return NextResponse.json({ error: "Letter generation failed" }, { status: 500 });
@@ -275,6 +279,20 @@ export async function POST(
       merged.collectorFirstContactDate = collectorFirstContactDate;
     if (denialNoticeDate) merged.denialNoticeDate = denialNoticeDate;
     if (appealExhausted) merged.appealExhausted = appealExhausted;
+    // S306 (UX-2) — persist the compose inputs the birth render used, so a
+    // later regenerate (live rebuild / redraft) composes the SAME letter
+    // instead of renderGated-omitting the clauses. certifiedMail was never
+    // persisted anywhere; accountNumber + the identity answer are carried
+    // from the SOURCE letter (same account, same patient). Fill-only on the
+    // identity keys: a child that somehow has its own answer keeps it.
+    if (typeof certifiedMail === "boolean") merged.certifiedMail = certifiedMail;
+    if (accountNumber && merged.accountNumber == null) merged.accountNumber = accountNumber;
+    if (meta?.patientIdentityChoice != null && merged.patientIdentityChoice == null) {
+      merged.patientIdentityChoice = meta.patientIdentityChoice;
+      merged.patientCorrectedName = meta.patientCorrectedName ?? null;
+      merged.patientIdentityResolved = meta.patientIdentityResolved ?? true;
+      merged.patientIdentityResolvedAt = meta.patientIdentityResolvedAt ?? null;
+    }
     await userScoped(supabase, user.id)
       .table("dispute_outcomes")
       .update({ metadata: merged })
@@ -335,7 +353,13 @@ export async function POST(
     const flywheelOn = await isFeatureEnabled("s74_5_categorization_flywheel_v1");
     const costShareV2 = await isFeatureEnabled("recovery_cost_share_v2");
     if (flywheelOn || costShareV2) {
-      const fpInput = await loadFingerprintInputForClaim(supabase, dispute.claim_id, user.id);
+      // UX-2 — birth-stamped as a DRAFT; metadata null (the merged metadata is
+      // out of scope here) → compose fields null. A collector-bearing
+      // escalation self-heals with one regenerate on first view.
+      const fpInput = await loadFingerprintInputForClaim(supabase, dispute.claim_id, user.id, {
+        sentAt: null,
+        metadata: null,
+      });
       if (fpInput) {
         await userScoped(supabase, user.id)
           .table("dispute_outcomes")

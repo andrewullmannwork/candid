@@ -365,10 +365,18 @@ export async function POST(req: NextRequest) {
 
           let fingerprint: string | null = null;
           if (existing.claim_id) {
+            // UX-2 — sentAt is EXPLICITLY the send being stamped: the loader
+            // therefore produces the evidence-only shape (no compose basis).
+            // That freeze is what makes the post-unsend first view a guaranteed
+            // mismatch → the draft rebuilds to current inputs immediately.
             const fpInput = await loadFingerprintInputForClaim(
               supabase,
               existing.claim_id as string,
               userId,
+              {
+                sentAt: sentAt.toISOString(),
+                metadata: (existing.metadata as Record<string, unknown> | null) ?? null,
+              },
             );
             if (fpInput) fingerprint = computeEvidenceFingerprint(fpInput);
           }

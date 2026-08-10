@@ -126,6 +126,60 @@ export interface CostShareBasis {
   overrides: CostShareOverrides;
 }
 
+/**
+ * UX-2 (S306, tracker AF) — the COMPOSE inputs a draft letter is a function of
+ * beyond the evidence basis: the attested name, the provider identity, the
+ * user-supplied addresses, the collector, the account number. These are exactly
+ * the fields whose edit must rebuild a live draft ("it would have to, if we
+ * want it to be viable to send" — Andrew) and exactly what the evidence hash
+ * was blind to: change ONLY the provider address and nothing detected it.
+ *
+ * SHAPE RULE (the one derivation): compose fields are hashed for UNSENT
+ * letters under dispute_draft_live_rebuild_v1 only — a SENT letter's stored
+ * fingerprint stays evidence-only (mark-as-sent stamps without a compose
+ * basis), so extending the hash can never false-flag a sent letter's drift
+ * banner. The rule lives INSIDE loadFingerprintInputForClaim, keyed on the
+ * dispute state the caller passes explicitly — implicit-by-omission is how
+ * the S306 escalate exclusion bug happened.
+ *
+ * A deliberate consequence: unsend flips the state, so the first view after an
+ * unsend is a GUARANTEED mismatch (stored evidence-only vs current compose-
+ * inclusive) → the letter rebuilds to current inputs immediately.
+ */
+export interface ComposeBasis {
+  attestingName: string | null;
+  /** S306 T1 — the identity ANSWER keys the letter's patient name derives from
+   *  (letterPatientName). The first hash watched only attestingAsName — a key
+   *  the compose never read for the patient line — so choosing "my dependent"
+   *  drifted nothing and rebuilt nothing. */
+  patientIdentityChoice: string | null;
+  patientCorrectedName: string | null;
+  providerName: string | null;
+  providerAddress: string | null;
+  insurerAddressOverride: {
+    line1: string | null;
+    line2: string | null;
+    city: string | null;
+    state: string | null;
+    postalCode: string | null;
+  } | null;
+  collector: {
+    name: string | null;
+    address: string | null;
+    originalCreditor: string | null;
+  } | null;
+  accountNumber: string | null;
+  /** Anchor dates the deadline clauses + the §1692g window derive from —
+   *  editable post-draft via deadline-inputs; raw inputs, never the derived
+   *  boolean. */
+  collectorFirstContactDate: string | null;
+  denialNoticeDate: string | null;
+  /** final_notice's certified-mail notation — persisted at escalate birth. */
+  certifiedMail: boolean | null;
+  /** The exhaustion attestation the external-review clause renders. */
+  appealExhausted: { attested: boolean; denialDate: string | null } | null;
+}
+
 export interface FingerprintInput {
   findings: Array<Pick<AuditFinding, "type"> & { slug?: string | null; amount?: number }>;
   lineItems: LineItemSlugInput[];
@@ -135,6 +189,12 @@ export interface FingerprintInput {
    * Absent → the fingerprint is byte-identical to the pre-Finding-4 hash.
    */
   costShareBasis?: CostShareBasis | null;
+  /**
+   * UX-2 — present ONLY for an UNSENT letter under dispute_draft_live_rebuild_v1.
+   * Absent → byte-identical to the pre-UX-2 hash (same extension pattern as
+   * costShareBasis).
+   */
+  composeBasis?: ComposeBasis | null;
 }
 
 /**
@@ -150,12 +210,27 @@ export async function loadFingerprintInputForClaim(
   supabase: SupabaseClient,
   claimId: string,
   userId: string,
+  /**
+   * UX-2 — the dispute whose letter this fingerprint is FOR, stated
+   * explicitly by every caller (never inferred, never optional-by-accident):
+   *   · stamp/compare for a DRAFT  → pass { sentAt: null, metadata: row.metadata }
+   *   · stamp at MARK-AS-SENT      → pass { sentAt: <the new sentAt>, ... }
+   *   · claim-only callers (no letter in play) → omit; no compose basis.
+   * Compose fields are included ONLY when the letter is unsent and
+   * dispute_draft_live_rebuild_v1 is ON — see the ComposeBasis shape rule.
+   */
+  dispute?: {
+    sentAt: string | Date | null;
+    metadata: Record<string, unknown> | null;
+  } | null,
 ): Promise<FingerprintInput | null> {
   // Cost-Share v2 (Finding 4) — read the flag HERE (not at the three call
   // sites: draft-store, sent-store, view-compare) so every path produces the
   // SAME fingerprint shape and can't diverge. OFF → no extra columns, no basis,
   // byte-identical fingerprint to before.
   const costShareV2 = await isFeatureEnabled("recovery_cost_share_v2");
+  // UX-2 — same read-it-HERE rule for the compose extension's flag.
+  const liveRebuild = await isFeatureEnabled("dispute_draft_live_rebuild_v1");
 
   // B9-F12 — claimId is caller/request-supplied (disputes/generate passes
   // body.claimId; outcome / [disputeId] pass a dispute's claim_id, which a Pro
@@ -253,6 +328,14 @@ export async function loadFingerprintInputForClaim(
     ? await loadCostShareBasis(supabase, userId, claim, lineItems ?? [])
     : null;
 
+  // UX-2 — compose basis for UNSENT letters only (the shape rule). A sent
+  // letter's fingerprint stays evidence-only, so mark-as-sent's stamp and the
+  // sent-view compare keep matching each other across the flag flip.
+  const composeBasis =
+    liveRebuild && dispute && dispute.sentAt == null
+      ? composeBasisFrom(dispute.metadata, claimMeta)
+      : null;
+
   return {
     findings,
     lineItems: (lineItems ?? []).map((li) => ({
@@ -262,6 +345,63 @@ export async function loadFingerprintInputForClaim(
     totalRecoveryEstimate,
     // Present ONLY when the flag is ON → absent keeps the hash byte-identical.
     ...(costShareBasis ? { costShareBasis } : {}),
+    ...(composeBasis ? { composeBasis } : {}),
+  };
+}
+
+/** Trimmed non-empty string, else null — absent and blank hash identically. */
+function composeStr(v: unknown): string | null {
+  return typeof v === "string" && v.trim() ? v.trim() : null;
+}
+
+/**
+ * UX-2 — assemble the compose basis from the dispute's own metadata plus the
+ * claim's provider block: the SAME sources rerenderDisputeLetter composes from,
+ * so compare and stamp can never read different fields. Pure; exported for the
+ * fixture.
+ */
+export function composeBasisFrom(
+  disputeMeta: Record<string, unknown> | null,
+  claimMeta: Record<string, unknown> | null,
+): ComposeBasis {
+  const dm = disputeMeta ?? {};
+  const provider =
+    ((claimMeta ?? {}).provider as { name?: unknown; address?: unknown } | undefined) ?? {};
+  const addr = (dm.insurerAddressOverride ?? null) as Record<string, unknown> | null;
+  const col = (dm.collector ?? null) as Record<string, unknown> | null;
+  const exhausted = (dm.appealExhausted ?? null) as Record<string, unknown> | null;
+  return {
+    attestingName: composeStr(dm.attestingAsName),
+    patientIdentityChoice: composeStr(dm.patientIdentityChoice),
+    patientCorrectedName: composeStr(dm.patientCorrectedName),
+    providerName: composeStr(provider.name),
+    providerAddress: composeStr(provider.address),
+    insurerAddressOverride: addr
+      ? {
+          line1: composeStr(addr.line1),
+          line2: composeStr(addr.line2),
+          city: composeStr(addr.city),
+          state: composeStr(addr.state),
+          postalCode: composeStr(addr.postalCode),
+        }
+      : null,
+    collector: col
+      ? {
+          name: composeStr(col.name),
+          address: composeStr(col.address),
+          originalCreditor: composeStr(col.originalCreditor),
+        }
+      : null,
+    accountNumber: composeStr(dm.accountNumber),
+    collectorFirstContactDate: composeStr(dm.collectorFirstContactDate),
+    denialNoticeDate: composeStr(dm.denialNoticeDate),
+    certifiedMail: typeof dm.certifiedMail === "boolean" ? dm.certifiedMail : null,
+    appealExhausted: exhausted
+      ? {
+          attested: exhausted.attested === true,
+          denialDate: composeStr(exhausted.denialDate),
+        }
+      : null,
   };
 }
 
@@ -526,9 +666,14 @@ export function computeEvidenceFingerprint(input: FingerprintInput): string {
   // Cost-Share v2 (Finding 4) — fold the cost-share basis in ONLY when present
   // (flag ON). Absent → `canonical` IS `base`, so the serialized JSON and the
   // resulting hash are byte-identical to the pre-Finding-4 fingerprint.
-  const canonical = input.costShareBasis
-    ? { ...base, cost_share_basis: canonicalizeCostShareBasis(input.costShareBasis) }
-    : base;
+  // UX-2 — compose_basis follows the identical present-only pattern; ComposeBasis
+  // is already canonical (trimmed strings or null, fixed key order).
+  const canonical = {
+    ...(input.costShareBasis
+      ? { ...base, cost_share_basis: canonicalizeCostShareBasis(input.costShareBasis) }
+      : base),
+    ...(input.composeBasis ? { compose_basis: input.composeBasis } : {}),
+  };
   return crypto
     .createHash("sha256")
     .update(JSON.stringify(canonical))
