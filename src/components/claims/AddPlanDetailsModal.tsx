@@ -223,7 +223,11 @@ export function AddPlanDetailsModal({
               </svg>
             </span>
             <div className="text-[15px] font-semibold text-gray-900">Saved</div>
-            <div className="text-[13px] text-gray-500">Updating this bill…</div>
+            {/* S307 — say what happens next (approved copy): the background
+                refetch updates the panel, the strip and the refund live. */}
+            <div className="text-[13px] text-gray-500">
+              We re-check this bill in the background; the numbers above update automatically.
+            </div>
           </div>
         ) : (
           <>

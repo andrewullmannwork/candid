@@ -161,6 +161,15 @@ jobs:
         # progress) from the list — the S304 Ballard incident. Ties keep
         # newest-wins; no id set passed ≡ legacy behavior exactly.
         run: npx tsx scripts/calibration/fixtures/claims/bill-dedupe.ts
+      - name: Savings-math derivation — the panel explains itself (S307)
+        # Locks the ONE derivation behind savings_math_derivation_v1: the plan
+        # card's big number is the PRICED answer only (never a worst-case
+        # ceiling headline, never a fabricated $0 best-case floor — the display
+        # twin of the coalesce-unknown-to-0 bug, cf91a49e), the approved
+        # per-line copy verbatim, You're-Owed / Off-your-balance result labels,
+        # the spread sentence's provenance gate, the CTA's service-identity
+        # precondition, and the banner tense fix. Dollars in = dollars out.
+        run: npx tsx scripts/calibration/fixtures/claims/savings-derivation.ts
 
       - name: Canonical link is a pair (S292 / mig 218)
         # Fails the build if any code writes insurance_plans.canonical_plan_id

@@ -29,6 +29,7 @@ const EXPOSED_FLAGS = new Set([
   "case_rail_v1", // S299 Timeline unification phase 1a — extended claim rail UI (spine gated separately by case_timeline_v1)
   "letter_requirements_v1", // S301 — each letter asks only for what it needs (CaseNeedsPanel row set; gaps + readiness floor gate server-side on the same flag)
   "bill_totals_source_v1", // S302 — "which of our two parses is right" row in the step-1 assumptions block
+  "savings_math_derivation_v1", // S307 — priced-answer plan card + "Where these numbers come from" strip
 ]);
 
 // KV-store flags exposed through this same endpoint. Two-system note: the keys
