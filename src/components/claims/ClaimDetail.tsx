@@ -10,6 +10,7 @@ import { CategoryCorrectionModal } from "@/components/claims/CategoryCorrectionM
 import { UploadPlanDocModal } from "@/components/claims/UploadPlanDocModal";
 import { legacyCategoryReviewHint } from "@/lib/billing/code-categories";
 import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
+import { buildSavingsDerivation } from "@/lib/claims/savings-derivation";
 import { buildAcaOverrideLine, type AcaOverride } from "@/lib/claims/aca-override-line";
 import { LineDrawer } from "@/components/claims/LineDrawer";
 import { BundleSuggestion } from "@/components/claims/BundleSuggestion";
@@ -607,6 +608,9 @@ export function ClaimDetail({
   // S302 — the line-items-vs-summary question. OFF = the row never renders and
   // nothing writes the answer, so decideField keeps today's header-wins rule.
   const billTotalsSourceFlag = useFeatureFlag("bill_totals_source_v1");
+  // S307 — the savings-math derivation pass (priced-answer plan card + the
+  // "Where these numbers come from" strip). OFF → today's panel, byte-identical.
+  const savingsDerivationFlag = useFeatureFlag("savings_math_derivation_v1");
   /**
    * S302 round 3 (Andrew: "the click takes a while — use optimistic with
    * snapback"). Every other assumption row awaits the claim refetch because the
@@ -1417,6 +1421,58 @@ export function ClaimDetail({
   );
   const humanizeSlug = (slug: string | null): string =>
     slug ? slugNameMap.get(slug) ?? slug : "";
+
+  // S307 — the savings-math derivation (savings_math_derivation_v1): ONE
+  // build feeds the plan card's priced answer, its per-line rows, and the
+  // "Where these numbers come from" strip, so they can never disagree. Pure
+  // rendering of the engine's own per-line results — no money is computed
+  // here. Flag OFF → null → every surface below renders today's markup.
+  const savingsDerivation = (() => {
+    if (!savingsDerivationFlag.enabled) return null;
+    return buildSavingsDerivation({
+      lines: primaryLineItems.map((li) => {
+        const pct =
+          li.planCoverage?.coinsurance != null
+            ? normalizeCoinsurancePct(li.planCoverage.coinsurance)
+            : null;
+        // The deductible facts ride the line's own assumptions (S291 made them
+        // always-visible rows): `deductible_applies` assumed subject*/exempt*,
+        // `deductible_met` assumed met/not_met, value = the deductible dollars.
+        const asm = li.costShareAssumptions ?? [];
+        const dedApplies = asm.find((a) => a.field === "deductible_applies");
+        const dedMet = asm.find((a) => a.field === "deductible_met");
+        return {
+          id: li.id,
+          label: humanizeSlug(li.service_slug) || li.description || "This service",
+          serviceSlug: li.service_slug ?? null,
+          billed: li.billed_amount ?? 0,
+          adjustedBilled: li.adjustedBilled ?? li.billed_amount ?? null,
+          paid: li.recovery?.patientPaid ?? li.patient_paid_amount ?? 0,
+          stillBilled: li.recovery?.remainingBalance ?? 0,
+          shouldOwe: li.recovery?.shouldOwe ?? 0,
+          refund: li.recovery?.refundComponent ?? 0,
+          forgiveness: li.recovery?.forgivenessComponent ?? 0,
+          rateKnown: !(li.costShareAssumptions ?? []).some((a) => a.field === "service_cost"),
+          copay: li.planCoverage?.copay ?? null,
+          coinsurance: pct != null ? pct / 100 : null,
+          covered: li.planCoverage?.covered ?? null,
+          deductibleApplies: dedApplies ? dedApplies.assumed.startsWith("subject") : null,
+          deductibleMet: dedMet ? dedMet.assumed === "met" : null,
+          deductibleMax: dedApplies?.value ?? dedMet?.value ?? null,
+          // planCoverage.source is MACHINE vocabulary ("sbc_parser",
+          // "canonical_inherited") — never printable. The strip's "Source: …"
+          // suffix stays off until letter-grade citation labels are plumbed
+          // here; the helper already accepts sourceLabel when they land.
+          sourceLabel: null,
+        };
+      }),
+      prorated: data.recovery?.provenance?.citationSource === "claim_header",
+      paidTotal: billTotals.patientPaid,
+      balanceTotal: data.recovery?.stillOutstanding ?? 0,
+      refundComponent: data.recovery?.refundComponent ?? 0,
+      forgivenessComponent: data.recovery?.forgivenessComponent ?? 0,
+    });
+  })();
 
   // Cost-Share v2 (W2) — flatten per-line assumptions with the line context the
   // §5 banner chips + W3 override calls need (lineId + service label/slug). Over
@@ -3547,7 +3603,14 @@ export function ClaimDetail({
                   <div className="mt-1 flex flex-wrap items-center gap-2 text-[12.5px] text-gray-700">
                     {billTotals.refundComponent >= 1 && (
                       <span>
-                        <strong className="font-bold tabular-nums text-emerald-700">+${fmtMoney(billTotals.refundComponent)}</strong> refunded to you
+                        {/* S307 flag — tense fix: nothing has been refunded yet. */}
+                        {savingsDerivation ? (
+                          <strong className="font-bold tabular-nums text-emerald-700">{savingsDerivation.refundSub}</strong>
+                        ) : (
+                          <>
+                            <strong className="font-bold tabular-nums text-emerald-700">+${fmtMoney(billTotals.refundComponent)}</strong> refunded to you
+                          </>
+                        )}
                       </span>
                     )}
                     {billTotals.refundComponent >= 1 && billTotals.forgivenessComponent >= 1 && (
@@ -3555,7 +3618,13 @@ export function ClaimDetail({
                     )}
                     {billTotals.forgivenessComponent >= 1 && (
                       <span>
-                        <strong className="font-bold tabular-nums text-emerald-700">${fmtMoney(billTotals.forgivenessComponent)}</strong> forgiven by provider
+                        {savingsDerivation ? (
+                          <strong className="font-bold tabular-nums text-emerald-700">{savingsDerivation.forgivenessSub}</strong>
+                        ) : (
+                          <>
+                            <strong className="font-bold tabular-nums text-emerald-700">${fmtMoney(billTotals.forgivenessComponent)}</strong> forgiven by provider
+                          </>
+                        )}
                       </span>
                     )}
                   </div>
@@ -3604,31 +3673,89 @@ export function ClaimDetail({
                 ? `${flaggedLineCount} services — all covered`
                 : "Covered by your plan"}
             </span>
-            <div className="mt-0.5 flex items-baseline gap-2 text-[34px] font-bold leading-none tracking-[-0.02em] tabular-nums text-emerald-800">
-              ${fmtMoney(billTotals.shouldOwe)}
-              <span className="text-[15px] font-medium text-gray-500 whitespace-nowrap">
-                {isMultiLine ? "your total responsibility" : "your responsibility"}
-              </span>
-            </div>
-            <div className="mt-1.5 flex flex-col gap-1.5">
-              <div className="flex justify-between gap-3 text-xs text-gray-600">
-                <span>Adjusted total billed</span>
-                <strong className="font-semibold tabular-nums text-gray-900">
-                  ${fmtMoney(billTotals.billedAdjusted)}
-                </strong>
-              </div>
-              <div className="flex justify-between gap-3 text-xs text-gray-600">
-                <span>Insurer should pay</span>
-                <strong className="font-semibold tabular-nums text-gray-900">${fmtMoney(billTotals.insurerShouldHavePaid)}</strong>
-              </div>
-              <div className="flex justify-between gap-3 text-xs text-gray-600">
-                <span>You pay</span>
-                <strong className="font-semibold tabular-nums text-gray-900">${fmtMoney(billTotals.shouldOwe)}</strong>
-              </div>
-              {/* S140 — Refund row moved to RIGHT (Bill) side per Andrew's
-                  locked S139 schema. LEFT (Plan) side now ends after
-                  "You pay" — purely about what the plan says you owe. */}
-            </div>
+            {savingsDerivation ? (
+              /* S307 flag — the plan card leads with the plan's PRICED answer
+                 (never a worst-case ceiling headline, never a fabricated $0
+                 floor); per-line answers below, unpriced lines bracketed with
+                 the Confirm-your-rate ask (the existing AddPlanDetailsModal). */
+              <>
+                <div className="mt-0.5 flex items-baseline gap-2 text-[34px] font-bold leading-none tracking-[-0.02em] tabular-nums text-emerald-800">
+                  ${fmtMoney(savingsDerivation.pricedShouldOwe)}
+                  <span className="text-[15px] font-medium text-gray-500">
+                    {savingsDerivation.bigLabel}
+                  </span>
+                </div>
+                <div className="mt-1.5 flex flex-col">
+                  {savingsDerivation.rows.map((row) => (
+                    <div key={row.id} className="flex flex-col gap-1 border-b border-emerald-100 py-1.5 last:border-b-0">
+                      <div className="grid grid-cols-[1fr_auto_auto] items-baseline gap-3 text-xs">
+                        <span className="font-semibold text-gray-800">{row.label}</span>
+                        <span
+                          className={
+                            row.unpriced
+                              ? "text-[10.5px] font-extrabold uppercase tracking-[0.04em] text-red-600"
+                              : "text-[11px] text-gray-500"
+                          }
+                        >
+                          {row.planTerm}
+                        </span>
+                        <strong
+                          className={`whitespace-nowrap text-right tabular-nums ${
+                            row.unpriced
+                              ? "text-[12px] font-semibold text-gray-800"
+                              : "min-w-[72px] text-[13px] font-bold text-emerald-900"
+                          }`}
+                        >
+                          {row.planAmountText}
+                        </strong>
+                      </div>
+                      {row.cta && (
+                        <button
+                          type="button"
+                          onClick={() => setAddPlanDetailsLineId(row.id)}
+                          className="self-start rounded-full border border-amber-300 bg-amber-50 px-2.5 py-0.5 text-[11px] font-semibold text-amber-800 hover:bg-amber-100"
+                        >
+                          Confirm your rate →
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                {savingsDerivation.planPill && (
+                  <div className="mt-1.5 self-start rounded-full border border-emerald-300 bg-emerald-50 px-2.5 py-0.5 text-[11.5px] font-bold text-emerald-700">
+                    {savingsDerivation.planPill}
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                <div className="mt-0.5 flex items-baseline gap-2 text-[34px] font-bold leading-none tracking-[-0.02em] tabular-nums text-emerald-800">
+                  ${fmtMoney(billTotals.shouldOwe)}
+                  <span className="text-[15px] font-medium text-gray-500 whitespace-nowrap">
+                    {isMultiLine ? "your total responsibility" : "your responsibility"}
+                  </span>
+                </div>
+                <div className="mt-1.5 flex flex-col gap-1.5">
+                  <div className="flex justify-between gap-3 text-xs text-gray-600">
+                    <span>Adjusted total billed</span>
+                    <strong className="font-semibold tabular-nums text-gray-900">
+                      ${fmtMoney(billTotals.billedAdjusted)}
+                    </strong>
+                  </div>
+                  <div className="flex justify-between gap-3 text-xs text-gray-600">
+                    <span>Insurer should pay</span>
+                    <strong className="font-semibold tabular-nums text-gray-900">${fmtMoney(billTotals.insurerShouldHavePaid)}</strong>
+                  </div>
+                  <div className="flex justify-between gap-3 text-xs text-gray-600">
+                    <span>You pay</span>
+                    <strong className="font-semibold tabular-nums text-gray-900">${fmtMoney(billTotals.shouldOwe)}</strong>
+                  </div>
+                  {/* S140 — Refund row moved to RIGHT (Bill) side per Andrew's
+                      locked S139 schema. LEFT (Plan) side now ends after
+                      "You pay" — purely about what the plan says you owe. */}
+                </div>
+              </>
+            )}
             {/* Cite-grade source hint per design .hint family. Generic enough
                 to be true without per-finding field_provenance lookup at the
                 bill level — the per-line cite chrome lives inside expansions. */}
@@ -3663,38 +3790,148 @@ export function ClaimDetail({
                 semantic consistency across single + multi-line). Visual
                 equal on single-line bills where billedAdjusted = patientPaid;
                 divergent only on bills with outstanding balance. */}
-            <div className="mt-0.5 flex items-baseline gap-2 text-[34px] font-bold leading-none tracking-[-0.02em] tabular-nums text-red-800">
-              ${fmtMoney(billTotals.patientPaid)}
-              <span className="text-[15px] font-medium text-gray-500 whitespace-nowrap">charged to you</span>
-            </div>
-            <div className="mt-1.5 flex flex-col gap-1.5">
-              <div className="flex justify-between gap-3 text-xs text-gray-600">
-                <span>Adjusted total billed</span>
-                <strong className="font-semibold tabular-nums text-gray-900">
-                  ${fmtMoney(billTotals.billedAdjusted)}
-                </strong>
+            {savingsDerivation?.bill.recoveryHeadline ? (
+              /* S307 v7 — the bill card headlines the recovery; its math below
+                 derives exactly this figure and sums on screen. */
+              <div className="mt-0.5 flex items-baseline gap-2 text-[34px] font-bold leading-none tracking-[-0.02em] tabular-nums text-emerald-700">
+                +${fmtMoney(billTotals.potentialRecovery)}
+                <span className="text-[15px] font-medium text-gray-500 whitespace-nowrap">potential recovery</span>
               </div>
-              <div className="flex justify-between gap-3 text-xs text-gray-600">
-                <span>Insurer paid</span>
-                <strong className="font-semibold tabular-nums text-red-700">${fmtMoney(billTotals.insurancePaid)}</strong>
+            ) : (
+              <div className="mt-0.5 flex items-baseline gap-2 text-[34px] font-bold leading-none tracking-[-0.02em] tabular-nums text-red-800">
+                ${fmtMoney(savingsDerivation ? savingsDerivation.bill.chargedToYou : billTotals.patientPaid)}
+                <span className="text-[15px] font-medium text-gray-500 whitespace-nowrap">charged to you</span>
               </div>
-              <div className="flex justify-between gap-3 text-xs text-gray-600">
-                <span>You paid</span>
-                <strong className="font-semibold tabular-nums text-gray-900">${fmtMoney(billTotals.patientPaid)} OOP</strong>
+            )}
+            {savingsDerivation ? (
+              /* S307 v7 — deliberate color semantics (Andrew): charged-to-you is
+                 the one adversarial number (red); insurer-paid is context, not
+                 harm (neutral); zero buckets recede (muted); wins pop (emerald).
+                 Splits + equations come from the ONE derivation's bill model. */
+              <div className="mt-1.5 flex flex-col gap-1.5">
+                <div className="flex justify-between gap-3 text-xs text-gray-600">
+                  <span>Adjusted total billed</span>
+                  <strong className="font-semibold tabular-nums text-gray-900">
+                    ${fmtMoney(billTotals.billedAdjusted)}
+                  </strong>
+                </div>
+                <div className="flex justify-between gap-3 text-xs text-gray-600">
+                  <span>Insurer paid</span>
+                  <strong className="font-semibold tabular-nums text-gray-900">${fmtMoney(billTotals.insurancePaid)}</strong>
+                </div>
+                <div className="flex justify-between gap-3 text-xs text-gray-600">
+                  <span>Charged to you</span>
+                  <strong className="font-semibold tabular-nums text-red-700">${fmtMoney(savingsDerivation.bill.chargedToYou)}</strong>
+                </div>
+                <div className="flex justify-between gap-3 text-xs text-gray-600">
+                  <span>You paid</span>
+                  <strong className={`font-semibold tabular-nums ${billTotals.patientPaid < 1 ? "text-gray-400" : "text-gray-900"}`}>
+                    ${fmtMoney(billTotals.patientPaid)} OOP
+                  </strong>
+                </div>
+                {savingsDerivation.bill.paidSplit && (
+                  <>
+                    <div className="mt-1 border-t border-red-200 pt-[6px] text-[10.5px] font-extrabold uppercase tracking-[0.08em] text-gray-400">
+                      {savingsDerivation.bill.paidSplit.divider}
+                    </div>
+                    <div className="flex flex-col gap-1.5 border-l-2 border-gray-100 pl-2.5">
+                      <div className="flex justify-between gap-3 text-xs text-gray-600">
+                        <span>Yours to pay under your plan</span>
+                        <strong className="font-semibold tabular-nums text-gray-900">${fmtMoney(savingsDerivation.bill.paidSplit.yours)}</strong>
+                      </div>
+                      <div className="flex justify-between gap-3 text-xs">
+                        <span className="font-semibold text-emerald-700">
+                          Refund
+                          <span className="mt-0.5 block max-w-[220px] text-[11px] font-normal leading-snug text-gray-500">
+                            Money you already paid that your plan says you didn&apos;t owe.
+                          </span>
+                        </span>
+                        <strong className="font-bold tabular-nums text-emerald-700">+${fmtMoney(savingsDerivation.bill.paidSplit.refund)}</strong>
+                      </div>
+                      {savingsDerivation.bill.paidSplit.forgivenessZero && (
+                        <div className="flex justify-between gap-3 text-xs">
+                          <span className="font-semibold text-emerald-700">
+                            Provider must forgive
+                            <span className="mt-0.5 block max-w-[220px] text-[11px] font-normal leading-snug text-gray-500">
+                              Money still on your balance that your plan says you don&apos;t owe.
+                            </span>
+                          </span>
+                          <strong className="font-semibold tabular-nums text-gray-400">$0.00</strong>
+                        </div>
+                      )}
+                    </div>
+                    <div className="self-start rounded-full border border-emerald-300 bg-emerald-50 px-2.5 py-0.5 text-[11.5px] font-bold text-emerald-700">
+                      {savingsDerivation.bill.paidSplit.equation}
+                    </div>
+                  </>
+                )}
+                {savingsDerivation.bill.balanceSplit && (
+                  <>
+                    <div className="mt-1 border-t border-red-200 pt-[6px] text-[10.5px] font-extrabold uppercase tracking-[0.08em] text-gray-400">
+                      {savingsDerivation.bill.balanceSplit.divider}
+                    </div>
+                    <div className="flex flex-col gap-1.5 border-l-2 border-gray-100 pl-2.5">
+                      <div className="flex justify-between gap-3 text-xs text-gray-600">
+                        <span>Legitimately owed under your plan</span>
+                        <strong className="font-semibold tabular-nums text-gray-900">${fmtMoney(savingsDerivation.bill.balanceSplit.legit)}</strong>
+                      </div>
+                      {savingsDerivation.bill.balanceSplit.refundZero && (
+                        <div className="flex justify-between gap-3 text-xs">
+                          <span className="font-semibold text-emerald-700">
+                            Refund
+                            <span className="mt-0.5 block max-w-[220px] text-[11px] font-normal leading-snug text-gray-500">
+                              Money you already paid that your plan says you didn&apos;t owe.
+                            </span>
+                          </span>
+                          <strong className="font-semibold tabular-nums text-gray-400">$0.00</strong>
+                        </div>
+                      )}
+                      <div className="flex justify-between gap-3 text-xs">
+                        <span className="font-semibold text-emerald-700">
+                          Provider must forgive
+                          <span className="mt-0.5 block max-w-[220px] text-[11px] font-normal leading-snug text-gray-500">
+                            Money still on your balance that your plan says you don&apos;t owe.
+                          </span>
+                        </span>
+                        <strong className="font-bold tabular-nums text-emerald-700">+${fmtMoney(savingsDerivation.bill.balanceSplit.forgiveness)}</strong>
+                      </div>
+                    </div>
+                    <div className="self-start rounded-full border border-emerald-300 bg-emerald-50 px-2.5 py-0.5 text-[11.5px] font-bold text-emerald-700">
+                      {savingsDerivation.bill.balanceSplit.equation}
+                    </div>
+                  </>
+                )}
               </div>
-              {/* S140 fix-pass H2 — Refund + Forgive: Refund row first,
-                  Forgive row second. Both always render (≥$1 gate
-                  dropped) so users see both buckets even at $0; clarifies
-                  that we tracked both possibilities. */}
-              <div className="mt-1 flex justify-between gap-3 border-t border-red-200 pt-[6px] text-xs">
-                <span className="font-semibold text-emerald-700">Refund</span>
-                <strong className="font-bold tabular-nums text-emerald-700">+${fmtMoney(billTotals.refundComponent)}</strong>
+            ) : (
+              <div className="mt-1.5 flex flex-col gap-1.5">
+                <div className="flex justify-between gap-3 text-xs text-gray-600">
+                  <span>Adjusted total billed</span>
+                  <strong className="font-semibold tabular-nums text-gray-900">
+                    ${fmtMoney(billTotals.billedAdjusted)}
+                  </strong>
+                </div>
+                <div className="flex justify-between gap-3 text-xs text-gray-600">
+                  <span>Insurer paid</span>
+                  <strong className="font-semibold tabular-nums text-red-700">${fmtMoney(billTotals.insurancePaid)}</strong>
+                </div>
+                <div className="flex justify-between gap-3 text-xs text-gray-600">
+                  <span>You paid</span>
+                  <strong className="font-semibold tabular-nums text-gray-900">${fmtMoney(billTotals.patientPaid)} OOP</strong>
+                </div>
+                {/* S140 fix-pass H2 — Refund + Forgive: Refund row first,
+                    Forgive row second. Both always render (≥$1 gate
+                    dropped) so users see both buckets even at $0; clarifies
+                    that we tracked both possibilities. */}
+                <div className="mt-1 flex justify-between gap-3 border-t border-red-200 pt-[6px] text-xs">
+                  <span className="font-semibold text-emerald-700">Refund</span>
+                  <strong className="font-bold tabular-nums text-emerald-700">+${fmtMoney(billTotals.refundComponent)}</strong>
+                </div>
+                <div className="flex justify-between gap-3 text-xs">
+                  <span className="font-semibold text-emerald-700">Provider must forgive</span>
+                  <strong className="font-bold tabular-nums text-emerald-700">${fmtMoney(billTotals.forgivenessComponent)}</strong>
+                </div>
               </div>
-              <div className="flex justify-between gap-3 text-xs">
-                <span className="font-semibold text-emerald-700">Provider must forgive</span>
-                <strong className="font-bold tabular-nums text-emerald-700">${fmtMoney(billTotals.forgivenessComponent)}</strong>
-              </div>
-            </div>
+            )}
             <div className="mt-1 inline-flex items-center gap-[6px] text-[11px] text-gray-500">
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -3703,6 +3940,58 @@ export function ClaimDetail({
             </div>
           </div>
         </div>
+        {/* S307 flag — "Where these numbers come from": the per-line derivation
+            connecting the two cards to the Refund/Forgive totals. Same
+            savingsDerivation build as the plan card — one derivation, two
+            renderings, so they can never disagree. */}
+        {savingsDerivation && savingsDerivation.rows.length > 0 && (
+          <div className="mt-3.5 rounded-[18px] border border-gray-200 bg-gray-50/70 px-5 py-4">
+            <h4 className="m-0 text-[11px] font-bold uppercase tracking-[0.09em] text-gray-700">
+              Where these numbers come from
+            </h4>
+            {savingsDerivation.spreadSentence && (
+              <p className="mb-1 mt-1.5 text-xs leading-relaxed text-gray-500">{savingsDerivation.spreadSentence}</p>
+            )}
+            <div className="mt-2.5 flex flex-col gap-2">
+              {savingsDerivation.rows.map((row) => (
+                <div
+                  key={row.id}
+                  className={`grid grid-cols-1 items-center gap-2.5 rounded-xl border bg-white px-3.5 py-3 sm:grid-cols-[1.5fr_0.8fr_1fr] ${
+                    row.cta ? "border-amber-300 bg-amber-50/40" : "border-gray-200"
+                  }`}
+                >
+                  <div>
+                    <div className="text-[13px] font-bold text-gray-900">{row.label}</div>
+                    <div className="mt-0.5 text-[11.5px] leading-snug text-gray-500">{row.planDetail}</div>
+                    {row.cta && (
+                      <button
+                        type="button"
+                        onClick={() => setAddPlanDetailsLineId(row.id)}
+                        className="mt-1.5 rounded-full border border-amber-300 bg-amber-50 px-2.5 py-0.5 text-[11px] font-semibold text-amber-800 hover:bg-amber-100"
+                      >
+                        Confirm your rate →
+                      </button>
+                    )}
+                  </div>
+                  <div className="text-xs text-gray-600">
+                    {row.paidLabel}
+                    <span className="block text-[15px] font-bold tabular-nums text-gray-900">${fmtMoney(row.paidAmount)}</span>
+                  </div>
+                  <div className="sm:text-right">
+                    {row.result.kind === "none" ? (
+                      <span className="text-xs font-semibold text-gray-400">{row.resultNone}</span>
+                    ) : (
+                      <>
+                        <span className="block text-[11px] font-semibold text-gray-500">{row.resultLabel}</span>
+                        <strong className="text-[16px] font-bold tabular-nums text-emerald-700">${fmtMoney(row.result.amount)}</strong>
+                      </>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
             </>
           )}
         </RailStep>
