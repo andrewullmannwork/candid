@@ -40,6 +40,7 @@
 import { useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils/cn";
 import { PatientIdentityChoices } from "@/components/disputes/PatientIdentityChoices";
+import type { LetterPatientIdentity } from "@/lib/disputes/letter-type";
 import { computeCaseStage, stageActions } from "@/lib/disputes/case-stage";
 import { GuidedPackCSection, GuidedPackDSection } from "@/components/disputes/GuidedSpineSteps";
 import {
@@ -166,6 +167,8 @@ export interface UnifiedTodoProps {
   // mismatch via the real confirm-patient-identity flow in the parent.
   nameMismatch: { billName: string; profileName: string } | null;
   nameResolved: boolean;
+  /** S307 (tracker AT round 2) — the stored answer, pre-selecting the widget. */
+  patientIdentity?: LetterPatientIdentity | null;
   onResolvePatient: (choice: "me" | "dependent" | "wrong", correctedName?: string) => void;
 
   /**
@@ -410,6 +413,7 @@ export function UnifiedTodo({
   insurerAddressOnFile,
   onAddInsurerAddress,
   nameMismatch,
+  patientIdentity,
   planYearMismatch,
   planYearResolved,
   planYearStrip,
@@ -1123,6 +1127,7 @@ export function UnifiedTodo({
                         CaseNeedsPanel's one-click "This is me" could adopt the
                         SAME form instead of resolving with no choice. */}
                     <PatientIdentityChoices
+                      initialIdentity={patientIdentity}
                       billName={nameMismatch.billName}
                       profileName={nameMismatch.profileName}
                       onResolve={(choice, correctedName) => {

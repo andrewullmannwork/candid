@@ -11,7 +11,7 @@ import { InlineSubscribePanel } from "@/components/billing/InlineSubscribePanel"
 import { disputeUrlForResult } from "@/lib/disputes/url";
 import { letterRecipientKind } from "@/lib/disputes";
 import { unsendPayload } from "@/lib/disputes/outcome-actions";
-import { LETTER_TYPE_LABELS, parseLetterDate } from "@/lib/disputes/letter-type";
+import { LETTER_TYPE_LABELS, parseLetterDate, type LetterPatientIdentity } from "@/lib/disputes/letter-type";
 import { LetterView } from "@/components/disputes/LetterView";
 import { fmtRailDate } from "@/lib/case/rail-steps";
 import { OUTCOME_LABELS } from "@/lib/disputes/outcome-taxonomy";
@@ -314,6 +314,13 @@ function DisputesContent() {
   const [serviceAttestationReviewed, setServiceAttestationReviewed] = useState(false);
   const [attestingAsName, setAttestingAsName] = useState<string | null>(null);
   const [accountName, setAccountName] = useState("");
+  // S307 (tracker AT) — the LETTER's patient name from the GET payload, so the
+  // claim-details block shows the same name the letter prints (me → account ·
+  // dependent → the bill's patient · wrong → the typed correction).
+  const [letterPatientNameSrv, setLetterPatientNameSrv] = useState<string | null>(null);
+  // S307 (tracker AT, round 2) — the RAW stored answer, threaded to the
+  // identity widget so a re-opened question pre-selects the truth.
+  const [patientIdentitySrv, setPatientIdentitySrv] = useState<LetterPatientIdentity | null>(null);
   // S111 — unified modal state. Replaces the S110 SearchCanonicalPlanModal
   // open boolean; mode controls the 5-mode morph in PlanSearchModal.
   const [planSearchModalOpen, setPlanSearchModalOpen] = useState(false);
@@ -547,6 +554,10 @@ function DisputesContent() {
       typeof data.attestingAsName === "string" ? data.attestingAsName : null,
     );
     setAccountName(typeof data.accountName === "string" ? data.accountName : "");
+    // S307 (tracker AT) — the letter's own patient name, server-computed
+    // through the one derivation the compose uses.
+    setLetterPatientNameSrv(typeof data.letterPatientName === "string" ? data.letterPatientName : null);
+    setPatientIdentitySrv((data.patientIdentity as LetterPatientIdentity | null) ?? null);
     // Dispute Letters v2 (Z1.2) — Zone-1 prefill signals.
     setUserPatientPaid(typeof data.userPatientPaid === "number" ? data.userPatientPaid : null);
     // S292 (#7/#10) — claim-page cost-share resolution rows + attestation
@@ -719,8 +730,20 @@ function DisputesContent() {
     ): Promise<boolean> => {
       if (!user || !disputeId) return false;
       const prev = patientIdentityResolved;
+      const prevIdentity = patientIdentitySrv;
       mutationGenRef.current += 1;
       setPatientIdentityResolved(confirmed);
+      // S307 (tracker AT, round 3) — the identity VALUE gets the same
+      // pending-target treatment as the resolved flag above: the widget's
+      // pre-fill reads this state, and without the optimistic set a quick
+      // re-open showed the PREVIOUS answer (the debounced reconcile hadn't
+      // landed yet — Andrew's "wrong then it says dependent" catch).
+      if (choice) {
+        setPatientIdentitySrv({
+          choice,
+          correctedName: correctedName?.trim() ? correctedName.trim() : null,
+        });
+      }
       try {
         const token = await user.firebaseUser.getIdToken();
         const res = await fetch(`/api/disputes/${disputeId}/confirm-patient-identity`, {
@@ -738,11 +761,12 @@ function DisputesContent() {
         console.error("[confirm-patient-identity] failed:", err);
         mutationGenRef.current += 1;
         setPatientIdentityResolved(prev);
+        setPatientIdentitySrv(prevIdentity);
         scheduleReconcile();
         return false;
       }
     },
-    [user, disputeId, patientIdentityResolved, scheduleReconcile],
+    [user, disputeId, patientIdentityResolved, patientIdentitySrv, scheduleReconcile],
   );
 
   /**
@@ -2087,6 +2111,7 @@ function DisputesContent() {
       nameResolved={patientIdentityResolved}
       billName={nameMismatch?.billName ?? null}
       profileName={nameMismatch?.profileName ?? null}
+      patientIdentity={patientIdentitySrv}
       attestationReviewed={serviceAttestationReviewed}
       attestationSource={attestationSource}
       hasInsurer={zone1HasInsurer}
@@ -2114,13 +2139,14 @@ function DisputesContent() {
       claimFacts={
         v3DesignOn
           ? {
-              // S302 round 3 — `nameMismatch` is now the RAW comparison and no
-              // longer disappears on confirmation, so this keys on the answer
-              // explicitly to reproduce today's display byte-for-byte:
-              // confirmed → the account name the letter actually uses.
+              // S307 (tracker AT) — resolved → the LETTER's own name (server-
+              // computed via letterPatientName), so an explicit "dependent"/
+              // "wrong" answer shows here exactly as the letter prints it. The
+              // S302 round-3 account-name rule survives only as the fallback
+              // for payloads without the field. Unresolved: unchanged.
               patientName:
                 (patientIdentityResolved
-                  ? accountName
+                  ? letterPatientNameSrv ?? accountName
                   : (nameMismatch?.billName ?? nameMismatch?.profileName ?? accountName)) || null,
               providerName: evidence?.claims?.[0]?.providerName ?? null,
               serviceDate: evidence?.claims?.[0]?.dateOfService ?? null,
@@ -2463,6 +2489,7 @@ function DisputesContent() {
       }
       nameMismatch={nameMismatch}
       nameResolved={patientIdentityResolved}
+      patientIdentity={patientIdentitySrv}
       onResolvePatient={resolvePatientChoice}
       // S295 — the claim-details row reads the REAL confirmation state, the way
       // nameResolved / planYearResolved already do. Null when the details block
