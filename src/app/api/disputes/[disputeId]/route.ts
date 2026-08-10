@@ -27,7 +27,12 @@ import {
 } from "@/lib/disputes/dispute-ground-basis";
 import type { StrengthResult } from "@/lib/disputes/strength-scoring";
 import { letterRecipientKind } from "@/lib/disputes";
-import { resolveLetterTypeFromDispute, letterPatientIdentityFromMeta } from "@/lib/disputes/letter-type";
+import {
+  resolveLetterTypeFromDispute,
+  letterPatientIdentityFromMeta,
+  letterPatientName,
+  pickPatientName,
+} from "@/lib/disputes/letter-type";
 import { resolveDisputeReadiness } from "@/lib/disputes/dispute-readiness";
 import {
   captureCoverageSnapshot,
@@ -699,6 +704,14 @@ export async function GET(
   // still surfaced in the payload, so it is read here from the same row.
   const patientIdentityResolved =
     (dispute.metadata as Record<string, unknown> | null)?.patientIdentityResolved === true;
+  // S307 (tracker AT) — the stored identity answer, read ONCE and reused by
+  // both payload fields below (the derived display name + the raw answer for
+  // the edit widget), so the two can never come from different reads.
+  const storedPatientIdentity = letterPatientIdentityFromMeta(
+    dispute.metadata as Record<string, unknown> | null,
+  );
+  const claimPatientName = (readiness.claimMetadata as { patient?: { name?: string } } | null)
+    ?.patient?.name;
   // Non-fatal by contract: the resolver returns null strength on failure and the
   // letter still serves, exactly as the inline version did.
   const strength: StrengthResult | null = readiness.strength;
@@ -839,6 +852,23 @@ export async function GET(
     missingPlanForYear: planContext?.missingForYear ?? null,
     evidence,
     patientNameMismatch,
+    // S307 (tracker AT) — the LETTER's patient name, computed through the ONE
+    // derivation the compose uses (letterPatientName + pickPatientName, same
+    // inputs: the identity answer off dispute metadata, the bill's patient,
+    // the account-holder default). The claim-details block renders THIS, so
+    // the block and the letter can never show two different names — two
+    // surfaces, one derivation, executed once server-side.
+    letterPatientName: letterPatientName(
+      storedPatientIdentity,
+      claimPatientName,
+      pickPatientName(claimPatientName, readiness.accountName),
+    ),
+    // S307 (tracker AT, round 2) — the RAW stored answer, for the edit
+    // widget's pre-fill (PatientIdentityChoices initialIdentity). The widget
+    // hardcoded "me" as its starting state, asserting an answer the user never
+    // gave; a re-confirm from that lie would clobber the real one. Same single
+    // metadata read as the derived name above.
+    patientIdentity: storedPatientIdentity,
     // Block C2 — sticky patient-identity confirmation flag (set via POST
     // confirm-patient-identity). True ONLY when the user explicitly confirmed (lets
     // the rail offer "Undo"); distinct from a natural name match (mismatch null,

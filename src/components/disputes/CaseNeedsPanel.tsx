@@ -32,7 +32,7 @@ import {
   ServiceAttestationFlow,
   type AttestationLine,
 } from "@/components/disputes/ServiceAttestationFlow";
-import { letterNeeds, type LetterNeedKey } from "@/lib/disputes/letter-type";
+import { letterNeeds, type LetterNeedKey, type LetterPatientIdentity } from "@/lib/disputes/letter-type";
 
 /** One disputed service's plan-cost state (derived from evidence line planBenefit,
  *  or — S292 (#7) — from the claim page's own cost-share resolution `lineCostShare`). */
@@ -102,6 +102,8 @@ export interface CaseNeedsPanelProps {
   nameResolved: boolean;
   billName: string | null;
   profileName: string | null;
+  /** S307 (tracker AT round 2) — the stored answer, pre-selecting the widget. */
+  patientIdentity?: LetterPatientIdentity | null;
   attestationReviewed: boolean;
   /**
    * S292 (#7) — where the attestation-reviewed state came from: "dispute" (the
@@ -531,7 +533,7 @@ interface RowDesc {
 
 export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
   const {
-    embedded, letterType, planServices, nameMismatch, nameResolved, billName, profileName,
+    embedded, letterType, planServices, nameMismatch, nameResolved, billName, profileName, patientIdentity,
     attestationReviewed, attestationSource, hasInsurer, providerAddressOnFile, insurerAddressOnFile,
     eobPresent, userPatientPaid, billPatientPaid, denialNoticeDate, denialDatePrefill,
     collectorFirstContactDate,
@@ -947,6 +949,7 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
           nameChoicesOpen && billName && profileName ? (
             <div className="mt-2">
               <PatientIdentityChoices
+                initialIdentity={patientIdentity}
                 billName={billName}
                 profileName={profileName}
                 onResolve={(choice, correctedName) => {
@@ -979,6 +982,7 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
           nameChoicesOpen && billName && profileName ? (
             <div className="mt-2">
               <PatientIdentityChoices
+                initialIdentity={patientIdentity}
                 billName={billName}
                 profileName={profileName}
                 onResolve={(choice, correctedName) => {

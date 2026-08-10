@@ -25,6 +25,7 @@
 
 import { useState } from "react";
 import { cn } from "@/lib/utils/cn";
+import type { LetterPatientIdentity } from "@/lib/disputes/letter-type";
 
 export type PatientIdentityChoice = "me" | "dependent" | "wrong";
 
@@ -95,15 +96,26 @@ export function PatientIdentityChoices({
   profileName,
   onResolve,
   onCancel,
+  initialIdentity,
 }: {
   billName: string;
   profileName: string;
   /** All three choices resolve through the real confirm-patient-identity flow. */
   onResolve: (choice: PatientIdentityChoice, correctedName?: string) => void;
   onCancel: () => void;
+  /**
+   * S307 (tracker AT, round 2) — the answer already on file, so a re-opened
+   * widget pre-selects the truth instead of asserting "me" (the hardcoded
+   * default painted an answer the user never gave, and re-confirming from it
+   * would clobber the real one). Absent → today's unanswered default. The
+   * widget mounts fresh on every open at all render sites, so useState reads
+   * this at each open — no sync machinery needed (the S291
+   * AddPlanDetailsModal initial-props cure, same disease).
+   */
+  initialIdentity?: LetterPatientIdentity | null;
 }) {
-  const [who, setWho] = useState<PatientIdentityChoice>("me");
-  const [correctedName, setCorrectedName] = useState("");
+  const [who, setWho] = useState<PatientIdentityChoice>(initialIdentity?.choice ?? "me");
+  const [correctedName, setCorrectedName] = useState(initialIdentity?.correctedName ?? "");
 
   return (
     <div className="animate-fade-in rounded-[14px] border border-blue-200 bg-white p-4 shadow-[0_14px_30px_-20px_rgba(37,99,235,0.35)]">

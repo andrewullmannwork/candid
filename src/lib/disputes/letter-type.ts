@@ -501,6 +501,23 @@ export function letterPatientName(
   return accountHolderDefault || bill;
 }
 
+/**
+ * Default to the account holder's name (from users.display_name); fall back
+ * to bill-parsed name only when account name is unavailable. The UI surfaces
+ * a banner when these differ so the user can edit before sending.
+ * (Tracker AS's account-holder rule. Moved here from rerender.ts at S307 —
+ * tracker AT — so the [disputeId] GET can compute the SAME default the
+ * compose uses without importing the heavy rerender module.)
+ */
+export function pickPatientName(billName: string | null | undefined, profileName: string): string {
+  if (profileName) return profileName;
+  const trimmed = (billName ?? "").trim();
+  if (!trimmed) return "";
+  if (/^(patient|member|subscriber|insured|name)$/i.test(trimmed)) return "";
+  if (/^\[.+\]$/.test(trimmed)) return "";
+  return trimmed;
+}
+
 /** Read the persisted identity answer off dispute metadata (null = unanswered). */
 export function letterPatientIdentityFromMeta(
   meta: Record<string, unknown> | null | undefined,

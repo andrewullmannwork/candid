@@ -16,7 +16,7 @@ import type { PlanContext } from "./plan-context";
 import type { DisputeEvidence } from "./evidence-resolver";
 import { LETTER_TEMPLATES } from "./templates";
 import { letterRecipientKind } from "./index";
-import { letterPatientName, type LetterPatientIdentity } from "./letter-type";
+import { letterPatientName, pickPatientName, type LetterPatientIdentity } from "./letter-type";
 import { buildPriorContactRecital, RECITAL_IN_OPENING } from "./prior-contact";
 import { loadCaseProjection } from "@/lib/case/load-case-timeline";
 import { guidedCallLogFromMeta } from "@/lib/guides/pack-registry";
@@ -254,17 +254,7 @@ export async function rerenderDisputeLetter(
   };
 }
 
-// Default to the account holder's name (from users.display_name); fall back
-// to bill-parsed name only when account name is unavailable. The UI surfaces
-// a banner when these differ so the user can edit before sending.
-function pickPatientName(billName: string | null | undefined, profileName: string): string {
-  if (profileName) return profileName;
-  const trimmed = (billName ?? "").trim();
-  if (!trimmed) return "";
-  if (/^(patient|member|subscriber|insured|name)$/i.test(trimmed)) return "";
-  if (/^\[.+\]$/.test(trimmed)) return "";
-  return trimmed;
-}
+// pickPatientName moved to letter-type.ts at S307 (tracker AT) — imported above.
 
 // Best-effort name resolution from users.display_name, with an email-derived
 // fallback. Email like "andrew.david.ullmann@gmail.com" → "Andrew Ullmann"
