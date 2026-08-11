@@ -2460,19 +2460,7 @@ export function ClaimDetail({
                 guidedOn && assumptionsDone ? (
                   <ShowFullStepButton
                     open={assumpFullOpen}
-                    onToggle={() => {
-                      // S309 (Andrew's toggle report) — "Show full step" must show
-                      // the FULL step: after Done, the step body held only the
-                      // card's collapsed stub, so both toggle states rendered the
-                      // same "Update assumptions" box and the click looked dead.
-                      // Opening now also un-collapses the card VISUALLY via the
-                      // existing expandSignal — no review-state write (that stays
-                      // the Update-assumptions link's job).
-                      setAssumpFullOpen((v) => {
-                        if (!v) setAssumpExpandSignal((n) => n + 1);
-                        return !v;
-                      });
-                    }}
+                    onToggle={() => setAssumpFullOpen((v) => !v)}
                   />
                 ) : undefined
               }
@@ -2543,7 +2531,18 @@ export function ClaimDetail({
                   else if (bannerTargetLineId) openCorrectionModal(bannerTargetLineId);
                 }}
                 statedServiceCosts={statedServiceCosts}
-                initiallyReviewed={!!(claim.metadata as Record<string, unknown> | null)?.assumptionsReviewedAt}
+                // S309 (Andrew's toggle report) — on the GUIDED rail this body
+                // only renders when review isn't done OR the user explicitly
+                // expanded the step ("Show full step"); mounting the card
+                // collapsed made both toggle states render the same
+                // "Update assumptions" box (an expandSignal bump can't help — a
+                // fresh mount initializes lastExpandSignal to the incoming value
+                // and swallows it). Guided ⇒ seed OPEN; the persisted collapse
+                // still shows as the collapsed STEP (assumpFullOpen defaults
+                // false), so 1.3.13 reload-persistence is untouched. The
+                // non-guided site below keeps the metadata seed — there the
+                // card's own collapse IS the persistence surface.
+                initiallyReviewed={guidedOn ? false : !!(claim.metadata as Record<string, unknown> | null)?.assumptionsReviewedAt}
                 expandSignal={assumpExpandSignal}
                 onUploadEob={() => router.push("/upload?type=eob")}
                 onBack={onBack}
