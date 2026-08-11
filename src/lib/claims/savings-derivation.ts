@@ -179,11 +179,13 @@ function planAnswerFor(line: DerivationLineInput): { term: string; amountText: s
   const dedUnmet = line.deductibleApplies === true && line.deductibleMet === false;
   const dedMet = line.deductibleApplies === true && line.deductibleMet === true;
   const dedDollar = line.deductibleMax != null ? ` your $${fmtMoney(line.deductibleMax)} deductible` : " your deductible";
-  // S309 F2 (V3, Andrew-approved) — `cell`: the table's PLAN-SAYS sub-line.
+  // S309 F2 (V4, Andrew's phrasing) — `cell`: the table's PLAN-SAYS sub-line.
   // Same facts, ONE derivation with the panel row so the two surfaces can
-  // never disagree. Deliberately silent (null) on unpriced/not-covered lines,
-  // and never asserts "no deductible" when deductibleApplies is UNKNOWN —
-  // the suffix only renders on an explicit false.
+  // never disagree. Deductible-phase lines lead with what you pay NOW
+  // ("full amount until deductible met, then …"), met lines state the bare
+  // rate. Deliberately silent (null) on unpriced/not-covered lines, and never
+  // asserts "no deductible" when deductibleApplies is UNKNOWN — that suffix
+  // only renders on an explicit false.
   const dedExempt = line.deductibleApplies === false;
   if (line.copay != null && line.copay > 0) {
     const c = fmtMoney(line.copay);
@@ -192,7 +194,7 @@ function planAnswerFor(line: DerivationLineInput): { term: string; amountText: s
         term: `$${c} copay after deductible`,
         amountText: owe,
         detail: `Your plan says: covered — a $${c} copay after${dedDollar}. It isn't met, so up to $${fmtMoney(line.shouldOwe)} is yours to pay.${src}`,
-        cell: `$${c} copay after deductible · not met`,
+        cell: `full amount until deductible met, then $${c} copay`,
       };
     }
     return {
@@ -209,7 +211,7 @@ function planAnswerFor(line: DerivationLineInput): { term: string; amountText: s
         term: `${pct}% after deductible`,
         amountText: owe,
         detail: `Your plan says: covered — ${pct}% after${dedDollar}. It isn't met, so up to $${fmtMoney(line.shouldOwe)} is yours to pay.${src}`,
-        cell: `${pct}% after deductible · not met`,
+        cell: `full amount until deductible met, then ${pct}%`,
       };
     }
     return {
@@ -219,12 +221,14 @@ function planAnswerFor(line: DerivationLineInput): { term: string; amountText: s
       cell: dedExempt ? `${pct}% coinsurance — no deductible` : `${pct}% coinsurance`,
     };
   }
-  // Explicit $0 (copay 0, or coinsurance 0): the approved visit wording.
+  // Explicit $0 (copay 0, or coinsurance 0): the approved visit wording. In
+  // the deductible phase ("no charge after deductible" plans) the cell still
+  // leads with what you pay NOW.
   return {
     term: "no copay",
     amountText: owe,
     detail: `Your plan says: covered, no copay — you owe $0.${src}`,
-    cell: "no copay",
+    cell: dedUnmet ? "full amount until deductible met, then no charge" : "no copay",
   };
 }
 

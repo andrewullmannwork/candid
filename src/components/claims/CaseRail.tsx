@@ -1165,7 +1165,7 @@ export function CaseRail({
                         {renderOfferAction(o.letterType)}
                       </div>
                     )}
-                    <div className="min-w-[14rem] flex-1 text-right">
+                    <div className="min-w-[14rem] flex-1">
                       {o.reasonTitle && (
                         <div className={`text-[14px] font-bold ${declined ? "text-gray-400" : "text-gray-900"}`}>
                           {o.reasonTitle}

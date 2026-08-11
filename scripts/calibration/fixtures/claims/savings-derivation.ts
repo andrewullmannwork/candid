@@ -300,19 +300,21 @@ const base = { prorated: false, paidTotal: 0, balanceTotal: 0, refundComponent: 
       line("copay-exempt", { copay: 30, deductibleApplies: false, shouldOwe: 30 }),
       line("copay-unknown-ded", { copay: 30, shouldOwe: 30 }),
       line("zero-share", { copay: 0, shouldOwe: 0 }),
+      line("zero-share-unmet", { copay: 0, deductibleApplies: true, deductibleMet: false, deductibleMax: 2000, shouldOwe: 100 }),
       line("unpriced", { rateKnown: false }),
       line("not-covered", { covered: false, shouldOwe: 100 }),
     ],
   });
   const cell = (id: string) => d.rows.find((r) => r.id === id)?.planTermCell;
-  check("cell: coinsurance in deductible phase names BOTH facts", cell("coins-unmet") === "10% after deductible · not met", cell("coins-unmet"));
+  check("cell: coinsurance in deductible phase says what you pay NOW, then the rate", cell("coins-unmet") === "full amount until deductible met, then 10%", cell("coins-unmet"));
   check("cell: coinsurance with deductible met is the bare term", cell("coins-met") === "20% coinsurance", cell("coins-met"));
   check("cell: coinsurance explicitly exempt says no deductible", cell("coins-exempt") === "20% coinsurance — no deductible", cell("coins-exempt"));
   check("cell: UNKNOWN deductibleApplies never asserts no-deductible", cell("coins-unknown-ded") === "20% coinsurance", cell("coins-unknown-ded"));
-  check("cell: copay in deductible phase names BOTH facts", cell("copay-unmet") === "$30.00 copay after deductible · not met", cell("copay-unmet"));
+  check("cell: copay in deductible phase says what you pay NOW, then the copay", cell("copay-unmet") === "full amount until deductible met, then $30.00 copay", cell("copay-unmet"));
   check("cell: copay explicitly exempt says no deductible", cell("copay-exempt") === "$30.00 copay — no deductible", cell("copay-exempt"));
   check("cell: copay with unknown deductible is the bare term", cell("copay-unknown-ded") === "$30.00 copay", cell("copay-unknown-ded"));
   check("cell: explicit zero share reads no copay", cell("zero-share") === "no copay", cell("zero-share"));
+  check("cell: zero share in deductible phase still says what you pay NOW", cell("zero-share-unmet") === "full amount until deductible met, then no charge", cell("zero-share-unmet"));
   check("cell: unpriced line stays silent (null)", cell("unpriced") === null, cell("unpriced"));
   check("cell: not-covered line stays silent (null)", cell("not-covered") === null, cell("not-covered"));
   check("cell composes beside planTerm — dedUnmet term unchanged", d.rows.find((r) => r.id === "coins-unmet")?.planTerm === "10% after deductible");
