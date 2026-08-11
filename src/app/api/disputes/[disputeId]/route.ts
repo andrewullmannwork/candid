@@ -52,6 +52,7 @@ import {
 import {
   computeEvidenceFingerprint,
   decideDriftAction,
+  driftMachineryApplies,
   isDisputeStale,
   loadFingerprintInputForClaim,
   appendLetterVersion,
@@ -301,6 +302,15 @@ export async function GET(
   const refreshRequested =
     costShareV2 && req.nextUrl.searchParams.get("refresh") === "1";
   const sentAt = dispute.sent_at ? new Date(dispute.sent_at as string) : null;
+  // S308 — void rows (cancelled, or closed without ever being sent) are
+  // read-only exhibits: the whole live-document apparatus below (fingerprint,
+  // drift decision, view-driven regeneration — flagged AND legacy paths) is
+  // skipped for them. A cancelled letter has null sent_at, so the sent-only
+  // guard alone counted it as an unsent draft and a plain view rebuilt it.
+  const liveApparatus = driftMachineryApplies(
+    (dispute.status as string | null) ?? null,
+    sentAt,
+  );
   const cooldownUntil = dispute.cooldown_until
     ? new Date(dispute.cooldown_until as string)
     : null;
@@ -345,7 +355,9 @@ export async function GET(
       // BEFORE deciding whether to regenerate the letter. Always logged for
       // observability; only acted on when flag is ON. W4 also needs the
       // fingerprint to compute `isStale` for the persistent-letter banner.
-      if (flywheelOn || costShareV2) {
+      // S308 — `liveApparatus` scopes all of it to live drafts + sent letters;
+      // a void row gets no fingerprint, no drift banner, and (below) no regen.
+      if ((flywheelOn || costShareV2) && liveApparatus) {
         liveRebuildOn =
           costShareV2 && (await isFeatureEnabled("dispute_draft_live_rebuild_v1"));
         // UX-2 — the dispute state is passed EXPLICITLY: unsent + flag ON makes
@@ -488,11 +500,16 @@ export async function GET(
       // decision function's regenerate_draft branch (W4 suppressed it behind the
       // explicit ?refresh=1). Drafts self-heal on view; sent letters still never
       // regenerate here.
-      const shouldRegenerate = costShareV2
-        ? (refreshRequested ||
-            (liveRebuildOn && driftDecision?.action === "regenerate_draft")) &&
-          !skipRegenerateForSent
-        : !skipRegenerateForSent && !skipRegenerateForDebounce;
+      // S308 — `liveApparatus` prefixes BOTH branches: a void row never
+      // regenerates, whether via the flag path, an explicit ?refresh=1, or
+      // the legacy always-regenerate-on-load branch.
+      const shouldRegenerate =
+        liveApparatus &&
+        (costShareV2
+          ? (refreshRequested ||
+              (liveRebuildOn && driftDecision?.action === "regenerate_draft")) &&
+            !skipRegenerateForSent
+          : !skipRegenerateForSent && !skipRegenerateForDebounce);
 
       // Always regenerate on load (unless guarded above). Templating is
       // cheap, and the letter must reflect the latest plan context,

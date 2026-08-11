@@ -18,6 +18,9 @@ export type CostShareOverrideParsed =
       copay: number | null;
       coinsurance: number | null; // decimal 0-1
       deductibleApplies: boolean | null;
+      /** S308 — true when the request TOUCHED the field (set or explicit-null
+       *  clear); false = untouched, the stored answer stands. */
+      deductibleAppliesTouched?: boolean;
     }
   | { field: "aca"; status: "confirmed" | "non_aca" }
   | { field: "patient_paid"; amount: number | null }
@@ -29,6 +32,13 @@ export type CostShareOverrideParsed =
    * redistribution, no imputation. `null` clears back to the default rule.
    */
   | { field: "totals_source"; use: "summary" | "line_items" | null }
+  /**
+   * S308 (Andrew) — the verify-assumptions card's collapsed state persists:
+   * Done marks reviewed (the card reloads collapsed with the "Update
+   * assumptions" link); re-opening clears it. A UI-state fact, claim-scoped,
+   * stored beside its siblings in claims.metadata (Rule #9 JSONB-first).
+   */
+  | { field: "assumptions_reviewed"; reviewed: boolean }
   | { field: "claim_plan"; insurancePlanId: string };
 
 /**
@@ -105,20 +115,34 @@ export function parseCostShareOverride(body: unknown): ParseResult {
         }
         coinsurance = Math.round(b.coinsurancePercent) / 100; // store decimal
       }
-      if (copay == null && coinsurance == null) {
-        return { ok: false, error: "service_cost requires copay or coinsurancePercent" };
-      }
-      let deductibleApplies: boolean | null = null;
-      if (b.deductibleApplies != null) {
-        if (typeof b.deductibleApplies !== "boolean") {
-          return { ok: false, error: "deductibleApplies must be a boolean" };
+      // S308 — three-valued by design: ABSENT = untouched · explicit JSON null
+      // = CLEAR the stored answer ("I'm not sure" after a saved Yes/No — the
+      // third instance tonight of a partial write needing to express removal)
+      // · boolean = set. The route mirrors: undefined skips the column, null
+      // writes NULL.
+      let deductibleApplies: boolean | null | undefined = undefined;
+      if ("deductibleApplies" in b) {
+        if (b.deductibleApplies !== null && typeof b.deductibleApplies !== "boolean") {
+          return { ok: false, error: "deductibleApplies must be a boolean or null" };
         }
-        deductibleApplies = b.deductibleApplies;
+        deductibleApplies = b.deductibleApplies as boolean | null;
+      }
+      // A deductible-applies-only correction (set OR clear) is a legitimate
+      // partial write; only a body that touches NOTHING is rejected.
+      if (copay == null && coinsurance == null && deductibleApplies === undefined) {
+        return { ok: false, error: "service_cost requires copay, coinsurancePercent, or deductibleApplies" };
       }
       return {
         ok: true,
-        value: { field: "service_cost", serviceSlug: b.serviceSlug, copay, coinsurance, deductibleApplies },
+        value: { field: "service_cost", serviceSlug: b.serviceSlug, copay, coinsurance, deductibleApplies: deductibleApplies === undefined ? null : deductibleApplies, deductibleAppliesTouched: deductibleApplies !== undefined },
       };
+    }
+
+    case "assumptions_reviewed": {
+      if (typeof b.reviewed !== "boolean") {
+        return { ok: false, error: "assumptions_reviewed requires reviewed boolean" };
+      }
+      return { ok: true, value: { field: "assumptions_reviewed", reviewed: b.reviewed } };
     }
 
     case "aca": {

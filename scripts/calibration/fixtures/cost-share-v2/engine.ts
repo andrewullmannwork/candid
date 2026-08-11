@@ -8,6 +8,8 @@
  * Exits non-zero on any failure (gate-usable).
  */
 import {
+  hasPendingAssumption,
+  ANSWERED_REASONS,
   computeCostShareV2,
   computeClaimCostShareV2,
   rollupCostShareVerdict,
@@ -22,6 +24,7 @@ import {
   type NetworkTier,
   type CostShareV2Result,
 } from "../../../../src/lib/claims/recovery-math";
+import { buildServiceCostShare } from "../../../../src/lib/claims/cost-share-loader";
 
 let pass = 0;
 const fails: string[] = [];
@@ -136,7 +139,7 @@ function mk(o: {
 {
   const r = computeCostShareV2(mk({
     line: { billed: 221, allowed: 163.27, patientPaid: 163.27, patientResponsibility: 163.27 },
-    service: { covered: true, copay: null, coinsurance: null, deductibleApplies: true },
+    service: { covered: true, copay: null, coinsurance: null, deductibleApplies: true, userStatedRate: false },
     claimInsurerPaidZero: true,
     plan: { inDeductibleIndividual: 7050, inOopMaxIndividual: 7050 },
   }));
@@ -148,7 +151,7 @@ function mk(o: {
 {
   const r = computeCostShareV2(mk({
     line: { billed: 200, allowed: 200, patientPaid: 80, patientResponsibility: 80 },
-    service: { covered: true, copay: null, coinsurance: null, deductibleApplies: false },
+    service: { covered: true, copay: null, coinsurance: null, deductibleApplies: false, userStatedRate: false },
     plan: { inCoinsuranceDefault: 0.2, inDeductibleIndividual: 1000, inOopMaxIndividual: 5000 },
   }));
   check("1e plan-default-coins no false gap", !assumption(r, "service_cost"), r.assumptions);
@@ -158,7 +161,7 @@ function mk(o: {
 {
   const r = computeCostShareV2(mk({
     line: { billed: 221, allowed: 163.27, patientPaid: 163.27, patientResponsibility: 163.27 },
-    service: { covered: true, copay: null, coinsurance: null, deductibleApplies: true },
+    service: { covered: true, copay: null, coinsurance: null, deductibleApplies: true, userStatedRate: false },
     plan: { inDeductibleIndividual: 7050, inOopMaxIndividual: 7050 },
     overrides: { deductibleMet: true },
   }));
@@ -171,7 +174,7 @@ function mk(o: {
 {
   const r = computeCostShareV2(mk({
     line: { billed: 500, allowed: 400, patientPaid: 400, patientResponsibility: 400 },
-    service: { covered: true, copay: null, coinsurance: 0.2, deductibleApplies: true },
+    service: { covered: true, copay: null, coinsurance: 0.2, deductibleApplies: true, userStatedRate: false },
     accumulator: { deductibleApplied: null, deductibleMax: null, oopApplied: 9000, oopMax: 9000 },
   }));
   check("3 verdict recovery", r.verdict === "recovery", r.verdict, "recovery");
@@ -184,7 +187,7 @@ function mk(o: {
 {
   const r = computeCostShareV2(mk({
     line: { billed: 1000, allowed: 1000, patientPaid: 0, patientResponsibility: 1000 },
-    service: { covered: true, copay: null, coinsurance: 0.2, deductibleApplies: true },
+    service: { covered: true, copay: null, coinsurance: 0.2, deductibleApplies: true, userStatedRate: false },
     accumulator: { deductibleApplied: 1800, deductibleMax: 2000, oopApplied: 1800, oopMax: 9000 },
   }));
   check("4 phase straddle", r.phase === "straddle", r.phase);
@@ -196,7 +199,7 @@ function mk(o: {
 {
   const r = computeCostShareV2(mk({
     line: { billed: 5000, allowed: 5000, patientPaid: 0, patientResponsibility: 5000 },
-    service: { covered: true, copay: null, coinsurance: 0.2, deductibleApplies: true },
+    service: { covered: true, copay: null, coinsurance: 0.2, deductibleApplies: true, userStatedRate: false },
     accumulator: { deductibleApplied: 1800, deductibleMax: 2000, oopApplied: 8700, oopMax: 9000 },
   }));
   check("5 phase straddle", r.phase === "straddle", r.phase);
@@ -208,7 +211,7 @@ function mk(o: {
 {
   const r = computeCostShareV2(mk({
     line: { billed: 300, allowed: 300, patientPaid: 0, patientResponsibility: 300 },
-    service: { covered: true, copay: null, coinsurance: 0.2, outCoinsurance: 0.4, deductibleApplies: true, outDeductibleApplies: true },
+    service: { covered: true, copay: null, coinsurance: 0.2, outCoinsurance: 0.4, deductibleApplies: true, outDeductibleApplies: true, userStatedRate: false },
     networkLine: "out_of_network",
     accumulator: { deductibleApplied: 4000, deductibleMax: 4000, oopApplied: 4000, oopMax: 14000 },
   }));
@@ -221,7 +224,7 @@ function mk(o: {
 {
   const r = computeCostShareV2(mk({
     line: { billed: 300, allowed: 300, patientPaid: 0, patientResponsibility: 300 },
-    service: { covered: true, copay: null, coinsurance: 0.2, outCoinsurance: 0.4, deductibleApplies: true, outDeductibleApplies: true },
+    service: { covered: true, copay: null, coinsurance: 0.2, outCoinsurance: 0.4, deductibleApplies: true, outDeductibleApplies: true, userStatedRate: false },
     networkLine: "in_network",
     overrides: { userNetworkOverride: "out_of_network" },
     accumulator: { deductibleApplied: 4000, deductibleMax: 4000, oopApplied: 4000, oopMax: 14000 },
@@ -234,7 +237,7 @@ function mk(o: {
 {
   const r = computeCostShareV2(mk({
     line: { billed: 500, allowed: 400, patientPaid: 0, patientResponsibility: 80 },
-    service: { covered: true, copay: null, coinsurance: 0.2, deductibleApplies: true },
+    service: { covered: true, copay: null, coinsurance: 0.2, deductibleApplies: true, userStatedRate: false },
     insurer: { memberCoinsurance: 80 },
     accumulator: { deductibleApplied: null, deductibleMax: null, oopApplied: 9000, oopMax: 9000 },
   }));
@@ -249,7 +252,7 @@ function mk(o: {
 {
   const r = computeCostShareV2(mk({
     line: { billed: 150, allowed: 150, patientPaid: 150, patientResponsibility: 150 },
-    service: { covered: false, copay: null, coinsurance: null, deductibleApplies: null },
+    service: { covered: false, copay: null, coinsurance: null, deductibleApplies: null, userStatedRate: false },
   }));
   check("9 verdict not_covered", r.verdict === "not_covered", r.verdict, "not_covered");
   check("9 shouldOwe 150 (full allowed)", near(r.shouldOwe, 150), r.shouldOwe);
@@ -260,7 +263,7 @@ function mk(o: {
 {
   const r = computeCostShareV2(mk({
     line: { billed: 150, allowed: 150, patientPaid: 300, patientResponsibility: 150 },
-    service: { covered: false, copay: null, coinsurance: null, deductibleApplies: null },
+    service: { covered: false, copay: null, coinsurance: null, deductibleApplies: null, userStatedRate: false },
   }));
   check("10 verdict recovery (Q2: overpaid even not-covered)", r.verdict === "recovery", r.verdict, "recovery");
   check("10 recovery 150", near(r.potentialRecovery, 150), r.potentialRecovery);
@@ -282,7 +285,7 @@ function mk(o: {
 {
   const r = computeCostShareV2(mk({
     line: { billed: 120, allowed: 120, patientPaid: 20, patientResponsibility: 20 },
-    service: { covered: true, copay: 20, coinsurance: null, deductibleApplies: false },
+    service: { covered: true, copay: 20, coinsurance: null, deductibleApplies: false, userStatedRate: false },
     insurer: { memberCopay: 20 },
     networkLine: "in_network",
     accumulator: { deductibleApplied: 2000, deductibleMax: 2000, oopApplied: 2000, oopMax: 9000 },
@@ -297,7 +300,7 @@ function mk(o: {
 {
   const r = computeCostShareV2(mk({
     line: { billed: 150, allowed: 150, patientPaid: 0, patientResponsibility: 150 },
-    service: { covered: true, copay: null, coinsurance: null, deductibleApplies: true },
+    service: { covered: true, copay: null, coinsurance: null, deductibleApplies: true, userStatedRate: false },
     insurer: { deniedAmount: 150 },
     plan: { inDeductibleIndividual: 5000 },
   }));
@@ -310,12 +313,17 @@ function mk(o: {
 {
   const r = computeCostShareV2(mk({
     line: { billed: 120, allowed: 120, patientPaid: 20, patientResponsibility: 20 },
-    service: { covered: true, copay: 20, coinsurance: null, deductibleApplies: false },
+    service: { covered: true, copay: 20, coinsurance: null, deductibleApplies: false, userStatedRate: false },
     networkLine: "in_network",
     accumulator: { deductibleApplied: 2000, deductibleMax: 2000, oopApplied: 2000, oopMax: 9000 },
   }));
   check("14 verdict confident", r.verdict === "confident", r.verdict, "confident");
-  check("14 no assumptions", r.assumptions.length === 0, r.assumptions);
+  // S308 repair — stale since S294's always-emit visibility rows
+  // (deductible_applies reason plan_document · oop_met reason accumulator):
+  // "quiet" now means NO PENDING rows, not an empty list. (Pre-existing
+  // failure — this fixture isn't CI-wired; verified failing at HEAD too.)
+  check("14 no PENDING assumptions (answered-reason rows only)", r.assumptions.every((a) => ANSWERED_REASONS.has(a.reason)), r.assumptions);
+  check("14 nothing pending via the consumer predicate", !hasPendingAssumption(r.assumptions, "service_cost") && !hasPendingAssumption(r.assumptions, "deductible_met"), r.assumptions);
   check("14 recovery 0", near(r.potentialRecovery, 0), r.potentialRecovery);
 }
 
@@ -325,10 +333,10 @@ function mk(o: {
   const res = computeClaimCostShareV2({
     lines: [
       // line A — $20 copay service, paid $100 → recover $80 (V2)
-      { billed: 100, allowed: 100, patientPaid: 100, patientResponsibility: 100, service: { covered: true, copay: 20, coinsurance: null, deductibleApplies: false }, insurer: INSURER0, networkLine: "in_network" },
+      { billed: 100, allowed: 100, patientPaid: 100, patientResponsibility: 100, service: { covered: true, copay: 20, coinsurance: null, deductibleApplies: false, userStatedRate: false }, insurer: INSURER0, networkLine: "in_network" },
       // line B — deductible-phase, insurer paid $0 (pre-deductible corroboration), paid the
       //          allowed → checks out (V1)
-      { billed: 150, allowed: 150, patientPaid: 150, patientResponsibility: 150, service: { covered: true, copay: null, coinsurance: null, deductibleApplies: true }, insurer: { ...INSURER0, insurancePaid: 0 }, networkLine: "in_network" },
+      { billed: 150, allowed: 150, patientPaid: 150, patientResponsibility: 150, service: { covered: true, copay: null, coinsurance: null, deductibleApplies: true, userStatedRate: false }, insurer: { ...INSURER0, insurancePaid: 0 }, networkLine: "in_network" },
     ],
     plan: { ...PLAN0, inDeductibleIndividual: 5000, inOopMaxIndividual: 9000 },
     accumulator: null,
@@ -358,7 +366,7 @@ function mk(o: {
 {
   const r = computeCostShareV2(mk({
     line: { billed: 200, allowed: 200, patientPaid: 0, patientResponsibility: 50 },
-    service: { covered: true, copay: null, coinsurance: 0.2, deductibleApplies: true },
+    service: { covered: true, copay: null, coinsurance: 0.2, deductibleApplies: true, userStatedRate: false },
     insurer: { memberCoinsurance: 50 },
     plan: { inDeductibleIndividual: 3000 },
   }));
@@ -382,7 +390,7 @@ function mk(o: {
 {
   const r = computeCostShareV2(mk({
     line: { billed: 200, allowed: 200, patientPaid: 200, patientResponsibility: 200 },
-    service: { covered: true, copay: null, coinsurance: null, deductibleApplies: true },
+    service: { covered: true, copay: null, coinsurance: null, deductibleApplies: true, userStatedRate: false },
     plan: { inDeductibleIndividual: 1000, inOopMaxIndividual: 5000 },
     overrides: { deductibleMet: true },
     networkLine: "in_network",
@@ -467,6 +475,69 @@ function mk(o: {
     plan: { inDeductibleIndividual: 2000, inOopMaxIndividual: 9000 },
   }));
   check("23 verdict insufficient (charge > deductible, rate unknowable)", r.verdict === "insufficient", r.verdict, "insufficient");
+}
+
+
+// ── 24 (S308, tracker AU) — the ANSWERED service-cost emission ──────────────
+// A user-stated rate used to fall silent (no assumption → the verify chip
+// vanished → the answer was uncorrectable without a DB write). Now it emits
+// with reason "user_override" (∈ ANSWERED_REASONS): visible + editable, never
+// pending, never verdict-degrading. userStatedRate is composed in
+// buildServiceCostShare — provenance "user" AND a direct slug match — so a
+// borrowed sibling or card-scanned value must NOT emit the answered row.
+{
+  // 24a — user-stated copay emits the answered row; verdict untouched.
+  const r = computeCostShareV2(mk({
+    line: { billed: 100, allowed: 100, patientPaid: 100, patientResponsibility: 0 },
+    service: { covered: true, copay: 20, coinsurance: null, deductibleApplies: false, userStatedRate: true },
+    insurer: { insurancePaid: 80 },
+  }));
+  const a = assumption(r, "service_cost");
+  check("24a answered row emits", !!a, r.assumptions);
+  check("24a reason user_override", a?.reason === "user_override", a);
+  check("24a assumed user_stated", a?.assumed === "user_stated", a);
+  check("24a value carries the copay", a?.value === 20, a);
+  check("24a verdict NOT degraded by the answered row", r.verdict !== "insufficient", r.verdict);
+
+  // 24b — same terms WITHOUT userStatedRate (parsed/borrowed/card) → no row.
+  const r2 = computeCostShareV2(mk({
+    line: { billed: 100, allowed: 100, patientPaid: 100, patientResponsibility: 0 },
+    service: { covered: true, copay: 20, coinsurance: null, deductibleApplies: false, userStatedRate: false },
+    insurer: { insurancePaid: 80 },
+  }));
+  check("24b non-user-stated emits NO service_cost row", !assumption(r2, "service_cost"), r2.assumptions);
+
+  // 24c — the UNKNOWN emission is untouched: covered-unpriced still asks.
+  const r3 = computeCostShareV2(mk({
+    line: { billed: 221, allowed: 163.27, patientPaid: 163.27, patientResponsibility: 163.27 },
+    service: { covered: true, copay: null, coinsurance: null, deductibleApplies: true, userStatedRate: false },
+    claimInsurerPaidZero: true,
+    plan: { inDeductibleIndividual: 7050, inOopMaxIndividual: 7050 },
+  }));
+  const a3 = assumption(r3, "service_cost");
+  check("24c unknown still emits no_plan_value", a3?.reason === "no_plan_value", a3);
+
+  // 24d — hasPendingAssumption: the consumer predicate. Answered ≠ pending.
+  check("24d answered row is NOT pending", !hasPendingAssumption(r.assumptions, "service_cost"), r.assumptions);
+  check("24d unknown row IS pending", hasPendingAssumption(r3.assumptions, "service_cost"), r3.assumptions);
+  check("24d empty list is not pending", !hasPendingAssumption([], "service_cost"));
+
+  // 24e — buildServiceCostShare composes the flag: user provenance needs the
+  // DIRECT match; a borrowed sibling (exactMatch=false) never claims it.
+  const own = buildServiceCostShare({ covered: true, copay: 20, coinsurance: null, deductibleApplies: false, costProvenance: "user" }, true);
+  const borrowed = buildServiceCostShare({ covered: true, copay: 20, coinsurance: null, deductibleApplies: false, costProvenance: "user" }, false);
+  const card = buildServiceCostShare({ covered: true, copay: 20, coinsurance: null, deductibleApplies: false, costProvenance: "card" }, true);
+  check("24e own row + user provenance → userStatedRate", own?.userStatedRate === true, own);
+  check("24e borrowed sibling never user-stated", borrowed?.userStatedRate === false, borrowed);
+  check("24e card value never user-stated", card?.userStatedRate === false, card);
+
+  // 24f — preventive lines stay exempt from BOTH emissions.
+  const r4 = computeCostShareV2(mk({
+    line: { billed: 390, allowed: 390, patientPaid: 0, patientResponsibility: 0 },
+    service: { covered: true, copay: 20, coinsurance: null, deductibleApplies: false, userStatedRate: true },
+    preventive: { isPreventive: true, acaStatus: "confirmed" },
+  }));
+  check("24f preventive emits no service_cost row", !assumption(r4, "service_cost"), r4.assumptions);
 }
 
 console.log(`\ncost-share-v2 engine fixtures: ${pass} passed, ${fails.length} failed`);

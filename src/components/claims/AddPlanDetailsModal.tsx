@@ -83,6 +83,10 @@ export function AddPlanDetailsModal({
         ? String(initialCoinsurancePercent)
         : "",
   );
+  // S308 — "I'm not sure" is a MADE choice that keeps the value honestly null
+  // (a forced Yes/No would stamp user provenance on a guess). Save requires
+  // SOME choice when a rate is being saved.
+  const [dedUnsure, setDedUnsure] = useState(false);
   const [deductibleApplies, setDeductibleApplies] = useState<boolean | null>(
     initialDeductibleApplies,
   );
@@ -150,10 +154,22 @@ export function AddPlanDetailsModal({
 
       // Step 1 — the service's cost-share (await: the quick, honest confirmation).
       if (hasCost && cost !== null) {
+        // S308 (Andrew) — the deductible half is REQUIRED ENGAGEMENT: the
+        // answer changes what you owe, so a rate never saves with the question
+        // silently skipped. "I'm not sure" is the honest escape (saves the
+        // rate, leaves the half null and the card's ask open).
+        if (deductibleApplies == null && !dedUnsure) {
+          setError("Choose one — this changes what you owe.");
+          setSaving(false);
+          return;
+        }
         const body: Record<string, unknown> = { field: "service_cost", serviceSlug };
         if (shareType === "copay") body.copay = cost;
         else body.coinsurancePercent = cost;
+        // S308 — Yes/No sets; "I'm not sure" sends an EXPLICIT null so a
+        // previously stored answer clears (absent would leave it standing).
         if (deductibleApplies != null) body.deductibleApplies = deductibleApplies;
+        else if (dedUnsure) body.deductibleApplies = null;
         const res = await fetch(`/api/claims/${claimId}/cost-share-override`, {
           method: "POST",
           headers,
@@ -161,7 +177,14 @@ export function AddPlanDetailsModal({
         });
         if (!res.ok) {
           const d = await res.json().catch(() => ({}));
-          setError(d.error || `Couldn't save the cost (${res.status}).`);
+          // S308 — machine codes never reach the user. `service_unmatched`
+          // (and the legacy raw-slug message) map to the approved sentence.
+          const raw = typeof d.error === "string" ? d.error : "";
+          setError(
+            raw === "service_unmatched" || raw.startsWith("Unknown service")
+              ? "We can't match this service to a plan benefit yet, so we can't save this rate."
+              : raw || `Couldn't save the cost (${res.status}).`,
+          );
           setSaving(false);
           return;
         }
@@ -271,9 +294,9 @@ export function AddPlanDetailsModal({
 
               {/* Amount input with affordant prefix */}
               <div className="mt-3 flex items-center rounded-lg border border-gray-200 bg-white pl-3 transition focus-within:border-blue-500 focus-within:ring-2 focus-within:ring-blue-500/20 sm:w-44">
-                <span className="text-sm font-medium text-gray-400">
-                  {shareType === "copay" ? "$" : "%"}
-                </span>
+                {shareType === "copay" && (
+                  <span className="text-sm font-medium text-gray-400">$</span>
+                )}
                 <input
                   type="number"
                   min={0}
@@ -284,6 +307,9 @@ export function AddPlanDetailsModal({
                   className="w-full rounded-lg bg-transparent px-2 py-2 text-sm text-gray-900 outline-none"
                   aria-label={shareType === "copay" ? "Copay amount" : "Coinsurance percent"}
                 />
+                {shareType === "coinsurance" && (
+                  <span className="pr-3 text-sm font-medium text-gray-400">%</span>
+                )}
               </div>
 
               {/* Deductible-applies segmented Yes / No */}
@@ -294,7 +320,11 @@ export function AddPlanDetailsModal({
                     <button
                       key={label}
                       type="button"
-                      onClick={() => setDeductibleApplies(val)}
+                      onClick={() => {
+                        setDeductibleApplies(val);
+                        setDedUnsure(false);
+                        setError(null);
+                      }}
                       className={`rounded-md px-4 py-1.5 text-xs font-semibold transition ${
                         deductibleApplies === val
                           ? "bg-blue-600 text-white shadow-sm"
@@ -304,6 +334,21 @@ export function AddPlanDetailsModal({
                       {label}
                     </button>
                   ))}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDeductibleApplies(null);
+                      setDedUnsure(true);
+                      setError(null);
+                    }}
+                    className={`rounded-md px-4 py-1.5 text-xs font-semibold transition ${
+                      dedUnsure && deductibleApplies == null
+                        ? "bg-blue-600 text-white shadow-sm"
+                        : "text-gray-600 hover:text-gray-900"
+                    }`}
+                  >
+                    I&apos;m not sure
+                  </button>
                 </div>
               </div>
             </div>

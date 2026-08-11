@@ -97,6 +97,14 @@ export interface CostShareLineInput {
   patientResponsibility: number;
   /** caller-resolved coverage (exact-slug → secondary → ACA-fallback matrix). */
   coverage: PlanCoverageInput | null;
+  /**
+   * S308 (tracker AU) — TRUE only when `coverage` is the service's OWN pcs row
+   * (exact slug match; not the S153 borrowed sibling, not ACA synthesis).
+   * Feeds ServiceCostShare.userStatedRate: a borrowed row keeps its provenance
+   * for the honesty gate but is not the user pricing THIS service. REQUIRED —
+   * the compiler completes the caller inventory (S301 lesson).
+   */
+  exactCoverageMatch: boolean;
   networkStatus: string | null;
   /** the raw claim_line_items row, for `buildLineInsurer` (member_* + denied + insurance_paid). */
   raw: Record<string, unknown>;
@@ -137,7 +145,7 @@ export function resolveCostShareForLine(
       patientPaid: line.patientPaid,
       patientResponsibility: line.patientResponsibility,
     },
-    service: buildServiceCostShare(line.coverage),
+    service: buildServiceCostShare(line.coverage, line.exactCoverageMatch),
     insurer: buildLineInsurer(line.raw),
     plan: ctx.planParams ?? EMPTY_PLAN_COST_SHARE_PARAMS,
     accumulator,
@@ -215,6 +223,8 @@ export interface ClaimCostSharePrep {
  *  fields — so the prep is computed once regardless of which engine runs. */
 export interface ResolvedLinePrep {
   coverage: PlanCoverageInput | null;
+  /** S308 — coverage is the service's own row (see CostShareLineInput.exactCoverageMatch). */
+  exactCoverageMatch: boolean;
   coverageSource: string | null;
   secondaryMatchedSlug: string | null;
   secondaryConfidence: "confident" | "estimate" | null;
@@ -358,6 +368,9 @@ export function resolveLinePrep(
 
   return {
     coverage,
+    // S308 — exact ⟺ the resolved coverage is the service's own row: present,
+    // not the ACA-synthesized fallback, and not a borrowed category sibling.
+    exactCoverageMatch: coverage != null && !coverageFromAca && secondaryCoverageSource == null,
     coverageSource,
     secondaryMatchedSlug,
     secondaryConfidence,
@@ -393,6 +406,7 @@ export function resolveLineCostShare(
       patientPaid: p.patientPaid,
       patientResponsibility: p.patientResponsibility,
       coverage: p.coverage,
+      exactCoverageMatch: p.exactCoverageMatch,
       networkStatus: (raw.network_status as string | null) ?? null,
       raw,
     },

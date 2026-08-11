@@ -500,6 +500,7 @@ export async function GET(
           patientPaid,
           patientResponsibility,
           coverage,
+          exactCoverageMatch: lp.exactCoverageMatch,
           networkStatus: (item as Record<string, unknown>).network_status as string | null,
           raw: item as Record<string, unknown>,
         },

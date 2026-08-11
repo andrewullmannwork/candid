@@ -25,6 +25,7 @@
 import type { CiteGradeTier } from "./strength-scoring";
 import type { DisputeEvidence, LineItemEvidence } from "./evidence-resolver";
 import type { CostShareV2Result, CostShareAssumption } from "../claims/recovery-math";
+import { ANSWERED_REASONS } from "../claims/recovery-math";
 import type { FindingType } from "../billing/types";
 import { DISPUTE_GROUND_CATALOG } from "./dispute-ground-catalog";
 import { IDENTITY_BENCHMARK_SOURCE } from "../audit/claim-header-arithmetic";
@@ -260,9 +261,18 @@ const BLOCKING_ASSUMPTION_FIELDS: ReadonlySet<CostShareAssumption["field"]> = ne
   "deductible_applies",
 ]);
 export function isPreciseDollarAssertable(result: CostShareV2Result): boolean {
+  // S308 — ANSWERED rows (reason ∈ ANSWERED_REASONS) are facts, not doubts:
+  // since S294 made `deductible_applies` ALWAYS-emit (reason plan_document, so
+  // the user can SEE the exemption), bare-presence blocking silently made every
+  // documented deductible-exempt line non-assertable — letters omitted dollars
+  // they were entitled to claim (letter-recovery S1/S2, rotted un-wired).
+  // A pending row (insurer_denied, unknown ACA status, unconfirmed network)
+  // still blocks exactly as designed.
   return (
     result.shouldOweGrounded &&
-    !result.assumptions.some((a) => BLOCKING_ASSUMPTION_FIELDS.has(a.field))
+    !result.assumptions.some(
+      (a) => BLOCKING_ASSUMPTION_FIELDS.has(a.field) && !ANSWERED_REASONS.has(a.reason),
+    )
   );
 }
 
@@ -538,7 +548,11 @@ export function resolveLetterRecovery(
         // non-assertable regardless → don't over-promise (the cf91a49e rate-starved case); that
         // gap is the "add plan details" / cold-start lane.
         weakened = true;
-        const blockedByPlanData = result.assumptions.some((a) => PROMPT_BLOCKING_FIELDS.has(a.field));
+        // S308 (tracker AU) — an ANSWERED rate (reason ∈ ANSWERED_REASONS) is a
+        // known value, not missing plan data; only PENDING assumptions block.
+        const blockedByPlanData = result.assumptions.some(
+          (a) => PROMPT_BLOCKING_FIELDS.has(a.field) && !ANSWERED_REASONS.has(a.reason),
+        );
         if (!blockedByPlanData) {
           for (const a of result.assumptions) {
             if (a.field === "deductible_met") strengthenable.add("deductible");

@@ -17,10 +17,11 @@
  */
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { Fragment, useState, type ReactNode } from "react";
 import { ANSWERED_REASONS } from "@/lib/claims/recovery-math";
 import type { CostShareAssumption, CostShareOverrides } from "@/lib/claims/recovery-math";
 import { Row, IconChip } from "@/components/shared/InputRow";
+import { DoneEdit, ValueEdit, AddButton, CancelLink, NeedsMeter, AddedFold } from "@/components/shared/needs-format";
 
 export type CostShareVerdict =
   | "confident"
@@ -50,7 +51,7 @@ interface CostShareBannerProps {
   correctShare: number;
   charged: number;
   fmtMoney: (n: number) => string;
-  onOverride: (body: CostShareOverrideRequest, pendingKey: string) => void;
+  onOverride: (body: CostShareOverrideRequest, pendingKey: string) => void | Promise<boolean>;
   /**
    * S291 (Andrew) — "Done" LOCKS IN the values shown on screen.
    *
@@ -143,19 +144,24 @@ interface CostShareBannerProps {
    *  (plan_covered_services.source='manual'). Present → a persistent "Plan cost ·
    *  $X · Edit" row so they can correct their own mistake. Null when unknown (the
    *  Add-details gap) or plan-doc-parsed (authoritative → read-only). */
-  editableServiceCost?: {
+  /** S308 — every line whose plan cost carries STATED values (source `manual`):
+   *  user-provenance rows render answered ("$40 copay · Edit"), card/unknown
+   *  render as open confirm asks. Replaces the single-target editableServiceCost
+   *  probe (S263) — one derivation, N lines. */
+  statedServiceCosts?: Array<{
+    lineId: string;
+    serviceSlug: string | null;
     serviceLabel: string;
     copay: number | null;
     coinsurancePercent: number | null;
-    lineId?: string | null;
-    /**
-     * S291 (Andrew) — who actually asserted this cost. The row used to say
-     * "You told us…" unconditionally, which is a LIE for a value a card scan
-     * invented and attributed to the user. "unknown" = written before
-     * provenance stamping; we genuinely don't know, so we claim neither.
-     */
-    costProvenance?: "user" | "card" | "unknown";
-  } | null;
+    deductibleApplies: boolean | null;
+    costProvenance: "plan_document" | "user" | "card" | "unknown";
+  }> | null;
+  /** S308 — the persisted reviewed/collapsed state (claims.metadata.assumptionsReviewedAt). */
+  initiallyReviewed?: boolean;
+  /** S308 — bumps when the collapsed rail step's "Update assumptions" link is
+   *  clicked: the card un-collapses in the same gesture that expands the step. */
+  expandSignal?: number;
   onUploadEob: () => void;
   onBack: () => void;
   /** Surface 3 (clarity redesign) — "assumptions" renders ONLY the editable
@@ -184,7 +190,7 @@ interface CostShareBannerProps {
 export function hasAssumptionRows(
   assumptions: CostShareAssumption[],
   overrides: CostShareOverrides | null,
-  editableServiceCost?: { serviceLabel: string } | null,
+  hasStatedCosts?: boolean,
 ): boolean {
   const has = (field: string) => assumptions.some((a) => a.field === field);
   return (
@@ -196,7 +202,7 @@ export function hasAssumptionRows(
     overrides?.userNetworkOverride != null ||
     overrides?.deductibleMet != null ||
     overrides?.oopMet != null ||
-    !!editableServiceCost
+    !!hasStatedCosts
   );
 }
 
@@ -387,7 +393,11 @@ export function pendingAssumptionFields(
   // user has adjudicated it.
   if (totalsSource) pending.add("totals_source");
   for (const a of assumptions) {
-    if (a.field === "service_cost") pending.add(`service_cost:${a.serviceSlug ?? a.serviceLabel}`);
+    // S308 (tracker AU) — an ANSWERED rate (reason ∈ ANSWERED_REASONS) is
+    // visible history with an Edit affordance, never an open question.
+    if (a.field === "service_cost" && !ANSWERED_REASONS.has(a.reason)) {
+      pending.add(`service_cost:${a.serviceSlug ?? a.serviceLabel}`);
+    }
   }
   return clearUnactionable(pending);
 }
@@ -494,7 +504,9 @@ export function CostShareBanner({
   errorMsg,
   onShouldBeCovered,
   onAddPlanDetails,
-  editableServiceCost,
+  statedServiceCosts,
+  initiallyReviewed,
+  expandSignal,
   onUploadEob,
   onBack,
   variant = "full",
@@ -510,7 +522,27 @@ export function CostShareBanner({
     onAcaDismissedChange?.(v);
     setAcaDismissedLocal(v);
   };
-  const [dismissed, setDismissed] = useState(false); // "Done" collapses the section (accept as-is)
+  // "Done" collapses the section (accept as-is). S308 — seeded from the
+  // persisted flag so the collapse survives reloads; Done/re-open post it.
+  const [dismissed, setDismissed] = useState(!!initiallyReviewed);
+  // S308 — the rail stub's "Update assumptions" opens the card too. State
+  // adjusted DURING render (the React-sanctioned derive-from-props pattern) —
+  // an effect here would be a cascading-render lint error.
+  const [lastExpandSignal, setLastExpandSignal] = useState(expandSignal ?? 0);
+  // S308 — the inline Yes/No paints immediately; the entry clears when the
+  // post resolves (success ⇒ the submit's awaited refetch already delivered
+  // server truth; failure ⇒ snap back). Keyed by lineId.
+  const [dedOptimistic, setDedOptimistic] = useState<Record<string, boolean>>({});
+  if (expandSignal != null && expandSignal !== lastExpandSignal) {
+    setLastExpandSignal(expandSignal);
+    setDismissed(false);
+  }
+  // S308 (Andrew) — mirror the letter needs-panel's "Added" fold: answered rows
+  // sink below a collapse so the card leads with what still needs input.
+  const [showAdded, setShowAdded] = useState(false);
+  // S308 — which answered inline row (network/totals) is temporarily re-opened
+  // for editing; mirrors the letter panel's openEditor pattern.
+  const [editingRow, setEditingRow] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false); // Done is now a WRITE — guard the double-click
   // S304 — `overrides` ARRIVES already merged with the caller's pending
   // answers, so every display below reads it directly. The snapback that used
@@ -569,7 +601,7 @@ export function CostShareBanner({
    */
   const planCostSourceNote = assumptions.some(
     (x) => x.field === "deductible_applies" && x.reason === "plan_document",
-  ) && !editableServiceCost
+  ) && !(statedServiceCosts && statedServiceCosts.length > 0)
     ? "From Candid's plan database — upload your plan document for the most up-to-date results."
     : null;
   const oopA = assumptions.find((a) => a.field === "oop_met");
@@ -586,6 +618,13 @@ export function CostShareBanner({
     }
     return out;
   })();
+  // S308 (tracker AU) — the card renders PENDING asks from assumptions; every
+  // STATED value (answered or needing confirmation) renders from
+  // `statedServiceCosts` (planCoverage-derived, one derivation for N lines —
+  // the S263 single-target probe generalized). Assumption-answered rows are
+  // deliberately NOT rendered from assumptions here or they would duplicate
+  // the stated rows; the emission still drives every non-card consumer.
+  const pendingServiceCostChips = serviceCostChips.filter((c) => !ANSWERED_REASONS.has(c.reason));
 
   // Display values. S304 — one source: `overrides` already carries any
   // answer this click made, merged by the caller.
@@ -686,13 +725,19 @@ export function CostShareBanner({
       // overlay on a failed write, which snaps the rows back too). When other
       // rows still pend, stay OPEN so the flagged rows
       // remain visible under the amber badge.
-      if (collapseAfter) setDismissed(true);
+      if (collapseAfter) {
+        setDismissed(true);
+        onOverride({ field: "assumptions_reviewed", reviewed: true }, "assumptions_reviewed");
+      }
       onConfirmDefaults(bodies)
         .catch(() => setDismissed(false))
         .finally(() => setConfirming(false));
       return;
     }
-    if (collapseAfter) setDismissed(true);
+    if (collapseAfter) {
+      setDismissed(true);
+      onOverride({ field: "assumptions_reviewed", reviewed: true }, "assumptions_reviewed");
+    }
   };
 
   const answerAca = (status: "confirmed" | "non_aca") => {
@@ -716,16 +761,25 @@ export function CostShareBanner({
   const networkExists = !!networkA || netResolved;
   const deductibleExists = !!deductibleA || dedResolved;
   const oopExists = !!oopA || oopResolved;
+  // S308 — the Added-fold partition. A row sinks when it carries an ANSWER
+  // (user/accumulator) and owns no pending field; asks and warnings stay up.
+  const rowPending = (...fields: string[]) => fields.some((f) => pendingFields?.has(f) ?? false);
+  const dedSource: "user" | "accumulator" | null =
+    deductibleA?.reason === "user_override" || dedResolved ? "user" : deductibleA?.reason === "accumulator" ? "accumulator" : null;
+  const oopSource: "user" | "accumulator" | null =
+    oopA?.reason === "user_override" || oopResolved ? "user" : oopA?.reason === "accumulator" ? "accumulator" : null;
+  const networkAnswered = networkExists && netResolved && !rowPending("network");
+  const dedAnswered = dedSource != null && !rowPending("deductible_met");
+  const oopAnswered = oopSource != null && !rowPending("oop_met");
+  const totalsAnswered = !!totalsSource?.answered;
 
   // Always shown when the assumption exists at all — resolved or not.
   const showNetwork = networkExists;
   const showDeductible = deductibleExists;
   const showOop = oopExists;
   const showAca = !!acaA && !acaDismissed;
-  const hasServiceCostGap = serviceCostChips.length > 0;
-  // S263 — the user's own manual cost-share is EDITABLE (correct a mistake); a
-  // plan-doc/parsed cost is authoritative and read-only (gated in the parent).
-  const hasEditableCost = !!editableServiceCost;
+  const hasServiceCostGap = pendingServiceCostChips.length > 0;
+  const statedCosts = statedServiceCosts ?? [];
 
   // pending = assumptions still awaiting a first pick (drives the headline copy).
   // S293 (#1) — derived from the ONE pending set the badge reads
@@ -747,13 +801,13 @@ export function CostShareBanner({
     : ((networkExists && !netResolved) ? 1 : 0) +
       ((deductibleExists && !dedResolved) ? 1 : 0) +
       ((oopExists && !oopResolved) ? 1 : 0) +
-      serviceCostChips.length +
+      pendingServiceCostChips.length +
       (showAca ? 1 : 0);
-  const rawSectionHasRows = !!totalsSource || !!planIdentity || showNetwork || showDeductible || showOop || hasServiceCostGap || showAca || hasEditableCost;
+  const rawSectionHasRows = !!totalsSource || !!planIdentity || showNetwork || showDeductible || showOop || hasServiceCostGap || statedCosts.length > 0 || showAca;
   // Section is OPEN unless the user dismissed it via "Done"; when closed but
   // assumptions exist, "Update assumptions" brings it back.
   const sectionOpen = !dismissed && rawSectionHasRows;
-  const anyAssumptions = networkExists || deductibleExists || oopExists || hasServiceCostGap || !!acaA || hasEditableCost;
+  const anyAssumptions = networkExists || deductibleExists || oopExists || hasServiceCostGap || !!acaA || statedCosts.length > 0;
   const showUpdateLink = !sectionOpen && anyAssumptions;
   const effectivePending = sectionOpen ? pendingCount : 0;
   const isClean = verdict === "correct" || verdict === "confident";
@@ -809,53 +863,18 @@ export function CostShareBanner({
     recovery: "bg-amber-500 text-white", not_covered: "bg-gray-400 text-white", insufficient: "bg-amber-500 text-white",
   };
 
-  return (
-    <>
-      <div
-        className={
-          assumptionsOnly
-            ? "overflow-hidden rounded-[18px] border border-gray-200 bg-white"
-            : "mt-6 overflow-hidden rounded-2xl border border-gray-200 bg-white"
-        }
-      >
-        {!assumptionsOnly && (
-          <div className="flex items-start justify-between gap-3 px-5 py-4">
-            <div className="flex items-start gap-3.5">
-              <div className={`grid h-[42px] w-[42px] flex-none place-items-center rounded-xl ${headChipBg[verdict]}`}>{headChip[verdict]}</div>
-              <div>
-                <div className="text-[17px] font-semibold tracking-[-0.01em] text-gray-900">{headline}</div>
-                <div className="mt-1 max-w-[60ch] text-[13px] leading-relaxed text-gray-600">{body}</div>
-              </div>
-            </div>
-            {isClean && (
-              <div className="flex flex-none items-center gap-1 rounded-full border border-emerald-300 px-2.5 py-1 text-[12px] font-semibold text-emerald-700">
-                <CheckGlyph small /> Verified
-              </div>
-            )}
-          </div>
-        )}
+  // S308 (Andrew) — the rows as open/done DESCRIPTORS, mirroring the letter
+  // panel's RowDesc pattern: open asks render at the top, answered rows sink
+  // under the shared AddedFold with calm ✓/value + Edit controls. Wiring
+  // (onOverride, optimistic overlay, pendingFields, Done) is untouched — this
+  // is the presentation layer only.
+  const descs: Array<{ key: string; done: boolean; node: ReactNode }> = [];
 
-        {sectionOpen && (
-          <div
-            className={
-              assumptionsOnly
-                ? // First row's border-t would read as a stray card edge right
-                  // under the container's own border — suppress it.
-                  "px-5 pb-4 pt-1.5 [&>div:first-child]:border-t-0 [&>div[data-flagged]+div]:border-t-0"
-                : // S293 (#1) — the full variant needs the same suppression: a
-                  // row following a flagged (amber-bleed) row must not draw its
-                  // top border across the tint.
-                  "px-5 pb-4 [&>div[data-flagged]+div]:border-t-0"
-            }
-          >
-            {!assumptionsOnly && (
-              <div className="border-t border-gray-100 pt-3 text-[11px] font-semibold uppercase tracking-[0.1em] text-gray-400">What we assumed</div>
-            )}
-
-            {/* S302 — a bill is internally consistent on paper, so a mismatch
-                means one of OUR parses is wrong. Both candidates below are real
-                parsed numbers; the user only picks which to trust. */}
-            {totalsSource && (
+  if (totalsSource) {
+    descs.push({
+      key: "totals",
+      done: totalsAnswered,
+      node: (
               <Row
                 flagged={flagRow("totals_source")}
                 icon={DocIcon}
@@ -897,21 +916,30 @@ export function CostShareBanner({
                   ? `You told us the bill's ${totalsSource.answered === "summary" ? "summary" : "line items"} is right, so we're using it for this bill's totals.`
                   : `Adding up the line items on this bill gives ${totalsSource.lineItemsTotal} for ${totalsSource.label}, but the bill's own summary says ${totalsSource.summaryTotal}. Which is right? We'll use the same answer for the other totals on this bill, and you can change it any time.`}
               </Row>
-            )}
+      ),
+    });
+  }
 
-            {planIdentity && (
+  // S308 (Andrew) — the plan row is the ONE persistent row: pinned above the
+  // open asks, excluded from the meter, never folding into Added.
+  const planDone = !!planIdentity && planIdentity.label != null && planIdentity.planYearMismatch == null;
+  const planIdentityNode = planIdentity ? (
               <Row
                 flagged={flagRow("plan_identity")}
                 icon={DocIcon}
                 label="Plan we checked against"
                 control={
-                  <button
-                    type="button"
-                    onClick={planIdentity.onChange}
-                    className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-[13px] font-medium text-gray-700 hover:bg-gray-50"
-                  >
-                    Change
-                  </button>
+                  planDone ? (
+                    <DoneEdit label={planIdentity.label!} onEdit={planIdentity.onChange} />
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={planIdentity.onChange}
+                      className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-[13px] font-medium text-gray-700 hover:bg-gray-50"
+                    >
+                      Change
+                    </button>
+                  )
                 }
               >
                 {planIdentity.label == null
@@ -920,97 +948,173 @@ export function CostShareBanner({
                     ? `This bill is from ${planIdentity.year}, but we checked it against your ${planIdentity.planYearMismatch} plan. Coverage changes year to year — add your ${planIdentity.year} plan for an accurate check.`
                     : `We checked this bill against ${planIdentity.label}. Change it if you were on a different plan${planIdentity.year ? ` in ${planIdentity.year}` : ""}.`}
               </Row>
-            )}
+  ) : null;
 
-            {showNetwork && (
+  if (showNetwork) {
+    const editingNetwork = editingRow === "network";
+    descs.push({
+      key: "network",
+      done: networkAnswered && !editingNetwork,
+      node: (
               <Row
-                // S292 — network is counted by `pendingAssumptionFields` but had
-                // no `flagged` prop, so it was the mirror image of the plan row:
-                // the badge counted it while the border stayed silent. Every row
-                // the badge counts now shows amber, and only those do.
                 flagged={flagRow("network")}
                 icon={GlobeIcon}
                 label="Network"
                 control={
-                  <Toggle
-                    left={{ label: "In-network", prompt: "In-network?", active: !oonDisplay, onSelect: () => selectNetwork("in_network") }}
-                    right={{ label: "Out-of-network", prompt: "Out-of-network?", active: oonDisplay, onSelect: () => selectNetwork("out_of_network") }}
-                  />
+                  networkAnswered && !editingNetwork ? (
+                    <DoneEdit label={oonDisplay ? "Out-of-network" : "In-network"} onEdit={() => setEditingRow("network")} />
+                  ) : (
+                    <span className="inline-flex flex-none items-center gap-2">
+                      <Toggle
+                        left={{ label: "In-network", prompt: "In-network?", active: !oonDisplay, onSelect: () => { setEditingRow(null); selectNetwork("in_network"); } }}
+                        right={{ label: "Out-of-network", prompt: "Out-of-network?", active: oonDisplay, onSelect: () => { setEditingRow(null); selectNetwork("out_of_network"); } }}
+                      />
+                      {editingNetwork && <CancelLink onClick={() => setEditingRow(null)} />}
+                    </span>
+                  )
                 }
               >
                 {oonDisplay ? "You set this visit to out-of-network." : "This visit was billed by an in-network provider."}
               </Row>
-            )}
+      ),
+    });
+  }
 
-            {/* S294 — the plan's own term, stated BEFORE the question it makes
-                relevant. Reading order is the point: the user learns the $0 is
-                conditional, then answers the one thing that resolves it. Not a
-                Row with a control — there is nothing here to change, only
-                something to know. */}
-            {planDeductibleTerm && (
+  if (showDeductible) {
+    descs.push({
+      key: "deductible",
+      done: dedAnswered,
+      node: (
+              <MetRow flagged={flagRow("deductible_met")} source={dedSource} mode={dedAnswered ? "done" : "open"} planTerm={planDeductibleTerm ?? null} planTermNote={planCostSourceNote} kind="deductible" isMet={dedMetDisplay} metAsOf={dedAsOfDisplay} amount={deductibleA?.value ?? null} networkLabel={networkLabel} money={money} onSubmit={selectDeductible} />
+      ),
+    });
+  }
+
+  if (showOop) {
+    descs.push({
+      key: "oop",
+      done: oopAnswered,
+      node: (
+              <MetRow flagged={flagRow("oop_met")} source={oopSource} mode={oopAnswered ? "done" : "open"} kind="oop" isMet={oopMetDisplay} metAsOf={oopAsOfDisplay} amount={oopA?.value ?? null} networkLabel={networkLabel} money={money} onSubmit={selectOop} />
+      ),
+    });
+  }
+
+  for (const chip of pendingServiceCostChips) {
+    descs.push({
+      key: `service-pending-${chip.lineId}`,
+      done: false,
+      node: (
               <Row
-                icon={DocIcon}
-                label="Plan cost"
-                control={null}
-                below={
-                  planCostSourceNote ? (
-                    <div className="mt-1 text-[12px] text-gray-500">{planCostSourceNote}</div>
-                  ) : undefined
-                }
-              >
-                {planDeductibleTerm}
-              </Row>
-            )}
-
-            {showDeductible && (
-              <MetRow flagged={flagRow("deductible_met")} source={deductibleA?.reason === "user_override" || dedResolved ? "user" : deductibleA?.reason === "accumulator" ? "accumulator" : null} kind="deductible" isMet={dedMetDisplay} metAsOf={dedAsOfDisplay} amount={deductibleA?.value ?? null} networkLabel={networkLabel} money={money} onSubmit={selectDeductible} />
-            )}
-
-            {showOop && (
-              <MetRow flagged={flagRow("oop_met")} source={oopA?.reason === "user_override" || oopResolved ? "user" : oopA?.reason === "accumulator" ? "accumulator" : null} kind="oop" isMet={oopMetDisplay} metAsOf={oopAsOfDisplay} amount={oopA?.value ?? null} networkLabel={networkLabel} money={money} onSubmit={selectOop} />
-            )}
-
-            {serviceCostChips.map((chip, i) => (
-              <Row
-                key={`service_cost-${chip.lineId}-${i}`}
                 flagged={flagRow(`service_cost:${chip.serviceSlug ?? chip.serviceLabel}`)}
                 icon={DocIcon}
                 label="Plan cost"
                 control={
-                  <button type="button" onClick={() => onAddPlanDetails({ lineId: chip.lineId, serviceSlug: chip.serviceSlug })} className="rounded-lg border border-blue-300 bg-white px-3 py-1.5 text-[13px] font-medium text-blue-700 hover:bg-blue-50">Add details</button>
+                  <AddButton label="Add details" onClick={() => onAddPlanDetails({ lineId: chip.lineId, serviceSlug: chip.serviceSlug })} />
                 }
               >
                 We don&apos;t have your plan&apos;s cost for {chip.serviceLabel} yet, so this is a conservative estimate.
               </Row>
-            ))}
+      ),
+    });
+  }
 
-            {editableServiceCost && (
+  for (const sc of statedCosts) {
+    const amount =
+      sc.copay != null
+        ? `$${sc.copay} copay`
+        : sc.coinsurancePercent != null
+          ? `${sc.coinsurancePercent}% coinsurance`
+          : "";
+    const openEdit = () => onAddPlanDetails({ lineId: sc.lineId, serviceSlug: sc.serviceSlug });
+    if (sc.costProvenance === "user") {
+      // S308 (Andrew, round 2) — the deductible half is REQUIRED for done:
+      // it changes the math (exempt = owe the copay; subject = owe the full
+      // allowed until the deductible is met), so a stated rate with the
+      // question open stays an amber ask that SAYS what's missing and answers
+      // in one tap (the parser-pinned partial write, merging into the user's
+      // own row — safe by this row's render condition). Complete → white →
+      // Added.
+      const dedOpen = (sc.deductibleApplies ?? dedOptimistic[sc.lineId] ?? null) == null;
+      if (dedOpen && sc.serviceSlug) {
+        const slug = sc.serviceSlug;
+        const answerDed = (val: boolean) => {
+          setDedOptimistic((prev) => ({ ...prev, [sc.lineId]: val }));
+          const r = onOverride(
+            { field: "service_cost", serviceSlug: slug, copay: null, coinsurance: null, deductibleApplies: val },
+            "deductible_applies",
+          );
+          void Promise.resolve(r).then(() => {
+            setDedOptimistic((prev) => {
+              const next = { ...prev };
+              delete next[sc.lineId];
+              return next;
+            });
+          });
+        };
+        descs.push({
+          key: `service-stated-${sc.lineId}`,
+          done: false,
+          node: (
               <Row
                 flagged={flagRow("deductible_applies")}
                 icon={DocIcon}
                 label="Plan cost"
                 control={
-                  <button type="button" onClick={() => onAddPlanDetails({ lineId: editableServiceCost.lineId ?? null })} className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-[13px] font-medium text-gray-700 hover:bg-gray-50">Edit</button>
+                  <span className="inline-flex flex-none items-center gap-2">
+                    <Toggle
+                      left={{ label: "Yes", prompt: "Yes", active: false, onSelect: () => answerDed(true) }}
+                      right={{ label: "No", prompt: "No", active: false, onSelect: () => answerDed(false) }}
+                    />
+                    <button type="button" onClick={openEdit} className="text-[13px] font-medium text-blue-600 hover:text-blue-700">Edit</button>
+                  </span>
                 }
               >
-                {(() => {
-                  const amount =
-                    editableServiceCost.copay != null
-                      ? `$${editableServiceCost.copay} copay`
-                      : `${editableServiceCost.coinsurancePercent}% coinsurance`;
-                  const who = editableServiceCost.costProvenance ?? "unknown";
-                  if (who === "user") {
-                    return `You told us your plan's cost for ${editableServiceCost.serviceLabel} is ${amount}. Edit if that's not right.`;
-                  }
-                  if (who === "card") {
-                    return `From your insurance card, we have ${amount} for ${editableServiceCost.serviceLabel}. Cards rarely have this information — confirm or correct it.`;
-                  }
-                  return `We have ${amount} as your plan's cost for ${editableServiceCost.serviceLabel}. Confirm it's right.`;
-                })()}
+                {`You told us your plan's cost for ${sc.serviceLabel} is ${amount} — but not whether it counts toward your deductible, and that changes the math.`}
               </Row>
-            )}
+          ),
+        });
+      } else {
+        descs.push({
+          key: `service-stated-${sc.lineId}`,
+          done: true,
+          node: (
+              <Row
+                flagged={false}
+                icon={DocIcon}
+                label="Plan cost"
+                control={<ValueEdit value={amount} onEdit={openEdit} />}
+              >
+                {`You told us your plan's cost for ${sc.serviceLabel} is ${amount}.`}
+              </Row>
+          ),
+        });
+      }
+    } else {
+      descs.push({
+        key: `service-stated-${sc.lineId}`,
+        done: false,
+        node: (
+              <Row
+                flagged={false}
+                icon={DocIcon}
+                label="Plan cost"
+                control={<AddButton label="Confirm" onClick={openEdit} />}
+              >
+                {sc.costProvenance === "card"
+                  ? `From your insurance card, we have ${amount} for ${sc.serviceLabel}. Cards rarely have this information — confirm or correct it.`
+                  : `We have ${amount} as your plan's cost for ${sc.serviceLabel}. Confirm it's right.`}
+              </Row>
+        ),
+      });
+    }
+  }
 
-            {showAca && (
+  if (showAca) {
+    descs.push({
+      key: "aca",
+      done: false,
+      node: (
               <div className="mt-3 rounded-xl border border-blue-200 bg-blue-50 p-3 text-[13px] text-blue-900">
                 <p className="leading-relaxed">
                   Most health plans must cover preventive care — annual checkups, vaccines, screenings — for free. That
@@ -1022,7 +1126,72 @@ export function CostShareBanner({
                   <button type="button" onClick={() => setAcaDismissed(true)} className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 font-medium text-gray-600 hover:bg-gray-100">Not sure</button>
                 </div>
               </div>
+      ),
+    });
+  }
+
+  const openDescs = descs.filter((d) => !d.done);
+  const doneDescs = descs.filter((d) => d.done);
+
+  return (
+    <>
+      <div
+        className={
+          assumptionsOnly
+            ? "overflow-hidden rounded-[18px] border border-gray-200 bg-white"
+            : "mt-6 overflow-hidden rounded-2xl border border-gray-200 bg-white"
+        }
+      >
+        {!assumptionsOnly && (
+          <div className="flex items-start justify-between gap-3 px-5 py-4">
+            <div className="flex items-start gap-3.5">
+              <div className={`grid h-[42px] w-[42px] flex-none place-items-center rounded-xl ${headChipBg[verdict]}`}>{headChip[verdict]}</div>
+              <div>
+                <div className="text-[17px] font-semibold tracking-[-0.01em] text-gray-900">{headline}</div>
+                <div className="mt-1 max-w-[60ch] text-[13px] leading-relaxed text-gray-600">{body}</div>
+              </div>
+            </div>
+            {isClean && (
+              <div className="flex flex-none items-center gap-1 rounded-full border border-emerald-300 px-2.5 py-1 text-[12px] font-semibold text-emerald-700">
+                <CheckGlyph small /> Verified
+              </div>
             )}
+          </div>
+        )}
+
+        {sectionOpen && (
+          <div
+            className={
+              assumptionsOnly
+                ? // First row's border-t would read as a stray card edge right
+                  // under the container's own border — suppress it.
+                  "px-5 pb-4 pt-1.5 [&>div:first-child]:border-t-0 [&>div[data-flagged]+div]:border-t-0"
+                : // S293 (#1) — the full variant needs the same suppression: a
+                  // row following a flagged (amber-bleed) row must not draw its
+                  // top border across the tint. S308 — likewise the row that
+                  // follows the meter (the seam read as a stray line).
+                  "px-5 pb-4 [&>div[data-flagged]+div]:border-t-0 [&>div[data-meter]+div]:border-t-0"
+            }
+          >
+            {!assumptionsOnly && (
+              <div className="border-t border-gray-100 pt-3 text-[11px] font-semibold uppercase tracking-[0.1em] text-gray-400">What we assumed</div>
+            )}
+
+            {descs.length > 0 && (
+              <NeedsMeter completed={doneDescs.length} total={descs.length} />
+            )}
+
+            {planIdentityNode}
+
+            {openDescs.map((d) => (
+              <Fragment key={d.key}>{d.node}</Fragment>
+            ))}
+
+            <AddedFold count={doneDescs.length} open={showAdded} onToggle={() => setShowAdded((v) => !v)}>
+              {doneDescs.map((d) => (
+                <Fragment key={d.key}>{d.node}</Fragment>
+              ))}
+            </AddedFold>
 
             <p className="mt-3 text-[12px] leading-relaxed text-gray-400">
               Fix anything that&apos;s off and we&apos;ll re-check this bill. Your network corrections also help us flag this provider for other members.
@@ -1043,7 +1212,14 @@ export function CostShareBanner({
 
         {showUpdateLink && (
           <div className="border-t border-gray-100 px-5 py-3">
-            <button type="button" onClick={() => setDismissed(false)} className="text-[13px] font-medium text-blue-600 hover:text-blue-800">
+            <button
+              type="button"
+              onClick={() => {
+                setDismissed(false);
+                onOverride({ field: "assumptions_reviewed", reviewed: false }, "assumptions_reviewed");
+              }}
+              className="text-[13px] font-medium text-blue-600 hover:text-blue-800"
+            >
               Update assumptions
             </button>
           </div>
@@ -1085,6 +1261,7 @@ export function CostShareBanner({
 
 function MetRow({
   kind, isMet, metAsOf, amount, networkLabel, money, onSubmit, flagged = false, source = null,
+  mode = "open", planTerm = null, planTermNote = null,
 }: {
   kind: "deductible" | "oop";
   isMet: boolean;
@@ -1093,6 +1270,13 @@ function MetRow({
   networkLabel: string;
   money: (n: number) => string;
   onSubmit: (met: boolean, asOf: string | null) => void;
+  /** S308 — "done" renders the calm ✓-status + Edit (the letter-panel format);
+   *  Edit re-opens the toggle in place. Default "open" = today's toggle row. */
+  mode?: "open" | "done";
+  /** S294 reading-order — the plan's own term, stated before the question it
+   *  makes relevant (was its own row; merged here per the S308 format rework). */
+  planTerm?: string | null;
+  planTermNote?: string | null;
   /** S291 — still unanswered after the user tried to finish. */
   flagged?: boolean;
   /**
@@ -1105,6 +1289,9 @@ function MetRow({
 }) {
   const [editing, setEditing] = useState(false);
   const [dateValue, setDateValue] = useState("");
+  // S308 — a "done" row stays calm until its Edit is clicked, then shows the
+  // toggle again (self-contained; parent state not needed).
+  const [reopened, setReopened] = useState(false);
   const rightActive = isMet || editing;
 
   const verb = kind === "deductible" ? "met" : "hit";
@@ -1113,13 +1300,17 @@ function MetRow({
   const amt = amount != null ? `${money(amount)} ` : "";
   const noun = kind === "deductible" ? `${amt}${networkLabel} deductible` : `${amt}out-of-pocket max`;
 
-  const control = (
+  const doneLabel = kind === "deductible" ? (isMet ? "Met" : "Not met") : (isMet ? "Hit" : "Not hit");
+  const control = mode === "done" && !reopened ? (
+    <DoneEdit label={doneLabel} onEdit={() => setReopened(true)} />
+  ) : (
     <Toggle
       left={{
         label: kind === "deductible" ? "Not met" : "Not hit",
         prompt: kind === "deductible" ? "Not met?" : "Not hit?",
         active: !rightActive,
-        onSelect: () => { if (editing) setEditing(false); else onSubmit(false, null); },
+        // S308 — answering closes a reopened done-row back to its calm ✓ state.
+        onSelect: () => { setReopened(false); if (editing) setEditing(false); else onSubmit(false, null); },
       }}
       right={{
         label: isMet ? (kind === "deductible" ? "Met" : "Hit") : (kind === "deductible" ? "Met it?" : "Hit it?"),
@@ -1151,11 +1342,19 @@ function MetRow({
           <IconChip>{DollarIcon}</IconChip>
           <div className="pt-0.5">
             <div className="text-sm font-medium text-gray-900">{label}</div>
+            {planTerm && (
+              // S294 reading-order — the plan's own term, stated BEFORE the
+              // question it makes relevant (merged from its former own row).
+              <div className="mt-0.5 text-[13px] leading-snug text-gray-600">{planTerm}</div>
+            )}
             <div className="mt-0.5 text-[13px] leading-snug text-gray-600">
               {isMet
                 ? `You've ${verb} your ${networkLabel} ${nounBase} as of ${fmtDate(metAsOf)}.`
                 : `You haven't ${verb} your ${noun} yet, so this applies to it.`}
             </div>
+            {planTermNote && (
+              <div className="mt-1 text-[12px] text-gray-500">{planTermNote}</div>
+            )}
             {source ? (
               <div className="mt-1 text-[12px] text-gray-500">
                 {source === "accumulator"

@@ -33,10 +33,22 @@ import type {
  * Map a resolved PlanCoverageInput (exact / secondary / ACA — ACA already
  * carries deductibleApplies=false) into the engine's ServiceCostShare. null
  * coverage → null service (engine then runs its conservative path).
+ *
+ * S308 (tracker AU) — `exactMatch`: TRUE only when this coverage came from the
+ * service's OWN pcs row (not the S153 borrowed category sibling, not ACA
+ * synthesis). REQUIRED so the compiler completes the caller inventory.
+ * `userStatedRate` composes here — the one place holding both facts — because
+ * "the user stated THIS service's rate" needs the value's provenance AND the
+ * match's directness; a borrowed sibling keeps its provenance for the honesty
+ * gate but must never render as "You told us this."
  */
-export function buildServiceCostShare(coverage: PlanCoverageInput | null): ServiceCostShare | null {
+export function buildServiceCostShare(
+  coverage: PlanCoverageInput | null,
+  exactMatch: boolean,
+): ServiceCostShare | null {
   if (!coverage) return null;
   return {
+    userStatedRate: exactMatch && (coverage.costProvenance ?? "unknown") === "user",
     covered: coverage.covered ?? null,
     copay: coverage.copay ?? null,
     coinsurance: coverage.coinsurance ?? null,

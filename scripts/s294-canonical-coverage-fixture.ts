@@ -179,7 +179,7 @@ const meta = (rows: Array<{ slug: string; deductibleApplies?: boolean | null; co
   const run = (deductibleApplies: boolean | null) =>
     computeCostShareV2({
       line: { billed: 330, allowed: 330, insuranceAdjusted: 0, patientPaid: 0, patientResponsibility: 330 },
-      service: buildServiceCostShare({ covered: true, copay: 0, coinsurance: null, deductibleApplies }),
+      service: buildServiceCostShare({ covered: true, copay: 0, coinsurance: null, deductibleApplies }, true),
       // No EOB on this bill — every insurer field genuinely unknown, which is
       // what made the 2024 bill unresolvable in the first place.
       insurer: { memberAppliedToDeductible: null, memberCoinsurance: null, memberCopay: null, deniedAmount: null, insurancePaid: null },
@@ -286,7 +286,7 @@ const meta = (rows: Array<{ slug: string; deductibleApplies?: boolean | null; co
   const run = (costProvenance: string | undefined, planUnverified: boolean) =>
     computeCostShareV2({
       line: { billed: 330, allowed: 330, insuranceAdjusted: 0, patientPaid: 0, patientResponsibility: 330 },
-      service: { covered: true, copay: 0, coinsurance: null, deductibleApplies: true, costProvenance: costProvenance as never },
+      service: { covered: true, copay: 0, coinsurance: null, deductibleApplies: true, costProvenance: costProvenance as never, userStatedRate: false },
       insurer: { memberAppliedToDeductible: null, memberCoinsurance: null, memberCopay: null, deniedAmount: null, insurancePaid: null },
       plan: { ...EMPTY_PLAN_COST_SHARE_PARAMS, inDeductibleIndividual: 7250, inOopMaxIndividual: 7250, coverageTier: "individual", provenanceUnverified: planUnverified },
       accumulator: null, overrides: NO_OV, networkLine: null, networkClaim: null, minRecovery: 1,

@@ -58,6 +58,8 @@ interface Scenario {
   item: Record<string, unknown>;
   plan: PlanCostShareParams;
   coverage: PlanCoverageInput | null;
+  /** S308 — fed identically to both sides (inline mirror + lib). */
+  exactCoverageMatch: boolean;
   billed: number;
   allowed: number;
   insuranceAdjusted: number;
@@ -103,7 +105,7 @@ function parity(name: string, s: Scenario) {
       patientPaid: s.patientPaid,
       patientResponsibility: s.patientResponsibility,
     },
-    service: buildServiceCostShare(s.coverage),
+    service: buildServiceCostShare(s.coverage, s.exactCoverageMatch),
     insurer: buildLineInsurer(s.item),
     plan: s.plan,
     accumulator,
@@ -130,6 +132,7 @@ function parity(name: string, s: Scenario) {
     planYear,
   };
   const line: CostShareLineInput = {
+    exactCoverageMatch: s.exactCoverageMatch,
     lineNumber: 1,
     billed: s.billed,
     allowed: s.allowed,
@@ -150,6 +153,7 @@ parity("P1 cf91a49e HDHP pre-deductible", {
   item: { billed_amount: 221, member_applied_to_deductible: null, member_coinsurance: null, member_copay: null, denied_amount: null, insurance_paid: 0, patient_owes: 0, network_status: null },
   plan: { ...EMPTY_PLAN_COST_SHARE_PARAMS, inDeductibleIndividual: 7050, inOopMaxIndividual: 7050, coverageTier: "individual" },
   coverage: { covered: true, copay: null, coinsurance: null, deductibleApplies: null },
+  exactCoverageMatch: true,
   billed: 221, allowed: 163.27, insuranceAdjusted: 57.73, patientPaid: 163.27, patientResponsibility: 0,
   networkStatus: null, coverageTier: "individual",
 });
@@ -159,6 +163,7 @@ parity("P2 $20 copay overpaid", {
   item: { member_applied_to_deductible: null, member_coinsurance: null, member_copay: null, denied_amount: null, insurance_paid: 0, patient_owes: 0, network_status: null },
   plan: { ...EMPTY_PLAN_COST_SHARE_PARAMS, inDeductibleIndividual: 5000, inOopMaxIndividual: 8000, coverageTier: "individual" },
   coverage: { covered: true, copay: 20, coinsurance: null, deductibleApplies: false },
+  exactCoverageMatch: true,
   billed: 292.41, allowed: 292.41, insuranceAdjusted: 0, patientPaid: 292.41, patientResponsibility: 0,
   networkStatus: null, coverageTier: "individual",
 });
@@ -169,6 +174,7 @@ parity("P3 coinsurance OON, patientResp passed-in", {
   item: { member_applied_to_deductible: 200, member_coinsurance: 80, member_copay: 0, denied_amount: null, insurance_paid: 500, patient_owes: 180, network_status: "out_of_network" },
   plan: { ...EMPTY_PLAN_COST_SHARE_PARAMS, inDeductibleIndividual: 2000, outDeductibleIndividual: 4000, inOopMaxIndividual: 6000, outOopMaxIndividual: 12000, inCoinsuranceDefault: 0.2, outCoinsuranceDefault: 0.4, coverageTier: "individual" },
   coverage: { covered: true, copay: null, coinsurance: 0.4, deductibleApplies: true },
+  exactCoverageMatch: true,
   billed: 1000, allowed: 700, insuranceAdjusted: 300, patientPaid: 0, patientResponsibility: 180,
   networkStatus: "out_of_network", networkClaim: "out_of_network", coverageTier: "individual",
 });

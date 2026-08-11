@@ -58,6 +58,41 @@ check("unknown field rejected", !ok({ field: "premium" }).ok);
 check("null body rejected", !ok(null).ok);
 check("non-object rejected", !ok("network").ok);
 
+
+// S308 — deductible-applies-only correction (the banner's inline Yes/No when
+// the rate is already stated) is a legitimate partial write.
+{
+  const r = ok({ field: "service_cost", serviceSlug: "acupuncture", deductibleApplies: true });
+  check("service_cost dedApplies-only parses", r.ok && r.value.field === "service_cost" && r.value.deductibleApplies === true && r.value.copay === null && r.value.coinsurance === null, r);
+  check("service_cost dedApplies-only false parses", ok({ field: "service_cost", serviceSlug: "acupuncture", deductibleApplies: false }).ok);
+  check("service_cost still rejects the EMPTY correction", !ok({ field: "service_cost", serviceSlug: "acupuncture" }).ok);
+}
+
+
+// S308 — the verify-card's persisted reviewed/collapsed state.
+{
+  const r = ok({ field: "assumptions_reviewed", reviewed: true });
+  check("assumptions_reviewed true parses", r.ok && r.value.field === "assumptions_reviewed" && r.value.reviewed === true, r);
+  check("assumptions_reviewed false parses", ok({ field: "assumptions_reviewed", reviewed: false }).ok);
+  check("assumptions_reviewed non-boolean rejected", !ok({ field: "assumptions_reviewed", reviewed: "yes" }).ok);
+}
+
+
+// S308 round 2 — deductibleApplies is THREE-VALUED: absent = untouched ·
+// explicit null = CLEAR the stored answer ("I'm not sure" after a saved
+// Yes/No) · boolean = set.
+{
+  const rSet = ok({ field: "service_cost", serviceSlug: "acupuncture", deductibleApplies: true });
+  check("dedApplies set parses touched", rSet.ok && rSet.value.field === "service_cost" && rSet.value.deductibleApplies === true && rSet.value.deductibleAppliesTouched === true, rSet);
+  const rClear = ok({ field: "service_cost", serviceSlug: "acupuncture", deductibleApplies: null });
+  check("dedApplies explicit-null parses as touched CLEAR", rClear.ok && rClear.value.field === "service_cost" && rClear.value.deductibleApplies === null && rClear.value.deductibleAppliesTouched === true, rClear);
+  const rAbsent = ok({ field: "service_cost", serviceSlug: "acupuncture", copay: 20 });
+  check("dedApplies absent parses untouched", rAbsent.ok && rAbsent.value.field === "service_cost" && rAbsent.value.deductibleAppliesTouched === false, rAbsent);
+  check("clear-only body is a legal partial write", ok({ field: "service_cost", serviceSlug: "acupuncture", deductibleApplies: null }).ok);
+  check("empty body still rejected", !ok({ field: "service_cost", serviceSlug: "acupuncture" }).ok);
+  check("non-boolean non-null still rejected", !ok({ field: "service_cost", serviceSlug: "acupuncture", deductibleApplies: "yes" }).ok);
+}
+
 console.log(`\ncost-share-v2 override-parse fixtures: ${pass} passed, ${fails.length} failed`);
 if (fails.length) {
   console.log(fails.join("\n"));

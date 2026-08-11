@@ -360,6 +360,16 @@ export interface ServiceCostShare {
   oonPaidAtInNetwork?: boolean | null;
   /** S294 — where THESE numbers came from. Drives the honesty gate per line. */
   costProvenance?: CostProvenance;
+  /**
+   * S308 (tracker AU) — TRUE only when the user stated THIS service's rate:
+   * costProvenance "user" on a DIRECT slug match. A borrowed category-sibling
+   * row (S153 secondary match) keeps the sibling's provenance for the honesty
+   * gate but is NOT the user pricing this service, so it must never render as
+   * "You told us this." REQUIRED so the compiler completes every assembly
+   * site's inventory (the S301 optional-param lesson): composed in
+   * buildServiceCostShare — the one place that sees both facts.
+   */
+  userStatedRate: boolean;
 }
 
 /** Plan-level phase params (from insurance_plans). Coinsurance is decimal 0-1. */
@@ -565,6 +575,22 @@ export const ANSWERED_REASONS: ReadonlySet<string> = new Set([
   "user_override",
   "plan_document",
 ]);
+
+/**
+ * S308 (tracker AU) — does an assumption of this field still NEED the user?
+ * Present-but-ANSWERED rows (reason ∈ ANSWERED_REASONS) are visible history,
+ * not open questions. Every consumer that used to read bare presence
+ * (`some(a => a.field === "service_cost")`) must read THIS instead, or an
+ * answered rate re-renders as unpriced/pending/blocking the moment the
+ * answered row starts emitting. One predicate, every consumer — the
+ * pending-set convention (CostShareBanner) applied at the source.
+ */
+export function hasPendingAssumption(
+  assumptions: readonly CostShareAssumption[] | null | undefined,
+  field: CostShareAssumption["field"],
+): boolean {
+  return (assumptions ?? []).some((a) => a.field === field && !ANSWERED_REASONS.has(a.reason));
+}
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 const num = (n: number | null | undefined): number | null =>
@@ -935,6 +961,23 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
     (coverageDecision.planStance !== "not_covered" && copay == null && coinsurance == null);
   if ((serviceCostUnknown || costShareUnknown) && phase !== "not_covered" && !isPreventiveService) {
     assumptions.push({ field: "service_cost", assumed: "unknown", value: null, correctable: true, reason: "no_plan_value" });
+  } else if (service?.userStatedRate && phase !== "not_covered" && !isPreventiveService) {
+    // S308 (tracker AU) — the ANSWERED row. A user-stated rate used to make
+    // this emission fall silent, so the verify card's chip vanished and the
+    // answer became uncorrectable without a DB write (the S307 revert). Same
+    // shape deductible_met/oop_met already use: emit with an ANSWERED_REASONS
+    // reason so it renders as "You told us this" + edit, never joins the
+    // pending set, and never degrades the verdict (line ~1103 exempts it).
+    // `value` carries the copay dollars when that's the stated term (the type
+    // is a single number; the card reads the full terms off the line's own
+    // planCoverage, which travels in the same payload).
+    assumptions.push({
+      field: "service_cost",
+      assumed: "user_stated",
+      value: copay ?? null,
+      correctable: true,
+      reason: "user_override",
+    });
   }
 
   // denial: never rubber-stamped as owed (Decision 3 / Q4) — surfaced as appealable.

@@ -13,6 +13,7 @@ import {
   computeRecoveryV2,
   rollupCostShareVerdict,
   CLAIM_SCOPE_QUESTION_FIELDS,
+  ANSWERED_REASONS,
   type PlanCostShareParams,
   type CostShareOverrides,
   type CostShareVerdict,
@@ -496,6 +497,7 @@ export async function GET(req: NextRequest) {
               patientPaid,
               patientResponsibility,
               coverage,
+              exactCoverageMatch: lp.exactCoverageMatch,
               networkStatus: (item as Record<string, unknown>).network_status as string | null,
               raw: item as Record<string, unknown>,
             },
@@ -507,7 +509,9 @@ export async function GET(req: NextRequest) {
           for (const a of cs.assumptions) {
             if ((CLAIM_SCOPE_QUESTION_FIELDS as readonly string[]).includes(a.field)) {
               csPendingFields.add(a.field);
-            } else if (a.field === "service_cost") {
+            } else if (a.field === "service_cost" && !ANSWERED_REASONS.has(a.reason)) {
+              // S308 (tracker AU) — answered rates emit now; only PENDING ones
+              // count toward the list's needs-your-rate keys.
               csServiceCostKeys.add((item.service_slug as string | null) ?? (item.id as string));
             }
           }

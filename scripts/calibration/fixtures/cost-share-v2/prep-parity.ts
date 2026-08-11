@@ -171,6 +171,7 @@ function inlineRoutePrep(
 
   const result = resolveCostShareForLine(
     {
+      exactCoverageMatch: coverage != null && !coverageFromAca && secondaryCoverageSource == null,
       lineNumber,
       billed,
       allowed,
@@ -187,6 +188,7 @@ function inlineRoutePrep(
   return {
     result,
     coverage,
+    exactCoverageMatch: coverage != null && !coverageFromAca && secondaryCoverageSource == null,
     coverageSource,
     secondaryMatchedSlug,
     secondaryConfidence,
