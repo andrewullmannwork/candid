@@ -32,7 +32,7 @@ function eq(name: string, got: unknown, want: unknown) {
   else fails.push(`  ✗ ${name}: got ${JSON.stringify(got)} want ${JSON.stringify(want)}`);
 }
 
-const COVERED_20: ServiceCostShare = { covered: true, copay: null, coinsurance: 0.2, deductibleApplies: true };
+const COVERED_20: ServiceCostShare = { covered: true, copay: null, coinsurance: 0.2, deductibleApplies: true, userStatedRate: false };
 const NO_INSURER: InsurerAdjudication = {
   memberAppliedToDeductible: null,
   memberCoinsurance: null,
@@ -329,7 +329,7 @@ eq("H5 not flagged", dedDiv(h5)?.flagged, false);
 // H6 — our OWN tally is an estimate (post-deductible line whose share the plan can't
 // pin down: unknown service coinsurance AND no plan coinsurance default) → we can't
 // accuse the insurer → suppressed.
-const UNKNOWN_SVC: ServiceCostShare = { covered: true, copay: null, coinsurance: null, deductibleApplies: true };
+const UNKNOWN_SVC: ServiceCostShare = { covered: true, copay: null, coinsurance: null, deductibleApplies: true, userStatedRate: false };
 const NO_DEFAULT_PLAN: PlanCostShareParams = { ...MAYA_PLAN, inCoinsuranceDefault: null };
 const h6 = computeAccumulatorLedger({
   plan: NO_DEFAULT_PLAN,

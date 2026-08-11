@@ -506,7 +506,7 @@ export function planCoverageFromRow(row: Record<string, unknown>): PlanCoverageI
 // smaller schema) — see loadCanonicalCoverageMeta / loadCoverageFromCanonical.
 // ============================================================================
 const COVERAGE_BASE_SELECT =
-  "insurance_plan_id, covered, in_copay, in_coinsurance, in_deductible_applies, out_copay, out_coinsurance, out_deductible_applies, oon_paid_at_in_network, source, field_provenance, service_catalog!inner(slug, category, name)";
+  "id, insurance_plan_id, covered, in_copay, in_coinsurance, in_deductible_applies, out_copay, out_coinsurance, out_deductible_applies, oon_paid_at_in_network, source, confidence, field_provenance, service_catalog!inner(slug, category, name)";
 const COVERAGE_CITEGRADE_SELECT = "confidence, sbc_excerpt, sbc_page, field_provenance";
 
 /** The user-scope coverage SELECT — base, plus the dispute-letter cite-grade columns when asked. */
@@ -635,6 +635,46 @@ export async function loadCoverageRows(
   return { data: (data as unknown as Record<string, unknown>[] | null) ?? null, error };
 }
 
+/**
+ * S308 — pick ONE plan_covered_services row when several share a slug
+ * (Pattern-S modifier rows: place_of_service / component variants). The maps
+ * below used to `map.set()` in database return order — LAST ROW WON, so a
+ * user's stated rate could be shadowed by a value-less parsed "covered"
+ * mention depending on query order (the acupuncture E2E defect). Deliberate
+ * precedence, stated once:
+ *   1. a row carrying a VALUE (copay or coinsurance) outranks a value-less one
+ *      — a coverage mention must never shadow a price;
+ *   2. among valued rows, USER-STATED (user_correction / user_initial_entry
+ *      provenance) outranks parsed — the S291 human-outranks-scan principle;
+ *   3. then higher confidence;
+ *   4. then row id — deterministic, never query-order roulette.
+ * USER-SCOPE ONLY: the canonical-inherited collapse keeps today's behavior
+ * (promoted surfaces byte-identical; user rows never compete with canonical —
+ * S290 inherits canonical only when a plan has ZERO user rows).
+ * The real endgame — resolving the line's own place of service against
+ * modifier rows — is Pattern S future work, not this rule.
+ */
+export function pickCoverageRow(
+  rows: Array<Record<string, unknown>>,
+): Record<string, unknown> {
+  const hasValue = (r: Record<string, unknown>) => r.in_copay != null || r.in_coinsurance != null;
+  const userStated = (r: Record<string, unknown>) => {
+    const fp = r.field_provenance as Record<string, { source?: string }> | null | undefined;
+    const src = fp?.in_copay?.source ?? fp?.in_coinsurance?.source ?? null;
+    return src === "user_correction" || src === "user_initial_entry";
+  };
+  const conf = (r: Record<string, unknown>) => (typeof r.confidence === "number" ? r.confidence : 0);
+  return [...rows].sort((a, b) => {
+    const v = Number(hasValue(b)) - Number(hasValue(a));
+    if (v !== 0) return v;
+    const u = Number(userStated(b)) - Number(userStated(a));
+    if (u !== 0) return u;
+    const c = conf(b) - conf(a);
+    if (c !== 0) return c;
+    return String(a.id ?? "").localeCompare(String(b.id ?? ""));
+  })[0];
+}
+
 export async function loadCoverageMapForPlan(
   supabase: SupabaseClient,
   insurancePlanId: string | null | undefined,
@@ -645,14 +685,22 @@ export async function loadCoverageMapForPlan(
     console.warn("[coverage-loader] failed to load coverage for plan", insurancePlanId, error);
     return null;
   }
-  const map: PlanCoverageMap = new Map();
+  // S308 — group per slug, then select ONE row by the deliberate precedence
+  // (pickCoverageRow) instead of query-order last-wins.
+  const bySlug = new Map<string, Array<Record<string, unknown>>>();
   for (const row of data ?? []) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const slug = (row.service_catalog as any)?.slug as string | undefined;
     if (!slug) continue;
+    const arr = bySlug.get(slug) ?? [];
+    arr.push(row as unknown as Record<string, unknown>);
+    bySlug.set(slug, arr);
+  }
+  const map: PlanCoverageMap = new Map();
+  for (const [slug, rows] of bySlug) {
     // S132 iter-11 — in_coinsurance may be integer-percent OR decimal; the
     // normalizer (inside planCoverageFromRow) returns decimal 0-1 uniformly.
-    map.set(slug, planCoverageFromRow(row as unknown as Record<string, unknown>));
+    map.set(slug, planCoverageFromRow(pickCoverageRow(rows)));
   }
   return map;
 }
@@ -711,6 +759,11 @@ export async function loadPlanCoverageMeta(
   if (error) {
     console.warn("[coverage-loader] loadPlanCoverageMeta covered load failed", error);
   } else {
+    // S308 — group per (plan, slug) and pick by the deliberate precedence.
+    // coveredMeta keeps its per-ROW pushes byte-identical (the secondary-match
+    // scan sees every row's category, exactly as before); only WHICH row the
+    // slug-keyed map surfaces changes.
+    const metaBySlug = new Map<string, Array<Record<string, unknown>>>();
     for (const row of covered ?? []) {
       const planId = row.insurance_plan_id as string;
       const entry = out.get(planId);
@@ -720,8 +773,21 @@ export async function loadPlanCoverageMeta(
       const slug = sc?.slug as string | undefined;
       if (!slug) continue;
       const coverage = planCoverageFromRow(row as unknown as Record<string, unknown>);
-      entry.coverageMap.set(slug, { ...coverage, source: (row.source as string | null) ?? null });
       entry.coveredMeta.push({ slug, category: (sc?.category as string | null) ?? null, coverage });
+      const k = `${planId}::${slug}`;
+      const arr = metaBySlug.get(k) ?? [];
+      arr.push(row as unknown as Record<string, unknown>);
+      metaBySlug.set(k, arr);
+    }
+    for (const [k, rows] of metaBySlug) {
+      const [planId, slug] = k.split("::");
+      const entry = out.get(planId);
+      if (!entry) continue;
+      const winner = pickCoverageRow(rows);
+      entry.coverageMap.set(slug, {
+        ...planCoverageFromRow(winner),
+        source: (winner.source as string | null) ?? null,
+      });
     }
   }
 

@@ -52,10 +52,10 @@ const PLAN: PlanCostShareParams = {
   inCoinsuranceDefault: 0.2, outCoinsuranceDefault: 0.4,
   deductibleCalcMethod: "embedded", combinedMedicalRxOop: true, coverageTier: "individual",
 };
-const SERVICE: ServiceCostShare = { covered: true, copay: null, coinsurance: 0.2, deductibleApplies: true };
+const SERVICE: ServiceCostShare = { covered: true, copay: null, coinsurance: 0.2, deductibleApplies: true, userStatedRate: false };
 // Covered, but NO parsed cost-share rate (the cf91a49e case) → the engine can't compute the share
 // → service_cost assumption → confirming deductible/network can't unlock the dollar.
-const SERVICE_NO_RATE: ServiceCostShare = { covered: true, copay: null, coinsurance: null, deductibleApplies: true };
+const SERVICE_NO_RATE: ServiceCostShare = { covered: true, copay: null, coinsurance: null, deductibleApplies: true, userStatedRate: false };
 // And the plan carries no default coinsurance either (else the default fills the rate).
 const PLAN_NO_RATE: PlanCostShareParams = { ...PLAN, inCoinsuranceDefault: null, outCoinsuranceDefault: null };
 const NO_OVERRIDE: CostShareOverrides = {

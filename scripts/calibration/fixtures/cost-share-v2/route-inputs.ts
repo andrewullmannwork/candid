@@ -114,7 +114,7 @@ const NO_OVERRIDES = {
   };
   const cs = computeCostShareV2({
     line: { billed: 221, allowed: 163.27, insuranceAdjusted: 57.73, patientPaid: 163.27, patientResponsibility: 0 },
-    service: buildServiceCostShare({ covered: true, copay: null, coinsurance: null, deductibleApplies: null }),
+    service: buildServiceCostShare({ covered: true, copay: null, coinsurance: null, deductibleApplies: null }, true),
     insurer: buildLineInsurer(item),
     plan,
     accumulator: null,
@@ -152,7 +152,7 @@ const NO_OVERRIDES = {
   const cs = computeCostShareV2({
     line: { billed: 292.41, allowed: 292.41, insuranceAdjusted: 0, patientPaid: 292.41, patientResponsibility: 0 },
     // copay service, deductible-exempt → copay branch (NOT deductible phase).
-    service: buildServiceCostShare({ covered: true, copay: 20, coinsurance: null, deductibleApplies: false }),
+    service: buildServiceCostShare({ covered: true, copay: 20, coinsurance: null, deductibleApplies: false }, true),
     insurer: buildLineInsurer(item),
     plan,
     accumulator: null,
@@ -182,7 +182,7 @@ const NO_OVERRIDES = {
   };
   const cs = computeCostShareV2({
     line: { billed: 89, allowed: 41.1, insuranceAdjusted: 47.9, patientPaid: 0, patientResponsibility: 0 },
-    service: buildServiceCostShare({ covered: true, copay: null, coinsurance: 0.1, deductibleApplies: null }),
+    service: buildServiceCostShare({ covered: true, copay: null, coinsurance: 0.1, deductibleApplies: null }, true),
     insurer: buildLineInsurer(item),
     plan,
     accumulator: null,

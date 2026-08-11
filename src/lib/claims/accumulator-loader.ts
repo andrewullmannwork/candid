@@ -350,7 +350,7 @@ export async function loadAccumulatorLedger(
         patientPaid: lp.patientPaid,
         patientResponsibility: lp.patientResponsibility,
         networkStatus: (raw.network_status as string | null) ?? null,
-        service: buildServiceCostShare(lp.coverage),
+        service: buildServiceCostShare(lp.coverage, lp.exactCoverageMatch),
         insurer: buildLineInsurer(raw),
         isPreventive: preventiveLines.has(Number(raw.line_number ?? 0)),
         // Rx = pharmacy-benefit NDC lines only (§18); in-office J-code drugs stay medical.

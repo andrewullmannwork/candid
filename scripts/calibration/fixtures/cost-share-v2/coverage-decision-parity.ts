@@ -159,13 +159,13 @@ function mk(service: ServiceCostShare | null, insurer?: Partial<InsurerAdjudicat
 }
 // D1 — explicit {covered:null} on a NON-null service (untested pre-R2): must NOT be not_covered.
 {
-  const r = computeCostShareV2(mk({ covered: null, copay: null, coinsurance: null, deductibleApplies: null }));
+  const r = computeCostShareV2(mk({ covered: null, copay: null, coinsurance: null, deductibleApplies: null, userStatedRate: false }));
   ok("D1 {covered:null} phase != not_covered", r.phase !== "not_covered", r.phase);
   ok("D1 {covered:null} verdict != not_covered", r.verdict !== "not_covered", r.verdict);
 }
 // D2 — {covered:false}: not_covered phase + verdict (the §18 contract; engine.ts 9/10).
 {
-  const r = computeCostShareV2(mk({ covered: false, copay: null, coinsurance: null, deductibleApplies: null }));
+  const r = computeCostShareV2(mk({ covered: false, copay: null, coinsurance: null, deductibleApplies: null, userStatedRate: false }));
   ok("D2 {covered:false} phase not_covered", r.phase === "not_covered", r.phase);
   ok("D2 {covered:false} verdict not_covered", r.verdict === "not_covered", r.verdict);
 }
@@ -173,9 +173,9 @@ function mk(service: ServiceCostShare | null, insurer?: Partial<InsurerAdjudicat
 // "denial" assumption. Anchored on the assumption (the exact path swapped), not the
 // final verdict (which `recovery` precedence can outrank — engine.ts 13 owns that).
 {
-  const denied = computeCostShareV2(mk({ covered: true, copay: 20, coinsurance: null, deductibleApplies: null }, { deniedAmount: 150 }));
+  const denied = computeCostShareV2(mk({ covered: true, copay: 20, coinsurance: null, deductibleApplies: null, userStatedRate: false }, { deniedAmount: 150 }));
   ok("D3 denied>0 pushes denial assumption", denied.assumptions.some((a) => a.field === "denial"), denied.assumptions);
-  const notDenied = computeCostShareV2(mk({ covered: true, copay: 20, coinsurance: null, deductibleApplies: null }, { deniedAmount: null }));
+  const notDenied = computeCostShareV2(mk({ covered: true, copay: 20, coinsurance: null, deductibleApplies: null, userStatedRate: false }, { deniedAmount: null }));
   ok("D3 denied=null pushes NO denial assumption", !notDenied.assumptions.some((a) => a.field === "denial"), notDenied.assumptions);
 }
 
@@ -205,7 +205,7 @@ ok("E detect covered+null insurer → false (unevaluated)", dc(true, null) === f
 // SURFACE — computeCostShareV2 exposes the engine's OWN coverageDecision (the recovery-math:514
 // value), not a re-derivation: it deep-equals resolveCoverageForLine(service, insurer) on the same inputs.
 {
-  const args = mk({ covered: true, copay: 20, coinsurance: null, deductibleApplies: null }, { deniedAmount: 150 });
+  const args = mk({ covered: true, copay: 20, coinsurance: null, deductibleApplies: null, userStatedRate: false }, { deniedAmount: 150 });
   const r = computeCostShareV2(args);
   eq("E surface == resolveCoverageForLine(service, insurer)", r.coverageDecision, resolveCoverageForLine(args.service, args.insurer));
   ok("E surface derivedStatus == contradiction (covered+denied)", r.coverageDecision.derivedStatus === "contradiction", r.coverageDecision.derivedStatus);

@@ -10,6 +10,7 @@ import {
   mapRawAccumulator,
   type RawAccumulator,
 } from "../../../../src/lib/claims/cost-share-loader";
+import { pickCoverageRow } from "../../../../src/lib/audit/coverage-loader";
 import {
   computeCostShareV2,
   type CostShareOverrides,
@@ -25,18 +26,18 @@ const near = (a: number, b: number, eps = 0.01) => Math.abs(a - b) <= eps;
 
 // L1 — buildServiceCostShare carries the richer fields (incl. deductibleApplies).
 {
-  const s = buildServiceCostShare({ covered: true, copay: 25, coinsurance: 0.2, deductibleApplies: true, outCoinsurance: 0.4 });
+  const s = buildServiceCostShare({ covered: true, copay: 25, coinsurance: 0.2, deductibleApplies: true, outCoinsurance: 0.4 }, false);
   check("L1 covered", s?.covered === true, s);
   check("L1 copay 25", s?.copay === 25, s);
   check("L1 deductibleApplies true", s?.deductibleApplies === true, s);
   check("L1 outCoinsurance 0.4", s?.outCoinsurance === 0.4, s);
-  check("L1 null coverage → null", buildServiceCostShare(null) === null, buildServiceCostShare(null));
+  check("L1 null coverage → null", buildServiceCostShare(null, false) === null, buildServiceCostShare(null, false));
 }
 
 // L2 — ACA coverage (deductibleApplies=false) threads to the engine as copay-exempt,
 //      NOT into the deductible phase: a $0 preventive paid $200 OOP → recover $200.
 {
-  const service = buildServiceCostShare({ covered: true, copay: 0, coinsurance: 0, deductibleApplies: false });
+  const service = buildServiceCostShare({ covered: true, copay: 0, coinsurance: 0, deductibleApplies: false }, false);
   const r = computeCostShareV2({
     line: { billed: 200, allowed: 200, patientPaid: 200, patientResponsibility: 200 },
     service,
@@ -105,4 +106,24 @@ if (fails.length) {
   console.log(fails.join("\n"));
   process.exit(1);
 }
+
+// ── L-S308 — pickCoverageRow: the ONE per-slug selection precedence ─────────
+// (valued > user-stated > confidence > deterministic id). Query-order
+// last-wins let a value-less parsed "covered" mention shadow a user's stated
+// rate (the acupuncture E2E defect).
+{
+  const parsedNoValue = { id: "b", in_copay: null, in_coinsurance: null, confidence: 0.5, source: "sbc_parsed", field_provenance: null };
+  const userStated = { id: "c", in_copay: null, in_coinsurance: 0.2, confidence: 0.9, source: "manual", field_provenance: { in_coinsurance: { source: "user_correction" } } };
+  const parsedValued = { id: "a", in_copay: 50, in_coinsurance: null, confidence: 0.95, source: "plan_doc_parsed", field_provenance: null };
+
+  check("L-S308 valued beats value-less regardless of order", pickCoverageRow([parsedNoValue, userStated]).id === "c");
+  check("L-S308 …and in the other order too", pickCoverageRow([userStated, parsedNoValue]).id === "c");
+  check("L-S308 user-stated beats a parsed value", pickCoverageRow([parsedValued, userStated]).id === "c");
+  check("L-S308 among parsed valued rows, higher confidence wins", pickCoverageRow([{ ...parsedValued, id: "d", confidence: 0.5 }, parsedValued]).id === "a");
+  const tie1 = pickCoverageRow([{ ...parsedValued, id: "z" }, { ...parsedValued, id: "a" }]).id;
+  const tie2 = pickCoverageRow([{ ...parsedValued, id: "a" }, { ...parsedValued, id: "z" }]).id;
+  check("L-S308 full tie is deterministic (id order), never query order", tie1 === "a" && tie2 === "a");
+  check("L-S308 card provenance is not user-stated", pickCoverageRow([{ ...userStated, id: "e", field_provenance: { in_coinsurance: { source: "card_corroboration" } }, confidence: 1 }, userStated]).id === "c");
+}
+
 console.log("ALL GREEN ✓");
