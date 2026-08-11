@@ -17,6 +17,7 @@ import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { userScoped, upsertOwnedChildren, selectOwnedChildren, updateOwnedChildren } from "@/lib/security/user-scoped";
+import { loadCatalogIdentity } from "@/lib/plan/catalog-identity";
 import { emitCaseEvents } from "@/lib/case/case-events";
 import { parseCostShareOverride } from "@/lib/claims/cost-share-override";
 import { PLAN_COVERED_ONCONFLICT } from "@/lib/plan/coverage-targeting";
@@ -101,6 +102,24 @@ export async function POST(
   // proof + updatable by overwrite; null clears. Read at letter-generation time by
   // loadDisputeGroundBasis, which overlays it onto the claim's effective totals so the
   // refund math + letter reflect it. Spread-merge preserves sibling metadata (e.g. provider).
+  // S308 — the verify-assumptions card's reviewed/collapsed state. Durable in
+  // claims.metadata (Rule #9 JSONB-first); spread-merge preserves siblings.
+  if (ov.field === "assumptions_reviewed") {
+    const baseMeta = (claim.metadata as Record<string, unknown> | null) ?? {};
+    const nextMeta = {
+      ...baseMeta,
+      assumptionsReviewedAt: ov.reviewed ? new Date().toISOString() : null,
+    };
+    const { error: metaErr } = await userScoped(supabase, user.id)
+      .table("claims")
+      .update({ metadata: nextMeta })
+      .eq("id", claimId);
+    if (metaErr) {
+      return NextResponse.json({ error: "Failed to save" }, { status: 500 });
+    }
+    return NextResponse.json({ ok: true, field: ov.field, applied: true });
+  }
+
   if (ov.field === "patient_paid") {
     const baseMeta = (claim.metadata as Record<string, unknown> | null) ?? {};
     const nextMeta: Record<string, unknown> = { ...baseMeta };
@@ -305,14 +324,24 @@ export async function POST(
 
   // ── Service cost-share (plan-level coverage row) ─────────────────────────
   if (ov.field === "service_cost") {
-    const { data: service } = await supabase
-      .from("service_catalog")
-      .select("id")
-      .eq("slug", ov.serviceSlug)
-      .maybeSingle();
-    if (!service) {
-      return NextResponse.json({ error: `Unknown service: ${ov.serviceSlug}` }, { status: 400 });
+    // S308 — resolve through the ONE catalog identity resolver (S289 merge
+    // chain), replacing a bespoke exact-slug lookup that (a) 400'd on any
+    // slug the catalog lacks and (b) had no merged_into_id filter, so a rate
+    // stated against a retired slug wrote to the DEAD row — invisible to every
+    // merge-aware reader. A user's answer is top-tier flywheel data
+    // (user_correction, 0.9): it must always land on the LIVE identity.
+    // Truly-unmatchable slugs return a machine code the modal maps to approved
+    // copy — never prose with the slug in it.
+    const identity = (await loadCatalogIdentity(supabase, [ov.serviceSlug])).get(ov.serviceSlug);
+    if (!identity) {
+      return NextResponse.json({ error: "service_unmatched" }, { status: 400 });
     }
+    if (identity.liveSlug !== ov.serviceSlug) {
+      console.log(
+        `[cost-share-override] merged-slug answer resolved to live identity: ${ov.serviceSlug} → ${identity.liveSlug}`,
+      );
+    }
+    const service = { id: identity.serviceId };
     // Only the fields the user supplied are written, so a copay-only correction never
     // clobbers an existing coinsurance (and vice-versa). source='manual' is the mig-031
     // CHECK value for a human-stated entry — the circularity firewall's human-vs-parser tag
@@ -326,9 +355,23 @@ export async function POST(
       source: "manual",
       confidence: SOURCE_DEFAULT_CONFIDENCE.user_correction,
     };
-    if (ov.copay != null) row.in_copay = ov.copay;
-    if (ov.coinsurance != null) row.in_coinsurance = ov.coinsurance;
-    if (ov.deductibleApplies != null) row.in_deductible_applies = ov.deductibleApplies;
+    // S308 — a stated rate CLEARS its sibling: the modal's Copay $ / Coinsurance %
+    // switch is one exclusive choice, so "only supplied fields are written"
+    // could never express switching type — a copay→coinsurance change left the
+    // old copay in place, and copay outranks coinsurance in the math, so the
+    // save landed while the row kept showing the old rate. A
+    // deductibleApplies-only correction still touches neither rate.
+    if (ov.copay != null) {
+      row.in_copay = ov.copay;
+      row.in_coinsurance = null;
+    } else if (ov.coinsurance != null) {
+      row.in_coinsurance = ov.coinsurance;
+      row.in_copay = null;
+    }
+    // S308 — touched ⇒ write, INCLUDING the explicit-null clear ("I'm not
+    // sure" must be able to remove a stored Yes/No, or the row folds as
+    // complete on an answer the user just disclaimed).
+    if (ov.deductibleAppliesTouched) row.in_deductible_applies = ov.deductibleApplies;
 
     // S291 — stamp that a HUMAN asserted this. Previously this row was written
     // with `source: 'manual', confidence: 1` and no provenance, identical to the
@@ -337,7 +380,14 @@ export async function POST(
     // with no trace of which it was. That ambiguity is what made mig 217
     // unsafe. `user_correction` carries 0.9 in the calibrated table, above
     // card_corroboration's 0.6, so a typed value outranks a scanned one.
-    row.field_provenance = buildDirectEntryProvenance(
+    // S308 — provenance is READ-MERGE-WRITE, never wholesale replace: the
+    // builder only carries the fields THIS write touched, and a blind replace
+    // wiped every other entry (an inline deductible answer silently destroyed
+    // the rate's user_correction provenance, demoting the row to "unknown").
+    // Columns this write NULLS (the sibling-rate clear, the explicit
+    // deductible clear) lose their entries — the value is gone, its
+    // provenance goes with it.
+    const built = buildDirectEntryProvenance(
       "plan_covered_services",
       [
         ["in_copay", ov.copay],
@@ -345,7 +395,31 @@ export async function POST(
         ["in_deductible_applies", ov.deductibleApplies],
       ],
       "user_correction",
+    ) as Record<string, unknown>;
+    // pcs is a CHILD table (B9): read through selectOwnedChildren, keyed
+    // client-side on the same (service, pos, component) the upsert targets.
+    const pcsRows = await selectOwnedChildren(
+      supabase,
+      user.id,
+      "plan_covered_services",
+      [planId],
+      "service_id, place_of_service, component, field_provenance",
     );
+    const existingRow = ((pcsRows as Array<Record<string, unknown>> | null) ?? []).find(
+      (r) => r.service_id === service.id && r.place_of_service === "any" && r.component === "global",
+    );
+    const merged: Record<string, unknown> = {
+      ...(((existingRow?.field_provenance as Record<string, unknown> | null) ?? {})),
+      ...built,
+    };
+    for (const clearedCol of [
+      ...("in_copay" in row && row.in_copay === null ? ["in_copay"] : []),
+      ...("in_coinsurance" in row && row.in_coinsurance === null ? ["in_coinsurance"] : []),
+      ...(ov.deductibleAppliesTouched && ov.deductibleApplies === null ? ["in_deductible_applies"] : []),
+    ]) {
+      delete merged[clearedCol];
+    }
+    row.field_provenance = merged;
 
     const { upserted } = await upsertOwnedChildren(
       supabase,
