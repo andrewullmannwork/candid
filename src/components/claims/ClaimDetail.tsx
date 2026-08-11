@@ -1093,6 +1093,17 @@ export function ClaimDetail({
     async (body: CostShareOverrideRequest, pendingKey: string): Promise<boolean> => {
       setCsOverridePending(pendingKey);
       setCsOverrideError(null);
+      // S309 (Andrew) — Done means FULLY collapsed. The reviewed:true write
+      // also rests the step-expand flag, so the step returns to its stub +
+      // "Show full step" instead of the phantom third state ("expanded step
+      // holding a collapsed card") whose toggle read backwards and cost a
+      // double-click. Mirror of the stub link, which pairs its reviewed:false
+      // write with setAssumpFullOpen(true). Optimistic on purpose: if the
+      // write fails, review stays un-done and the body stays visible
+      // regardless of this flag (assumpBodyVisible), so a false reset is inert.
+      if (body.field === "assumptions_reviewed" && body.reviewed === true) {
+        setAssumpFullOpen(false);
+      }
       try {
         const token = await getAuthToken();
         if (!token) return false;
