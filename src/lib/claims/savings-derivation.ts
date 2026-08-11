@@ -79,6 +79,14 @@ export interface DerivationRow {
   label: string;
   /** Plan-card term cell ("20% after deductible", "no copay", "unpriced"). */
   planTerm: string;
+  /**
+   * S309 F2 — the line-items table's PLAN-SAYS sub-line ("10% after
+   * deductible · not met", "$30.00 copay — no deductible"). Null on
+   * unpriced/not-covered lines (the table stays quiet there). Composed beside
+   * `planTerm` in planAnswerFor so the panel and the table share ONE wording
+   * derivation.
+   */
+  planTermCell: string | null;
   /** Plan-card amount cell, pre-formatted ("$422.57", "$0.00", "$0–$422.57" for unpriced). */
   planAmountText: string;
   /** True → the term renders red and the amount is a range, never a sum term. */
@@ -146,7 +154,7 @@ export interface SavingsDerivation {
   forgivenessSub: string | null;
 }
 
-function planAnswerFor(line: DerivationLineInput): { term: string; amountText: string; detail: string } {
+function planAnswerFor(line: DerivationLineInput): { term: string; amountText: string; detail: string; cell: string | null } {
   const src = line.sourceLabel ? ` Source: ${line.sourceLabel}.` : "";
   const owe = `$${fmtMoney(line.shouldOwe)}`;
   if (!line.rateKnown) {
@@ -155,6 +163,7 @@ function planAnswerFor(line: DerivationLineInput): { term: string; amountText: s
       term: "unpriced",
       amountText: `$0–$${cap}`,
       detail: `We don't know your rate for this service, so we assume the maximum until you confirm: up to $${cap}.`,
+      cell: null,
     };
   }
   if (line.covered === false) {
@@ -162,6 +171,7 @@ function planAnswerFor(line: DerivationLineInput): { term: string; amountText: s
       term: "not covered",
       amountText: owe,
       detail: `Your plan says: not covered — this line is yours to pay.${src}`,
+      cell: null,
     };
   }
   // Deductible-aware wording (approved S307 round 2). Only explicit met-state
@@ -169,6 +179,12 @@ function planAnswerFor(line: DerivationLineInput): { term: string; amountText: s
   const dedUnmet = line.deductibleApplies === true && line.deductibleMet === false;
   const dedMet = line.deductibleApplies === true && line.deductibleMet === true;
   const dedDollar = line.deductibleMax != null ? ` your $${fmtMoney(line.deductibleMax)} deductible` : " your deductible";
+  // S309 F2 (V3, Andrew-approved) — `cell`: the table's PLAN-SAYS sub-line.
+  // Same facts, ONE derivation with the panel row so the two surfaces can
+  // never disagree. Deliberately silent (null) on unpriced/not-covered lines,
+  // and never asserts "no deductible" when deductibleApplies is UNKNOWN —
+  // the suffix only renders on an explicit false.
+  const dedExempt = line.deductibleApplies === false;
   if (line.copay != null && line.copay > 0) {
     const c = fmtMoney(line.copay);
     if (dedUnmet) {
@@ -176,12 +192,14 @@ function planAnswerFor(line: DerivationLineInput): { term: string; amountText: s
         term: `$${c} copay after deductible`,
         amountText: owe,
         detail: `Your plan says: covered — a $${c} copay after${dedDollar}. It isn't met, so up to $${fmtMoney(line.shouldOwe)} is yours to pay.${src}`,
+        cell: `$${c} copay after deductible · not met`,
       };
     }
     return {
       term: `$${c} copay`,
       amountText: owe,
       detail: `Your plan says: covered with a $${c} copay.${dedMet ? " Your deductible is met." : ""}${src}`,
+      cell: dedExempt ? `$${c} copay — no deductible` : `$${c} copay`,
     };
   }
   if (line.coinsurance != null && line.coinsurance > 0) {
@@ -191,12 +209,14 @@ function planAnswerFor(line: DerivationLineInput): { term: string; amountText: s
         term: `${pct}% after deductible`,
         amountText: owe,
         detail: `Your plan says: covered — ${pct}% after${dedDollar}. It isn't met, so up to $${fmtMoney(line.shouldOwe)} is yours to pay.${src}`,
+        cell: `${pct}% after deductible · not met`,
       };
     }
     return {
       term: `${pct}% coinsurance`,
       amountText: owe,
       detail: `Your plan says: covered — you pay ${pct}% of the allowed amount.${dedMet ? " Your deductible is met." : ""}${src}`,
+      cell: dedExempt ? `${pct}% coinsurance — no deductible` : `${pct}% coinsurance`,
     };
   }
   // Explicit $0 (copay 0, or coinsurance 0): the approved visit wording.
@@ -204,6 +224,7 @@ function planAnswerFor(line: DerivationLineInput): { term: string; amountText: s
     term: "no copay",
     amountText: owe,
     detail: `Your plan says: covered, no copay — you owe $0.${src}`,
+    cell: "no copay",
   };
 }
 
@@ -225,7 +246,7 @@ export function buildSavingsDerivation(args: {
   const pricedShouldOwe = round2(priced.reduce((s, l) => s + l.shouldOwe, 0));
 
   const rows: DerivationRow[] = charged.map((l) => {
-    const { term, amountText, detail } = planAnswerFor(l);
+    const { term, amountText, detail, cell } = planAnswerFor(l);
     // A line the user paid speaks in refunds; an unpaid line in balance relief.
     const paidLabel: DerivationRow["paidLabel"] =
       l.paid < 1 && l.stillBilled >= 1 ? "Still billed" : "You paid";
@@ -243,6 +264,7 @@ export function buildSavingsDerivation(args: {
       id: l.id,
       label: l.label,
       planTerm: term,
+      planTermCell: cell,
       planAmountText: amountText,
       unpriced: !l.rateKnown,
       planDetail: detail,

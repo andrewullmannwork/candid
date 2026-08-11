@@ -1959,12 +1959,23 @@ export function ClaimDetail({
                     (x) => x.party === t.party,
                   ),
               ) ?? null;
+            // S309 F1-B (Andrew-approved) — an insurer-track offer raised by the
+            // cost-share ENGINE has no finding to speak for it; say the engine's
+            // own reason from the live totals instead of leaving the card mute.
+            // Provider-track engine-raised offers keep null (no approved copy).
+            const engineReason =
+              !reason && t.party === "insurer" && billTotals.potentialRecovery >= 1
+                ? {
+                    title: null,
+                    detail: `Your plan puts your share around $${fmtMoney(billTotals.shouldOwe)}, but this bill charges you $${fmtMoney(billTotals.shouldOwe + billTotals.potentialRecovery)} — the appeal asks for the $${fmtMoney(billTotals.potentialRecovery)} difference.`,
+                  }
+                : null;
             return {
               party: t.party,
               letterType: t.letterType,
               reason: reason
                 ? { title: reason.title, detail: reason.description ?? null }
-                : null,
+                : engineReason,
               declinedAt: guideStepsMeta[letterOfferSkipStepId(t.party)]?.skippedAt ?? null,
             };
           })
@@ -2854,6 +2865,11 @@ export function ClaimDetail({
           const patientPaid = item.recovery?.patientPaid ?? Number(item.patient_paid_amount ?? 0);
           const refundComponent = item.recovery?.refundComponent ?? Math.max(0, patientPaid - shouldOwe);
           const forgivenessComponent = item.recovery?.forgivenessComponent ?? Math.max(0, owedRecovery - refundComponent);
+          // S309 F2 — the PLAN-SAYS sub-line, from the SAME derivation the
+          // "What you could save" strip renders (one wording source; null when
+          // the savings flag is OFF or the line is unpriced/not-covered).
+          const planSaysCell =
+            savingsDerivation?.rows.find((r) => r.id === item.id)?.planTermCell ?? null;
           const rawInsurancePaid = item.insurance_paid || 0;
           const hasGap = billed > 0 && rawInsurancePaid === 0 && owed === 0;
           // Cost-Share v2 (S214) — when the engine ran (verdict present), the
@@ -2999,11 +3015,16 @@ export function ClaimDetail({
                   </div>
                   <div className="flex justify-between gap-3">
                     <dt className="text-gray-500 uppercase tracking-wider">You paid</dt>
-                    <dd className="tabular-nums text-gray-600">${paid.toLocaleString()}</dd>
+                    <dd className="tabular-nums text-gray-600">${fmtMoney(paid)}</dd>
                   </div>
                   <div className="flex justify-between gap-3">
                     <dt className="text-gray-500 uppercase tracking-wider">Plan says</dt>
-                    <dd className={`tabular-nums font-semibold ${shouldOwe === 0 ? "text-green-700" : "text-gray-900"}`}>${shouldOwe.toLocaleString()}</dd>
+                    <dd className="text-right">
+                      <div className={`tabular-nums font-semibold ${shouldOwe === 0 ? "text-green-700" : "text-gray-900"}`}>${fmtMoney(shouldOwe)}</div>
+                      {planSaysCell && (
+                        <div className="mt-0.5 text-[10px] leading-tight text-gray-400">{planSaysCell}</div>
+                      )}
+                    </dd>
                   </div>
                   {/* B4.2: "You owe" mobile row DROPPED per Open Q A lock. */}
                   {/* B4.2: Recovery + Forgiveness rows render only when value
@@ -3012,13 +3033,13 @@ export function ClaimDetail({
                   {refundComponent >= 1 && (
                     <div className="flex justify-between gap-3">
                       <dt className="uppercase tracking-wider text-green-700">Recovery</dt>
-                      <dd className="tabular-nums font-bold text-green-700">+${refundComponent.toLocaleString()}</dd>
+                      <dd className="tabular-nums font-bold text-green-700">+${fmtMoney(refundComponent)}</dd>
                     </div>
                   )}
                   {forgivenessComponent >= 1 && (
                     <div className="flex justify-between gap-3">
                       <dt className="uppercase tracking-wider text-green-700">Forgiveness</dt>
-                      <dd className="tabular-nums font-bold text-green-700">${forgivenessComponent.toLocaleString()}</dd>
+                      <dd className="tabular-nums font-bold text-green-700">${fmtMoney(forgivenessComponent)}</dd>
                     </div>
                   )}
                   <div className="flex justify-between items-center gap-3">
@@ -3192,14 +3213,23 @@ export function ClaimDetail({
                   )}
                 </div>
                 <div className="text-sm font-semibold text-gray-700 text-right tabular-nums whitespace-nowrap">
-                  ${paid.toLocaleString()}
+                  ${fmtMoney(paid)}
                 </div>
-                {/* Plan says — what your plan says you should owe. */}
+                {/* Plan says — what your plan says you should owe. S309 F2: the
+                    sub-line states the rate AND why it isn't applying, from the
+                    same derivation as the savings strip. */}
                 <div
-                  className={`text-sm font-bold text-right tabular-nums whitespace-nowrap ${shouldOwe === 0 ? "text-emerald-700" : "text-gray-900"}`}
-                  title={`Per your plan, you should owe $${shouldOwe.toLocaleString()} for this service.`}
+                  className="text-right"
+                  title={`Per your plan, you should owe $${fmtMoney(shouldOwe)} for this service.`}
                 >
-                  ${shouldOwe.toLocaleString()}
+                  <div className={`text-sm font-bold tabular-nums whitespace-nowrap ${shouldOwe === 0 ? "text-emerald-700" : "text-gray-900"}`}>
+                    ${fmtMoney(shouldOwe)}
+                  </div>
+                  {planSaysCell && (
+                    <div className="mt-0.5 text-[10px] leading-tight text-gray-400">
+                      {planSaysCell}
+                    </div>
+                  )}
                 </div>
                 {/* B4.2 (Open Q A lock): "You owe" column DROPPED — design
                     leans on "Plan says" to convey what the user should pay; a
@@ -3214,14 +3244,14 @@ export function ClaimDetail({
                     item.planCoverage == null
                       ? "We need plan coverage info to compute refund recoverable."
                       : refundComponent >= 1
-                        ? `Refund recoverable: $${refundComponent.toLocaleString()} — already paid out-of-pocket above your plan share.`
+                        ? `Refund recoverable: $${fmtMoney(refundComponent)} — already paid out-of-pocket above your plan share.`
                         : "No refund recoverable — patient hasn't paid above plan share."
                   }
                 >
                   {item.planCoverage == null ? (
                     <span className="text-gray-300">—</span>
                   ) : refundComponent >= 1 ? (
-                    <span className="font-bold text-emerald-700">+${refundComponent.toLocaleString()}</span>
+                    <span className="font-bold text-emerald-700">+${fmtMoney(refundComponent)}</span>
                   ) : (
                     <span className="text-gray-400">$0.00</span>
                   )}
@@ -3236,14 +3266,14 @@ export function ClaimDetail({
                     item.planCoverage == null
                       ? "We need plan coverage info to compute forgiveness due."
                       : forgivenessComponent >= 1
-                        ? `Forgiveness due: $${forgivenessComponent.toLocaleString()} — provider must write off the amount above plan-allowed.`
+                        ? `Forgiveness due: $${fmtMoney(forgivenessComponent)} — provider must write off the amount above plan-allowed.`
                         : "No forgiveness due — bill is within plan-allowed."
                   }
                 >
                   {item.planCoverage == null ? (
                     <span className="text-gray-300">—</span>
                   ) : forgivenessComponent >= 1 ? (
-                    <span className="font-bold text-emerald-700">${forgivenessComponent.toLocaleString()}</span>
+                    <span className="font-bold text-emerald-700">${fmtMoney(forgivenessComponent)}</span>
                   ) : (
                     <span className="text-gray-400">$0.00</span>
                   )}

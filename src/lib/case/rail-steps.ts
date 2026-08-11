@@ -90,12 +90,14 @@ export interface RailLetterOffer {
   party: "insurer" | "provider";
   letterType: DisputeLetterType;
   /**
-   * Why this letter is owed, in the finding's OWN words — the same title and
-   * description the claim-level issues list shows. Null when the track rests on
-   * the cost-share engine's `insurerDiscrepancy` rather than on a finding
-   * (plan math, which is not a finding and never will be).
+   * Why this letter is owed. Finding-raised tracks carry the finding's OWN
+   * words — the same title and description the claim-level issues list shows.
+   * S309 F1-B: an insurer track raised by the cost-share ENGINE carries the
+   * engine's reason instead (title null — plan math has no finding headline,
+   * only the sentence built from the live totals). Null only when neither
+   * exists (e.g. an engine-raised provider track, which has no approved copy).
    */
-  reason: { title: string; detail: string | null } | null;
+  reason: { title: string | null; detail: string | null } | null;
   /** The user's stored decline (`skippedAt`), else null. */
   declinedAt: string | null;
 }

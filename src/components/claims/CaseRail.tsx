@@ -1155,11 +1155,17 @@ export function CaseRail({
                 skipped={declined}
               >
                 <div className={`rounded-xl border border-gray-200 px-4 py-3.5 ${declined ? "bg-gray-50" : "bg-white"}`}>
+                  {/* S309 F1 (Andrew) — action FIRST, reason to its right, for
+                      every letter offer: the button is the step's point; the
+                      reason (finding's words, or the engine's own sentence —
+                      F1-B) reads as its justification beside it. */}
                   <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div className="min-w-[14rem] flex-1">
-                      {/* The finding's OWN words — the reason this letter is
-                          owed. Absent on an insurer track raised by the
-                          cost-share engine, which is plan math, not a finding. */}
+                    {!declined && (
+                      <div className="flex flex-shrink-0 items-center gap-2">
+                        {renderOfferAction(o.letterType)}
+                      </div>
+                    )}
+                    <div className="min-w-[14rem] flex-1 text-right">
                       {o.reasonTitle && (
                         <div className={`text-[14px] font-bold ${declined ? "text-gray-400" : "text-gray-900"}`}>
                           {o.reasonTitle}
@@ -1171,11 +1177,6 @@ export function CaseRail({
                         </div>
                       )}
                     </div>
-                    {!declined && (
-                      <div className="flex flex-shrink-0 items-center gap-2">
-                        {renderOfferAction(o.letterType)}
-                      </div>
-                    )}
                   </div>
                 </div>
                 <div className="mt-2.5 flex flex-wrap items-center gap-2 text-[11.5px] text-gray-400">
