@@ -486,6 +486,7 @@ export function CaseRail({
   onMarkSent,
   onSaveFirstContactDate,
   onRefetch,
+  onStepInteraction,
 }: {
   /**
    * S303 — the rail arrives COMPOSED. ClaimDetail composes once (composeRail)
@@ -530,6 +531,11 @@ export function CaseRail({
   onSaveFirstContactDate: (disputeId: string, date: string | null) => Promise<void>;
   /** Refetch the claim projection after a collections step writes. */
   onRefetch: () => Promise<void>;
+  /** S309 (Andrew) — fired on ANY rail-step write (attest/skip/undo, offers,
+   *  regulator doors, collections). ClaimDetail collapses the savings math on
+   *  it: interacting with a later step means the answer has been read. One
+   *  hook at the one write funnel (runClaimStep), not per-step wiring. */
+  onStepInteraction?: () => void;
 }) {
   const router = useRouter();
   const [openSteps, setOpenSteps] = useState<Record<string, boolean>>({});
@@ -662,6 +668,7 @@ export function CaseRail({
     next: "open" | "done" | "skipped",
     body: { checked?: boolean; skipped?: boolean; note?: string; disputeId?: string },
   ): Promise<void> => {
+    onStepInteraction?.();
     setGuideBusy((m) => ({ ...m, [stepId]: true }));
     setGuideError((m) => ({ ...m, [stepId]: false }));
     try {

@@ -568,7 +568,10 @@ export function ClaimDetail({
   // Surface 3 (clarity redesign) — flagged-bill guided 4-step rail state:
   // the plan-vs-bill diff collapses behind "Show the math"; step 3's
   // "All services look right" / "Something looks wrong" verification pair.
-  const [showMath, setShowMath] = useState(false);
+  // S309 (Andrew) — the math is OPEN by default; it collapses when the user
+  // hides it or interacts with any step AFTER it (phone pack, rail steps) —
+  // "I made the call" means they've read the answer and moved on.
+  const [showMath, setShowMath] = useState(true);
   // S292 — "Confirmed" is SERVER truth (claims.metadata.servicesConfirmedAt),
   // DERIVED below once `claim` exists, the same persisted-state idiom
   // `assumptionsDone` / `assumptionsEngaged` already use further down this file.
@@ -2457,7 +2460,19 @@ export function ClaimDetail({
                 guidedOn && assumptionsDone ? (
                   <ShowFullStepButton
                     open={assumpFullOpen}
-                    onToggle={() => setAssumpFullOpen((v) => !v)}
+                    onToggle={() => {
+                      // S309 (Andrew's toggle report) — "Show full step" must show
+                      // the FULL step: after Done, the step body held only the
+                      // card's collapsed stub, so both toggle states rendered the
+                      // same "Update assumptions" box and the click looked dead.
+                      // Opening now also un-collapses the card VISUALLY via the
+                      // existing expandSignal — no review-state write (that stays
+                      // the Update-assumptions link's job).
+                      setAssumpFullOpen((v) => {
+                        if (!v) setAssumpExpandSignal((n) => n + 1);
+                        return !v;
+                      });
+                    }}
                   />
                 ) : undefined
               }
@@ -4122,6 +4137,9 @@ export function ClaimDetail({
                     // shut on any in-panel click (the un-check bug).
                     if (s.concluded && !guidedPack.concluded) setPhoneFullOpen(false);
                     setGuidedPackLive(s);
+                    // S309 (Andrew) — interacting with the phone step means the
+                    // math above has been read; collapse it.
+                    setShowMath(false);
                   }}
                 />
               </div>
@@ -4204,6 +4222,7 @@ export function ClaimDetail({
             </div>
           )}
           <CaseRail
+            onStepInteraction={() => setShowMath(false)}
             // S303 — composed ONCE above, alongside the fold that reads it.
             groups={railComposed.groups}
             claimId={claimId}
