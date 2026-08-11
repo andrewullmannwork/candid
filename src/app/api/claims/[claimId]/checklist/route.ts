@@ -104,71 +104,106 @@ export async function POST(
     return NextResponse.json({ error: "User not found" }, { status: 404 });
   }
 
-  const { data: claim, error: fetchErr } = await userScoped(supabase, user.id)
-    .table("claims")
-    .select("id, metadata")
-    .eq("id", claimId)
-    .single();
-  if (fetchErr || !claim) {
-    return NextResponse.json({ error: "Claim not found" }, { status: 404 });
-  }
-
-  const meta = (claim.metadata as Record<string, unknown>) ?? {};
-  const guideSteps = {
-    ...((meta.guideSteps as Record<
-      string,
-      { checkedAt: string | null; note?: string; noteHistory?: Array<{ note: string; replacedAt: string }> }
-    > | undefined) ?? {}),
-  };
-  const prior = guideSteps[stepId] ?? { checkedAt: null };
-  const next: {
+  // S309 F8 — the plain read-merge-write here LOST UPDATES under concurrent
+  // requests: a note-blur save and a check click fire together, both handlers
+  // read the same prior blob, and whichever commits last erases the other's
+  // field (observed live: checkedAt gone while the spine said attested — and
+  // the letter recital reads checkedAt). Fixed at the WRITE: compare-and-swap
+  // on a metadata revision key (`metaRev`, inside the JSONB — no migration)
+  // with re-read-re-merge retry. Serializes EVERY writer through this route
+  // (GuidedPhoneSteps, CaseRail's runClaimStep, regulator doors, collections),
+  // multi-tab included, no client cooperation needed. Cross-ROUTE metadata
+  // writers (cost-share-override) are the named follow-up, not this fix.
+  type GuideStep = {
     checkedAt: string | null;
     skippedAt?: string | null;
     note?: string;
     noteHistory?: Array<{ note: string; replacedAt: string }>;
-  } = { ...prior };
-  // S301 — THREE resolved states, kept mutually exclusive on write so no reader
-  // has to decide which wins: done (checkedAt), skipped (skippedAt), open
-  // (neither). A skip is the user declining the action, so it must never be
-  // stored as, or rendered as, an attestation.
-  if (checked === true) {
-    next.checkedAt = new Date().toISOString();
-    next.skippedAt = null;
-  }
-  if (checked === false) next.checkedAt = null;
-  if (skipped === true) {
-    next.skippedAt = new Date().toISOString();
-    next.checkedAt = null;
-  }
-  if (skipped === false) next.skippedAt = null;
-  if (note != null) {
-    // S297 noteHistory (Andrew) — these logs are evidence; before replacing a
-    // non-empty note with something different, bank the old value (last 5,
-    // server-stamped) so an accidental delete is recoverable.
-    const priorNote = typeof prior.note === "string" ? prior.note : null;
-    if (priorNote != null && priorNote.length > 0 && priorNote !== note) {
-      next.noteHistory = [
-        ...(prior.noteHistory ?? []),
-        { note: priorNote, replacedAt: new Date().toISOString() },
-      ].slice(-5);
+  };
+  const CAS_ATTEMPTS = 3;
+  let claimRowId: string | null = null;
+  let guideSteps: Record<string, GuideStep> = {};
+  let next: GuideStep | null = null;
+  for (let attempt = 1; attempt <= CAS_ATTEMPTS && claimRowId == null; attempt++) {
+    const { data: claim, error: fetchErr } = await userScoped(supabase, user.id)
+      .table("claims")
+      .select("id, metadata")
+      .eq("id", claimId)
+      .single();
+    if (fetchErr || !claim) {
+      return NextResponse.json({ error: "Claim not found" }, { status: 404 });
     }
-    next.note = note;
+
+    const meta = (claim.metadata as Record<string, unknown>) ?? {};
+    const priorRev = typeof meta.metaRev === "number" ? (meta.metaRev as number) : null;
+    const steps: Record<string, GuideStep> = {
+      ...((meta.guideSteps as Record<string, GuideStep> | undefined) ?? {}),
+    };
+    const prior = steps[stepId] ?? { checkedAt: null };
+    const candidate: GuideStep = { ...prior };
+    // S301 — THREE resolved states, kept mutually exclusive on write so no reader
+    // has to decide which wins: done (checkedAt), skipped (skippedAt), open
+    // (neither). A skip is the user declining the action, so it must never be
+    // stored as, or rendered as, an attestation.
+    if (checked === true) {
+      candidate.checkedAt = new Date().toISOString();
+      candidate.skippedAt = null;
+    }
+    if (checked === false) candidate.checkedAt = null;
+    if (skipped === true) {
+      candidate.skippedAt = new Date().toISOString();
+      candidate.checkedAt = null;
+    }
+    if (skipped === false) candidate.skippedAt = null;
+    if (note != null) {
+      // S297 noteHistory (Andrew) — these logs are evidence; before replacing a
+      // non-empty note with something different, bank the old value (last 5,
+      // server-stamped) so an accidental delete is recoverable.
+      const priorNote = typeof prior.note === "string" ? prior.note : null;
+      if (priorNote != null && priorNote.length > 0 && priorNote !== note) {
+        candidate.noteHistory = [
+          ...(prior.noteHistory ?? []),
+          { note: priorNote, replacedAt: new Date().toISOString() },
+        ].slice(-5);
+      }
+      candidate.note = note;
+    }
+    steps[stepId] = candidate;
+
+    let updateQ = userScoped(supabase, user.id)
+      .table("claims")
+      .update({
+        metadata: { ...meta, guideSteps: steps, metaRev: (priorRev ?? 0) + 1 },
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", claim.id);
+    // The CAS guard: only land on the exact revision we merged from. A missing
+    // key is the legacy state, matched with IS NULL and stamped by this write.
+    updateQ =
+      priorRev == null
+        ? updateQ.is("metadata->>metaRev", null)
+        : updateQ.eq("metadata->>metaRev", String(priorRev));
+    const { data: updatedRows, error: updateErr } = await updateQ.select("id");
+
+    if (updateErr) {
+      console.error("[claim-checklist] update failed:", updateErr);
+      return NextResponse.json(
+        { error: "Failed to persist step" },
+        { status: 500 },
+      );
+    }
+    if ((updatedRows ?? []).length > 0) {
+      claimRowId = claim.id as string;
+      guideSteps = steps;
+      next = candidate;
+    }
+    // 0 rows → another write landed between our read and write; loop re-reads
+    // the fresh blob and re-applies THIS request's patch on top of it.
   }
-  guideSteps[stepId] = next;
-
-  const { error: updateErr } = await userScoped(supabase, user.id)
-    .table("claims")
-    .update({
-      metadata: { ...meta, guideSteps },
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", claim.id);
-
-  if (updateErr) {
-    console.error("[claim-checklist] update failed:", updateErr);
+  if (claimRowId == null || next == null) {
     return NextResponse.json(
-      { error: "Failed to persist step" },
-      { status: 500 },
+      { error: "The claim changed while saving — please try again." },
+      { status: 409 },
     );
   }
 
@@ -180,28 +215,28 @@ export async function POST(
     const events: CaseEventInput[] = [];
     if (stepId === "packA:phone-outcome") {
       if (checked === false) {
-        events.push({ claimId: claim.id as string, kind: "guide_step_unchecked", payload: { stepId } });
+        events.push({ claimId: claimRowId, kind: "guide_step_unchecked", payload: { stepId } });
       } else if (checked === true || note != null) {
         const answer =
           typeof next.note === "string" && ["yes", "no", "skip"].includes(next.note)
             ? next.note
             : null;
         events.push({
-          claimId: claim.id as string,
+          claimId: claimRowId,
           kind: "phone_outcome_answered",
           payload: { stepId, answer },
         });
       }
     } else if (checked === true) {
       events.push({
-        claimId: claim.id as string,
+        claimId: claimRowId,
         disputeId: eventDisputeId ?? undefined,
         kind: "guide_step_attested",
         payload: { stepId, hasNote: typeof next.note === "string" && next.note.length > 0 },
       });
     } else if (checked === false) {
       events.push({
-        claimId: claim.id as string,
+        claimId: claimRowId,
         disputeId: eventDisputeId ?? undefined,
         kind: "guide_step_unchecked",
         payload: { stepId },
@@ -210,7 +245,7 @@ export async function POST(
       // S301 — its own kind. The ledger records that the user DECLINED this
       // step; nothing downstream may read it as having been done.
       events.push({
-        claimId: claim.id as string,
+        claimId: claimRowId,
         disputeId: eventDisputeId ?? undefined,
         kind: "guide_step_skipped",
         payload: { stepId },
@@ -219,7 +254,7 @@ export async function POST(
       // Un-skipping returns the step to OPEN, not to done — same kind the
       // un-attest path uses, since both mean "this is unresolved again".
       events.push({
-        claimId: claim.id as string,
+        claimId: claimRowId,
         disputeId: eventDisputeId ?? undefined,
         kind: "guide_step_unchecked",
         payload: { stepId },
