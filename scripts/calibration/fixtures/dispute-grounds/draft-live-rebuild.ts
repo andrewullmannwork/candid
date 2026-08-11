@@ -25,12 +25,14 @@ import {
   computeEvidenceFingerprint,
   composeBasisFrom,
   decideDriftAction,
+  driftMachineryApplies,
   type FingerprintInput,
   type ComposeBasis,
 } from "../../../../src/lib/disputes/evidence-fingerprint";
 import {
   letterPatientName,
   letterPatientIdentityFromMeta,
+  isLiveDraftStatus,
 } from "../../../../src/lib/disputes/letter-type";
 
 let pass = 0;
@@ -220,6 +222,46 @@ const COMPOSE: ComposeBasis = {
     debounceMinutes: 0,
   });
   check("unsend · and the decision is regenerate_draft", decision.action === "regenerate_draft", decision);
+}
+
+// ── 6. Void rows are read-only exhibits (S308) ──────────────────────────────
+// The E2E corpse: a CANCELLED draft has null sent_at, so the sent-only guard
+// counted it as an unsent draft and a plain view silently rebuilt it. The rule,
+// stated once: only a live draft recomposes; sent letters keep banners; every
+// other status freezes the stored body. isLiveDraftStatus is a fail-closed
+// WHITELIST — a future status word defaults to frozen, never to rewritable.
+{
+  check("void · the draft status is the ONLY live one", isLiveDraftStatus("dispute_letter_drafted"));
+  for (const s of [
+    "cancelled",
+    "won",
+    "lost",
+    "settled",
+    "withdrawn",
+    "won_on_escalation",
+    "settled_on_escalation",
+    "filed",
+    "in_progress",
+    "resolved",
+  ]) {
+    check(`void · "${s}" is not a live draft`, !isLiveDraftStatus(s));
+  }
+  check("void · null/undefined fail closed", !isLiveDraftStatus(null) && !isLiveDraftStatus(undefined));
+
+  // the apparatus gate: live drafts and sent rows participate; void rows never
+  const sent = new Date("2026-08-05T18:00:00Z");
+  check("apparatus · live draft (unsent) participates", driftMachineryApplies("dispute_letter_drafted", null));
+  check("apparatus · sent letter participates (drift banner)", driftMachineryApplies("filed", sent));
+  check("apparatus · resolved-after-send still participates (banner axis)", driftMachineryApplies("lost", sent));
+  check("apparatus · cancelled + never sent = void, no apparatus", !driftMachineryApplies("cancelled", null));
+  check("apparatus · resolved without a send = void, no apparatus", !driftMachineryApplies("lost", null));
+
+  // the corpse scenario end-to-end in the pure layer: cancelled + real compose
+  // drift → the apparatus gate refuses BEFORE any drift decision exists
+  const stored = computeEvidenceFingerprint(BASE);
+  const drifted = computeEvidenceFingerprint({ ...BASE, composeBasis: COMPOSE });
+  check("corpse · the drift is real (hashes differ)", stored !== drifted);
+  check("corpse · and the void gate still refuses the apparatus", !driftMachineryApplies("cancelled", null));
 }
 
 console.log(`\ndraft-live-rebuild fixture: ${pass} passed, ${fails.length} failed`);

@@ -530,3 +530,18 @@ export function letterPatientIdentityFromMeta(
     correctedName: typeof corrected === "string" && corrected.trim() ? corrected.trim() : null,
   };
 }
+
+/**
+ * S308 — is this letter status a LIVE DOCUMENT (UX-2: "a draft letter is a
+ * live document; a sent letter is a record")? Only a live draft may be
+ * recomposed-and-rewritten by the view/redraft paths. Deliberately a
+ * fail-closed whitelist: every other status — cancelled (void; the S306
+ * corpse family), the resolved family (won/lost/settled/withdrawn/escalation
+ * variants), filed/in_progress (sent-era) — freezes the stored body, so a
+ * future status word defaults to frozen, never to rewritable. The S308 E2E
+ * caught a cancelled draft rebuilding on view because the rebuild gate
+ * consulted only sent_at; status is the axis sent_at cannot see.
+ */
+export function isLiveDraftStatus(status: string | null | undefined): boolean {
+  return status === "dispute_letter_drafted";
+}

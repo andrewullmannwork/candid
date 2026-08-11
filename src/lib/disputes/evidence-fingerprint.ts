@@ -16,6 +16,7 @@ import {
   readUserTotalsSource,
   type UserTotalsSource,
 } from "@/lib/claims/effective-totals";
+import { isLiveDraftStatus } from "./letter-type";
 import {
   loadPlanCostShareParams,
   loadCostShareOverrides,
@@ -762,6 +763,24 @@ export type DriftDecision =
       cooldownUntil: Date | null;
     }
   | { action: "serve_cached_within_debounce"; debounceSecondsRemaining: number };
+
+/**
+ * S308 — whether the live-document apparatus (fingerprint compute, drift
+ * decision, view-driven regeneration) applies to a dispute row at all.
+ * Live drafts rebuild on drift; sent letters keep the drift banner; a VOID
+ * row — cancelled, or closed without ever being sent — is a read-only
+ * exhibit: no fingerprint, no drift banner, no recompose, no write. (The
+ * S308 E2E corpse: a cancelled letter has null sent_at, so the sent-only
+ * guard counted it as an "unsent draft" and a plain view silently rebuilt
+ * it under dispute_draft_live_rebuild_v1. Status is the axis sent_at
+ * cannot see.)
+ */
+export function driftMachineryApplies(
+  status: string | null | undefined,
+  sentAt: Date | null,
+): boolean {
+  return isLiveDraftStatus(status) || sentAt != null;
+}
 
 export function decideDriftAction(opts: {
   storedFingerprint: string | null;

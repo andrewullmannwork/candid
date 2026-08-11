@@ -38,7 +38,7 @@ import {
 import { emitCaseEvent } from "@/lib/case/case-events";
 import { loadServerSubscription } from "@/lib/subscription/server";
 import { letterRequiresPro, evaluateLetterAccess } from "@/lib/disputes/letter-access";
-import { resolveLetterTypeFromDispute, letterPatientIdentityFromMeta } from "@/lib/disputes/letter-type";
+import { resolveLetterTypeFromDispute, letterPatientIdentityFromMeta, isLiveDraftStatus } from "@/lib/disputes/letter-type";
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -87,6 +87,13 @@ export async function POST(
   }
   if (!dispute.claim_id) {
     return NextResponse.json({ error: "Dispute has no linked claim" }, { status: 400 });
+  }
+  // S308 — only a live draft may be recomposed. Cancelled rows are void
+  // exhibits (the corpse family), resolved rows are closed records, and sent
+  // letters are as-mailed records (their status is filed/in_progress/…, never
+  // the draft status, so this also refuses redraft-of-sent by construction).
+  if (!isLiveDraftStatus((dispute.status as string | null) ?? null)) {
+    return NextResponse.json({ error: "letter_not_redraftable" }, { status: 409 });
   }
 
   // S292 (#12) — tier gate scoped to the LETTER TYPE, exactly like generate + the
