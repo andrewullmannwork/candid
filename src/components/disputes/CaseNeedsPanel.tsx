@@ -27,6 +27,16 @@
 
 import { Fragment, useState, type ReactNode } from "react";
 import { Row } from "@/components/shared/InputRow";
+import {
+  ImportantBadge,
+  DoneChip,
+  DoneEdit,
+  AddButton,
+  ValueEdit,
+  CancelLink,
+  NeedsMeter,
+  AddedFold,
+} from "@/components/shared/needs-format";
 import { PatientIdentityChoices } from "@/components/disputes/PatientIdentityChoices";
 import {
   ServiceAttestationFlow,
@@ -272,57 +282,7 @@ const AuditIcon = (<svg width="18" height="18" viewBox="0 0 24 24" {...stroke} a
 // What this panel keeps is a QUANTITY meter — "6 of 11 added" — which says more
 // precisely what the lost "Strong" rung was gesturing at.
 
-const ImportantBadge = (
-  <span className="inline-flex items-center rounded-full bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700">
-    Important
-  </span>
-);
-
 // ── small controls ────────────────────────────────────────────────────────────
-function DoneChip({ label }: { label: string }) {
-  return (
-    <span className="inline-flex items-center gap-1 whitespace-nowrap text-[13px] font-medium text-emerald-600">
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M5 13l4 4L19 7" /></svg>
-      {label}
-    </span>
-  );
-}
-/** "<label> · Edit" — a resolved row that stays editable (addresses, name, attestation). */
-function DoneEdit({ label, onEdit }: { label: string; onEdit: () => void }) {
-  return (
-    <span className="inline-flex items-center gap-2.5 whitespace-nowrap">
-      <span className="inline-flex items-center gap-1 text-[13px] font-medium text-emerald-600">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M5 13l4 4L19 7" /></svg>
-        {label}
-      </span>
-      <button type="button" onClick={onEdit} className="text-[13px] font-medium text-blue-600 hover:text-blue-700">Edit</button>
-    </span>
-  );
-}
-function AddButton({ onClick, label }: { onClick: () => void; label: string }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="whitespace-nowrap rounded-lg border border-blue-200 bg-white px-3 py-1.5 text-[13px] font-medium text-blue-700 transition-colors hover:border-blue-300 hover:bg-blue-50"
-    >
-      {label}
-    </button>
-  );
-}
-function ValueEdit({ value, onEdit }: { value: string; onEdit: () => void }) {
-  return (
-    <span className="inline-flex items-center gap-2.5 whitespace-nowrap">
-      <span className="text-sm font-medium text-gray-900">{value}</span>
-      <button type="button" onClick={onEdit} className="text-[13px] font-medium text-blue-600 hover:text-blue-700">Edit</button>
-    </span>
-  );
-}
-function CancelLink({ onClick }: { onClick: () => void }) {
-  return (
-    <button type="button" onClick={onClick} className="whitespace-nowrap text-[13px] font-medium text-gray-500 hover:text-gray-700">Cancel</button>
-  );
-}
 
 /** Coverage-verify gate control — "Matches" / "Doesn't match" (from ServiceVerificationGateCard). */
 function CoverageVerifyControl({ onDecide }: { onDecide: (d: "match" | "no_match") => Promise<void> }) {
@@ -497,7 +457,6 @@ function DateEditor({ initial, prompt, onSaved }: { initial: string | null; prom
  *  signal that item exists to remove. Bar colour is now constant: this is a
  *  count of optional strengtheners added, not a verdict on sendability. */
 function ReadinessHeader({ completed, total }: { completed: number; total: number }) {
-  const pct = total === 0 ? 0 : Math.round((completed / total) * 100);
   return (
     <div>
       <div className="flex items-center gap-2">
@@ -507,17 +466,7 @@ function ReadinessHeader({ completed, total }: { completed: number; total: numbe
       <p className="mt-1.5 text-[13px] text-gray-500">
         Add what you can — each item makes your letter stronger, and we&apos;ll use it right away.
       </p>
-      <div className="mt-3 flex items-center gap-3">
-        <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-gray-100">
-          <div
-            className="h-full rounded-full bg-blue-500 transition-all"
-            style={{ width: `${pct}%` }}
-          />
-        </div>
-        <span className="whitespace-nowrap text-[12px] font-medium text-gray-500">
-          {completed} of {total} added — each one makes the letter stronger
-        </span>
-      </div>
+      <NeedsMeter completed={completed} total={total} suffix=" — each one makes the letter stronger" />
     </div>
   );
 }
@@ -1319,39 +1268,9 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
       <ReadinessHeader completed={completed} total={total} />
 
       <div className="mt-3">
-        {openDescs.map((d) => (
-          <Fragment key={d.key}>{d.node}</Fragment>
-        ))}
-
-        {doneDescs.length > 0 ? (
-          <div className="border-t border-gray-100">
-            <button
-              type="button"
-              onClick={() => setShowAdded((v) => !v)}
-              aria-expanded={showAdded}
-              className="flex w-full items-center justify-between rounded-lg py-2.5 text-left transition-colors hover:bg-gray-50"
-            >
-              <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">
-                Added ({doneDescs.length})
-              </span>
-              <span className="inline-flex items-center gap-1 text-[13px] font-medium text-blue-600">
-                {showAdded ? "Hide" : "Show"}
-                <svg
-                  width="16"
-                  height="16"
-                  viewBox="0 0 24 24"
-                  {...stroke}
-                  className={`transition-transform ${showAdded ? "rotate-180" : ""}`}
-                  aria-hidden
-                >
-                  <path d="M6 9l6 6 6-6" />
-                </svg>
-              </span>
-            </button>
-            {showAdded ? doneDescs.map((d) => <Fragment key={d.key}>{d.node}</Fragment>) : null}
-          </div>
-        ) : null}
-
+        {/* S308 (Andrew) — the plan/insurance row is the ONE persistent row,
+            pinned at the top: excluded from the counter, never folding, so
+            nothing sits below Added but the footer actions. */}
         {/* Insurance for this claim — an action (excluded from the counter + readiness),
             shown only when a plan is bound (a missing-year claim is owned by VerifStrip). */}
         {showInsuranceRow ? (
@@ -1377,6 +1296,15 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
             {canChangePlan ? "Use a different plan for these dates." : undefined}
           </Row>
         ) : null}
+
+        {openDescs.map((d) => (
+          <Fragment key={d.key}>{d.node}</Fragment>
+        ))}
+
+        <AddedFold count={doneDescs.length} open={showAdded} onToggle={() => setShowAdded((v) => !v)}>
+          {doneDescs.map((d) => <Fragment key={d.key}>{d.node}</Fragment>)}
+        </AddedFold>
+
       </div>
     </section>
   );

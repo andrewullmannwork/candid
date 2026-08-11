@@ -21,6 +21,7 @@ import { readServicesConfirmedAt } from "@/lib/claims/effective-totals";
 import { CostShareBanner, hasAssumptionRows, pendingAssumptionFields, type BannerAssumption, type CostShareVerdict, type CostShareOverrideRequest } from "@/components/claims/CostShareBanner";
 import { AddPlanDetailsModal } from "@/components/claims/AddPlanDetailsModal";
 import type { CostShareAssumption, CostShareOverrides } from "@/lib/claims/recovery-math";
+import { hasPendingAssumption } from "@/lib/claims/recovery-math";
 import { useFeatureFlag } from "@/lib/config/use-feature-flag";
 import { GuidedPhoneSteps, ShowFullStepButton, derivePhonePackState, type GuideStepState, type PhonePackState } from "@/components/claims/GuidedPhoneSteps";
 import { CaseRail, CaseResolvedFold, RailStep } from "@/components/claims/CaseRail";
@@ -675,6 +676,8 @@ export function ClaimDetail({
   // "Show full step" client state for the done-collapsed rail steps 1-2
   // (collapsed by default when done; expansion is throwaway, not persisted).
   const [assumpFullOpen, setAssumpFullOpen] = useState(false);
+  // S308 — bump → the banner un-collapses (the stub link's second vector).
+  const [assumpExpandSignal, setAssumpExpandSignal] = useState(0);
   const [svcFullOpen, setSvcFullOpen] = useState(false);
   // 4a/4b split (S297) — 4a's Show-full-step reopen + the LIVE pack state
   // mirrored up from GuidedPhoneSteps (initial render derives from the
@@ -1419,8 +1422,11 @@ export function ClaimDetail({
   const slugNameMap = new Map<string, string>(
     (catalog ?? []).map((c) => [c.slug, c.name]),
   );
+  // S308 — the raw slug is MACHINE vocabulary; when the catalog has no name
+  // for it (stale seed slugs, legacy rows), fall back to readable words, never
+  // underscores ("physical_therapy" reached the Add-plan-details question).
   const humanizeSlug = (slug: string | null): string =>
-    slug ? slugNameMap.get(slug) ?? slug : "";
+    slug ? slugNameMap.get(slug) ?? slug.replace(/_/g, " ") : "";
 
   // S307 — the savings-math derivation (savings_math_derivation_v1): ONE
   // build feeds the plan card's priced answer, its per-line rows, and the
@@ -1452,7 +1458,9 @@ export function ClaimDetail({
           shouldOwe: li.recovery?.shouldOwe ?? 0,
           refund: li.recovery?.refundComponent ?? 0,
           forgiveness: li.recovery?.forgivenessComponent ?? 0,
-          rateKnown: !(li.costShareAssumptions ?? []).some((a) => a.field === "service_cost"),
+          // S308 (tracker AU) — ANSWERED service-cost rows now emit (reason
+          // user_override); only a PENDING one means the rate is unknown.
+          rateKnown: !hasPendingAssumption(li.costShareAssumptions, "service_cost"),
           copay: li.planCoverage?.copay ?? null,
           coinsurance: pct != null ? pct / 100 : null,
           covered: li.planCoverage?.covered ?? null,
@@ -1599,29 +1607,24 @@ export function ClaimDetail({
     const match = v ? primaryLineItems.find((li) => li.costShareVerdict === v) : null;
     return (match ?? primaryLineItems[0])?.id ?? null;
   })();
-  // S263 — the disputed service's cost-share is EDITABLE only when the USER
-  // entered it (planCoverage.source==='manual'); a plan-doc/parsed cost is
-  // authoritative → read-only. Drives the persistent "Plan cost · Edit" banner row.
-  const bannerEditableCost = (() => {
-    const line = bannerTargetLineId
-      ? primaryLineItems.find((li) => li.id === bannerTargetLineId)
-      : null;
-    const pc = line?.planCoverage;
-    if (!pc || pc.source !== "manual" || (pc.copay == null && pc.coinsurance == null)) return null;
-    return {
-      serviceLabel: humanizeSlug(line!.service_slug) || line!.description || "this service",
+  // S308 — every line whose plan cost carries STATED values (source `manual`),
+  // generalized from S263's single-target probe: user-provenance rows render
+  // answered ("$40 copay · Edit"), card/unknown render as open confirm asks.
+  // ONE derivation for N lines; the banner renders these instead of
+  // assumption-answered chips (which would duplicate them).
+  const statedServiceCosts = primaryLineItems.flatMap((li) => {
+    const pc = li.planCoverage;
+    if (!pc || pc.source !== "manual" || (pc.copay == null && pc.coinsurance == null)) return [];
+    return [{
+      lineId: li.id,
+      serviceSlug: li.service_slug ?? null,
+      serviceLabel: humanizeSlug(li.service_slug) || li.description || "this service",
       copay: pc.copay,
       coinsurancePercent: pc.coinsurance != null ? normalizeCoinsurancePct(pc.coinsurance) : null,
-      // S291 — the saved deductible-applies answer, so re-opening the editor
-      // shows what's on file instead of a blank question. It was reaching the
-      // client all along (coverage-loader maps in_deductible_applies) and just
-      // never being handed to the modal.
       deductibleApplies: pc.deductibleApplies ?? null,
-      costProvenance: pc.costProvenance ?? "unknown",
-      // S290 — lets the banner's Edit button target THIS line explicitly.
-      lineId: line!.id,
-    };
-  })();
+      costProvenance: (pc.costProvenance ?? "unknown") as "plan_document" | "user" | "card" | "unknown",
+    }];
+  });
 
   // §1.7 — claim-level findings live on claim.metadata.auditSummary.claimLevelFindings.
   // Same dismiss filter as line-level (showDismissed toggles visibility).
@@ -1670,7 +1673,7 @@ export function ClaimDetail({
   // assumption rows to edit; every later step renumbers off that.
   const railHasAssumptions =
     !!data.costShareBill &&
-    hasAssumptionRows(bannerAssumptions, effectiveCostShareOverrides, bannerEditableCost);
+    hasAssumptionRows(bannerAssumptions, effectiveCostShareOverrides, statedServiceCosts.length > 0);
   const railStepServices = railHasAssumptions ? 2 : 1;
   const railStepSave = railStepServices + 1;
   const railStepRecover = railStepSave + 1;
@@ -1697,7 +1700,13 @@ export function ClaimDetail({
         // renders from: the editable-cost row exists only for a manual-source
         // cost; the ACA block hides once dismissed via "Not sure".
         {
-          deductibleAppliesRowVisible: bannerEditableCost != null,
+          // S308 (Andrew, round 2) — the deductible half is REQUIRED: it
+          // counts as pending exactly while an incomplete user-stated row is
+          // ON SCREEN with its one-tap Yes/No (per-row precision — the S292
+          // amber ⟺ counted invariant, never an invisible blocker).
+          deductibleAppliesRowVisible: statedServiceCosts.some(
+            (sc) => sc.costProvenance === "user" && sc.deductibleApplies == null && sc.serviceSlug != null,
+          ),
           acaRowVisible:
             bannerAssumptions.some((a) => a.field === "aca_preventive") && !acaDismissed,
         },
@@ -2443,6 +2452,24 @@ export function ClaimDetail({
               }
             >
               {/* S297 — done steps collapse to their header (Show full step). */}
+              {/* S308 (Andrew) — the collapsed step still offers the way in:
+                  "Update assumptions" expands the step AND un-collapses the
+                  card in one gesture (two vectors to the same place). */}
+              {!assumpBodyVisible && (
+                <div className="rounded-2xl border border-gray-200 bg-white px-5 py-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAssumpFullOpen(true);
+                      setAssumpExpandSignal((n) => n + 1);
+                      void submitCostShareOverride({ field: "assumptions_reviewed", reviewed: false }, "assumptions_reviewed");
+                    }}
+                    className="text-[13px] font-medium text-blue-600 hover:text-blue-800"
+                  >
+                    Update assumptions
+                  </button>
+                </div>
+              )}
               {assumpBodyVisible && (
               <CostShareBanner
                 variant="assumptions"
@@ -2489,7 +2516,9 @@ export function ClaimDetail({
                   if (line?.service_slug) setAddPlanDetailsLineId(line.id);
                   else if (bannerTargetLineId) openCorrectionModal(bannerTargetLineId);
                 }}
-                editableServiceCost={bannerEditableCost}
+                statedServiceCosts={statedServiceCosts}
+                initiallyReviewed={!!(claim.metadata as Record<string, unknown> | null)?.assumptionsReviewedAt}
+                expandSignal={assumpExpandSignal}
                 onUploadEob={() => router.push("/upload?type=eob")}
                 onBack={onBack}
               />
@@ -2660,7 +2689,8 @@ export function ClaimDetail({
             if (line?.service_slug) setAddPlanDetailsLineId(line.id);
             else if (bannerTargetLineId) openCorrectionModal(bannerTargetLineId);
           }}
-          editableServiceCost={bannerEditableCost}
+          statedServiceCosts={statedServiceCosts}
+          initiallyReviewed={!!(claim.metadata as Record<string, unknown> | null)?.assumptionsReviewedAt}
           onUploadEob={() => router.push("/upload?type=eob")}
           onBack={onBack}
         />
