@@ -28,6 +28,7 @@ import {
   driftMachineryApplies,
   type FingerprintInput,
   type ComposeBasis,
+  type ComposeProfileFacts,
 } from "../../../../src/lib/disputes/evidence-fingerprint";
 import {
   letterPatientName,
@@ -61,6 +62,18 @@ const COMPOSE: ComposeBasis = {
   denialNoticeDate: null,
   certifiedMail: null,
   appealExhausted: null,
+  // S311 — the profile/plan compose facts (tree 13.5)
+  profileAddressLine1: "456 Oak Ave",
+  profileAddressLine2: null,
+  profileCity: "Pittsburg",
+  profileState: "WA",
+  profileZip: "87726",
+  profilePlanSource: "employer",
+  accountHolderName: "Andrew Ullmann",
+  accountHolderEmail: "andrew@example.com",
+  planInsurerName: "Blue Cross Blue Shield of Wyoming",
+  planName: "Blue Choice PPO",
+  planYear: 2026,
 };
 
 // ── 1. Present-only: absent compose ≡ the legacy hash ───────────────────────
@@ -262,6 +275,83 @@ const COMPOSE: ComposeBasis = {
   const drifted = computeEvidenceFingerprint({ ...BASE, composeBasis: COMPOSE });
   check("corpse · the drift is real (hashes differ)", stored !== drifted);
   check("corpse · and the void gate still refuses the apparatus", !driftMachineryApplies("cancelled", null));
+}
+
+// ── 7. S311 (tree 13.5) — the profile/plan compose facts drift the hash ─────
+// Andrew's mailing-address edit never reached his draft: the rebuild decision
+// compares the evidence fingerprint, and nothing profile-sourced was in it.
+// Each sibling of that class, pinned: a lone edit to any of these MUST drift.
+{
+  const before = computeEvidenceFingerprint({ ...BASE, composeBasis: COMPOSE });
+  const cases: Array<[string, Partial<ComposeBasis>]> = [
+    ["the mailing address (line1)", { profileAddressLine1: "999 Real St" }],
+    ["the address line2 alone", { profileAddressLine2: "Suite 2" }],
+    ["the city alone", { profileCity: "Seattle" }],
+    ["the profile STATE (the DOI/AG clause input)", { profileState: "CA" }],
+    ["the zip alone", { profileZip: "98101" }],
+    ["the funding type (the ERISA gate)", { profilePlanSource: "marketplace" }],
+    ["the account-holder name (the patient line)", { accountHolderName: "A. D. Ullmann" }],
+    ["the account email (name fallback)", { accountHolderEmail: "new@example.com" }],
+    ["the plan's insurer name (the recipient block)", { planInsurerName: "Premera Blue Cross" }],
+    ["the plan's display name (the citation line)", { planName: "Blue Choice HMO" }],
+    ["the plan year (the citation line)", { planYear: 2025 }],
+  ];
+  for (const [label, patch] of cases) {
+    const after = computeEvidenceFingerprint({
+      ...BASE,
+      composeBasis: { ...COMPOSE, ...patch },
+    });
+    check(`profile-facts · ${label} alone drifts the hash`, after !== before);
+  }
+
+  // mapping: raw facts → basis fields (trim; blank ≡ missing; numeric year)
+  const FACTS: ComposeProfileFacts = {
+    addressLine1: " Test User Address ",
+    addressLine2: "   ",
+    city: "Test",
+    state: "CA",
+    zip: "94530",
+    planSource: null,
+    accountHolderName: "Andrew Ullmann",
+    accountHolderEmail: null,
+    planInsurerName: " Blue Cross Blue Shield of Wyoming ",
+    planName: null,
+    planYear: 2026,
+  };
+  const mapped = composeBasisFrom(null, null, FACTS);
+  check(
+    "profile-facts · mapping trims + blank≡missing",
+    mapped.profileAddressLine1 === "Test User Address" &&
+      mapped.profileAddressLine2 === null &&
+      mapped.profileState === "CA" &&
+      mapped.planInsurerName === "Blue Cross Blue Shield of Wyoming" &&
+      mapped.planYear === 2026,
+    mapped,
+  );
+  check(
+    "profile-facts · absent facts ≡ all-null facts (one representation of empty)",
+    JSON.stringify(composeBasisFrom(null, null)) ===
+      JSON.stringify(
+        composeBasisFrom(null, null, {
+          addressLine1: null,
+          addressLine2: "  ",
+          city: null,
+          state: null,
+          zip: null,
+          planSource: null,
+          accountHolderName: null,
+          accountHolderEmail: null,
+          planInsurerName: null,
+          planName: null,
+          planYear: null,
+        }),
+      ),
+  );
+  // the sent shape stays evidence-only: profile facts can never false-flag a
+  // sent letter (same guarantee as check 5, reasserted with facts present)
+  const sentStamp = computeEvidenceFingerprint(BASE);
+  const draftCompare = computeEvidenceFingerprint({ ...BASE, composeBasis: COMPOSE });
+  check("profile-facts · sent stamp untouched by profile facts", sentStamp !== draftCompare);
 }
 
 console.log(`\ndraft-live-rebuild fixture: ${pass} passed, ${fails.length} failed`);

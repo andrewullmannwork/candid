@@ -385,6 +385,10 @@ export async function POST(
       const fpInput = await loadFingerprintInputForClaim(supabase, dispute.claim_id, user.id, {
         sentAt: null,
         metadata: null,
+        // S311 — the escalated letter inherits the parent's pin; if persist
+        // pinned differently the first view self-heals (one regenerate),
+        // same as the metadata:null birth pattern above.
+        insurancePlanId: (dispute.insurance_plan_id as string | null) ?? null,
       });
       if (fpInput) {
         await userScoped(supabase, user.id)

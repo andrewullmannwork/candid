@@ -371,6 +371,7 @@ export async function GET(
           {
             sentAt: (dispute.sent_at as string | null) ?? null,
             metadata: (dispute.metadata as Record<string, unknown> | null) ?? null,
+            insurancePlanId: (dispute.insurance_plan_id as string | null) ?? null,
           },
         );
         if (fpInput) {

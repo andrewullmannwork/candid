@@ -209,8 +209,15 @@ export interface PlanContext {
    * S310 (sender block, Andrew) — the user's mailing address from their OWN
    * profiles row (the same select userState reads). Non-null only when
    * complete enough to print (line1 + city + state + zip): the letters'
-   * sender block renders from it fail-soft, and because planContext is
-   * fingerprinted, an address edit drifts drafts → they rebuild themselves.
+   * sender block renders from it fail-soft.
+   *
+   * S311 (tree 13.5) — drafts rebuild on an address edit via the COMPOSE
+   * BASIS (evidence-fingerprint.ts ComposeBasis.profileAddress*), NOT via
+   * planContext: the stamped metadata.planContextFingerprint is informational
+   * only — decideDriftAction compares the evidence fingerprint, so a compose
+   * input must live in ComposeBasis to drift anything. (The original S310
+   * claim here — "planContext is fingerprinted, so an address edit drifts
+   * drafts" — was the 13.5 bug: Andrew's address never reached his letter.)
    */
   userAddress: {
     line1: string;

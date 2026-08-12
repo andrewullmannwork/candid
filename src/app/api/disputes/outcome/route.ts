@@ -376,6 +376,7 @@ export async function POST(req: NextRequest) {
               {
                 sentAt: sentAt.toISOString(),
                 metadata: (existing.metadata as Record<string, unknown> | null) ?? null,
+                insurancePlanId: (existing.insurance_plan_id as string | null) ?? null,
               },
             );
             if (fpInput) fingerprint = computeEvidenceFingerprint(fpInput);

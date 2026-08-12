@@ -370,6 +370,7 @@ export async function POST(
         {
           sentAt: (dispute.sent_at as string | null) ?? null,
           metadata: updatePayload.metadata as Record<string, unknown>,
+          insurancePlanId: (dispute.insurance_plan_id as string | null) ?? null,
         },
       );
       if (fpInput) {

@@ -589,7 +589,11 @@ export async function POST(req: NextRequest) {
               supabase,
               body.claimId as string,
               auditReport.userId,
-              { sentAt: null, metadata: null },
+              // S311 — the fresh row's pin isn't in scope here; null falls back
+              // to the claim's linked plan inside the loader. A divergent pin
+              // self-heals with one regenerate on first view (the same rule as
+              // metadata:null above).
+              { sentAt: null, metadata: null, insurancePlanId: null },
             );
             if (input) {
               const evidenceFingerprint = computeEvidenceFingerprint(input);

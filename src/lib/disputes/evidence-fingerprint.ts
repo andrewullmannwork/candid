@@ -179,6 +179,58 @@ export interface ComposeBasis {
   certifiedMail: boolean | null;
   /** The exhaustion attestation the external-review clause renders. */
   appealExhausted: { attested: boolean; denialDate: string | null } | null;
+  /**
+   * S311 (tree 13.5) — the profile + plan-row facts the composer PRINTS that
+   * this hash was blind to. Andrew's mailing-address edit never reached his
+   * draft because the rebuild decision (decideDriftAction) compares THIS
+   * fingerprint — the stamped metadata.planContextFingerprint is informational
+   * only — so a compose input absent here can never drift a draft, from any
+   * surface except the letter page's own explicit refetch. The class, complete:
+   *   · profileAddress* / profileCity / profileState / profileZip — the sender
+   *     block (profiles.address_*; profileState also feeds the DOI/AG
+   *     escalation clause via PlanContext.userState — one column, one field)
+   *   · profilePlanSource — the ERISA-citation gate (profiles.plan_source)
+   *   · accountHolderName / accountHolderEmail — letterPatientName's
+   *     account-holder default (users.display_name, email fallback)
+   *   · planInsurerName / planName / planYear — the pinned plan row's printed
+   *     identity (recipient block + plan citations; the S310 claim-page
+   *     "Fix insurer name" row edits a surface only these watch)
+   * Raw column values, trimmed-or-null, never the derived blocks: over-flag-
+   * safe (a partial-address edit rebuilds to an identical letter), never
+   * under-flags. Deliberate boundary: boundCanonicalPlan + claim-metadata
+   * insurer fallbacks stay unhashed (admin/parse-mutated, not user-editable
+   * compose surfaces; a re-parse drifts the evidence basis on its own).
+   */
+  profileAddressLine1: string | null;
+  profileAddressLine2: string | null;
+  profileCity: string | null;
+  profileState: string | null;
+  profileZip: string | null;
+  profilePlanSource: string | null;
+  accountHolderName: string | null;
+  accountHolderEmail: string | null;
+  planInsurerName: string | null;
+  planName: string | null;
+  planYear: number | null;
+}
+
+/**
+ * S311 — the raw rows loadComposeProfileFacts reads for the ComposeBasis
+ * profile/plan fields. Kept as a named shape so composeBasisFrom stays pure
+ * (the fixture constructs it directly; production loads it from the DB).
+ */
+export interface ComposeProfileFacts {
+  addressLine1: string | null;
+  addressLine2: string | null;
+  city: string | null;
+  state: string | null;
+  zip: string | null;
+  planSource: string | null;
+  accountHolderName: string | null;
+  accountHolderEmail: string | null;
+  planInsurerName: string | null;
+  planName: string | null;
+  planYear: number | null;
 }
 
 export interface FingerprintInput {
@@ -223,6 +275,15 @@ export async function loadFingerprintInputForClaim(
   dispute?: {
     sentAt: string | Date | null;
     metadata: Record<string, unknown> | null;
+    /**
+     * S311 — the dispute's PINNED plan (dispute_outcomes.insurance_plan_id),
+     * REQUIRED (null allowed, absence not) so a new caller can't silently skip
+     * it — the S301 optional-param lesson. Null falls back to the claim's
+     * linked plan inside the loader; birth-stamp callers (generate/escalate)
+     * pass what they hold and self-heal with one regenerate on first view,
+     * the same pattern their metadata:null already documents.
+     */
+    insurancePlanId: string | null;
   } | null,
 ): Promise<FingerprintInput | null> {
   // Cost-Share v2 (Finding 4) — read the flag HERE (not at the three call
@@ -244,7 +305,10 @@ export async function loadFingerprintInputForClaim(
     .select(
       costShareV2
         ? "id, metadata, insurance_plan_id, date_of_service, network_status, user_network_override, total_billed, total_insurance_paid, amount_still_outstanding, total_patient_responsibility"
-        : "id, metadata",
+        : // S311 — insurance_plan_id rides the narrow select too: the compose
+          // profile facts (flag-gated on liveRebuild, not costShareV2) need the
+          // claim's linked plan as the pin fallback.
+          "id, metadata, insurance_plan_id",
     )
     .eq("id", claimId)
     .maybeSingle();
@@ -332,9 +396,24 @@ export async function loadFingerprintInputForClaim(
   // UX-2 — compose basis for UNSENT letters only (the shape rule). A sent
   // letter's fingerprint stays evidence-only, so mark-as-sent's stamp and the
   // sent-view compare keep matching each other across the flag flip.
+  // S311 — the profile/plan compose facts load HERE (inside the loader, like
+  // the flags) so every caller produces the same shape; the pinned plan wins,
+  // the claim's linked plan is the fallback.
   const composeBasis =
     liveRebuild && dispute && dispute.sentAt == null
-      ? composeBasisFrom(dispute.metadata, claimMeta)
+      ? composeBasisFrom(
+          dispute.metadata,
+          claimMeta,
+          await loadComposeProfileFacts(
+            supabase,
+            userId,
+            dispute.insurancePlanId ??
+              ((claim as Record<string, unknown>).insurance_plan_id as
+                | string
+                | null) ??
+              null,
+          ),
+        )
       : null;
 
   return {
@@ -364,8 +443,15 @@ function composeStr(v: unknown): string | null {
 export function composeBasisFrom(
   disputeMeta: Record<string, unknown> | null,
   claimMeta: Record<string, unknown> | null,
+  /**
+   * S311 — absent (fixture blank-mapping legs) hashes identically to a row of
+   * nulls, mirroring the blank≡missing rule the string fields follow. The one
+   * production caller (loadFingerprintInputForClaim) always passes it.
+   */
+  profileFacts?: ComposeProfileFacts | null,
 ): ComposeBasis {
   const dm = disputeMeta ?? {};
+  const pf = profileFacts ?? null;
   const provider =
     ((claimMeta ?? {}).provider as { name?: unknown; address?: unknown } | undefined) ?? {};
   const addr = (dm.insurerAddressOverride ?? null) as Record<string, unknown> | null;
@@ -403,6 +489,71 @@ export function composeBasisFrom(
           denialDate: composeStr(exhausted.denialDate),
         }
       : null,
+    profileAddressLine1: composeStr(pf?.addressLine1),
+    profileAddressLine2: composeStr(pf?.addressLine2),
+    profileCity: composeStr(pf?.city),
+    profileState: composeStr(pf?.state),
+    profileZip: composeStr(pf?.zip),
+    profilePlanSource: composeStr(pf?.planSource),
+    accountHolderName: composeStr(pf?.accountHolderName),
+    accountHolderEmail: composeStr(pf?.accountHolderEmail),
+    planInsurerName: composeStr(pf?.planInsurerName),
+    planName: composeStr(pf?.planName),
+    planYear:
+      typeof pf?.planYear === "number" && Number.isFinite(pf.planYear)
+        ? pf.planYear
+        : null,
+  };
+}
+
+/**
+ * S311 — load the raw profile + plan-row compose facts for the ComposeBasis
+ * extension. Three PK lookups, unsent+flag-ON path only (the caller gates).
+ * Reads mirror the compose side exactly: profiles by user_id (the SAME select
+ * resolvePlanContext reads for userState/userAddress), users by id
+ * (letterPatientName's account-holder default), the PINNED plan row via the
+ * B9 user-scoped layer (a foreign plan id yields nulls, never a cross-tenant
+ * read). Fail-soft: any read error → nulls → at worst one extra rebuild
+ * (over-flag-safe), never a missed one.
+ */
+async function loadComposeProfileFacts(
+  supabase: SupabaseClient,
+  userId: string,
+  insurancePlanId: string | null,
+): Promise<ComposeProfileFacts> {
+  const [profileRes, userRes, planRes] = await Promise.all([
+    userScoped(supabase, userId)
+      .table("profiles")
+      .select("address_line1, address_line2, city, state, zip_code, plan_source")
+      .maybeSingle(),
+    supabase.from("users").select("display_name, email").eq("id", userId).maybeSingle(),
+    insurancePlanId
+      ? userScoped(supabase, userId)
+          .table("insurance_plans")
+          .select("insurer_name, plan_name, plan_year")
+          .eq("id", insurancePlanId)
+          .maybeSingle()
+      : Promise.resolve({ data: null }),
+  ]);
+  const prof = (profileRes.data as Record<string, unknown> | null) ?? null;
+  const usr = (userRes.data as Record<string, unknown> | null) ?? null;
+  const plan = (planRes.data as Record<string, unknown> | null) ?? null;
+  const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
+  return {
+    addressLine1: str(prof?.address_line1),
+    addressLine2: str(prof?.address_line2),
+    city: str(prof?.city),
+    state: str(prof?.state),
+    zip: str(prof?.zip_code),
+    planSource: str(prof?.plan_source),
+    accountHolderName: str(usr?.display_name),
+    accountHolderEmail: str(usr?.email),
+    planInsurerName: str(plan?.insurer_name),
+    planName: str(plan?.plan_name),
+    planYear:
+      typeof plan?.plan_year === "number" && Number.isFinite(plan.plan_year)
+        ? (plan.plan_year as number)
+        : null,
   };
 }
 
