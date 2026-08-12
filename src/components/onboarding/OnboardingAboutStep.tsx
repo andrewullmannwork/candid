@@ -12,6 +12,7 @@ import {
   type HouseholdId,
   type SituationId,
 } from "@/lib/onboarding/simplified";
+import { validateUsAddress } from "@/lib/address/validate-us-address";
 
 export interface AboutState {
   household: HouseholdId | null;
@@ -23,6 +24,16 @@ export interface AboutState {
   dobFromProfile: boolean;
   situations: SituationId[];
   note: string;
+  /** S311 (tree A4) — the mailing address, EDIT-MODE ONLY (`withAddress`).
+   *  The simplified flow superseded the legacy wizard step that edited these,
+   *  which silently made the address uneditable from /profile while the
+   *  letters' sender block reads it. The signup funnel never renders or
+   *  submits them — its 30-second scope is untouched. ZIP is the existing
+   *  field above; profiles.state doubles as the DOI/AG state. */
+  addressLine1: string;
+  addressLine2: string;
+  city: string;
+  state: string;
 }
 
 function PersonGlyph({ s }: { s: number }) {
@@ -45,10 +56,14 @@ export function OnboardingAboutStep({
   value,
   onChange,
   tryFin,
+  withAddress = false,
 }: {
   value: AboutState;
   onChange: (patch: Partial<AboutState>) => void;
   tryFin: boolean;
+  /** S311 — profile-edit mode renders the mailing-address fields; the signup
+   *  funnel never passes this, keeping its 30-second scope byte-identical. */
+  withAddress?: boolean;
 }) {
   const [editingDob, setEditingDob] = useState(false);
   const dobConfirmOnly = value.dobFromProfile && !editingDob && obDobOk(value.dob);
@@ -57,6 +72,23 @@ export function OnboardingAboutStep({
     (tryFin && !obDobOk(value.dob)) ||
     (!dobConfirmOnly && value.dob.length >= 10 && !obDobOk(value.dob));
   const zipBad = tryFin && !obZipOk(value.zip);
+  // S311 — the address is OPTIONAL (letters fail soft without it), but a
+  // partial one is an error: validate through the ONE shared US-address rule
+  // whenever any of the trio is set. ZIP has its own required check above;
+  // profiles.state serves the DOI/AG clause, so its field errors surface here
+  // too. Errors render only after a failed save attempt (the tryFin pattern).
+  const addrTouched =
+    withAddress && !!(value.addressLine1.trim() || value.city.trim() || value.state.trim());
+  const addrErrors =
+    withAddress && tryFin && addrTouched
+      ? validateUsAddress({
+          addressLine1: value.addressLine1,
+          addressLine2: value.addressLine2,
+          city: value.city,
+          state: value.state,
+          postalCode: value.zip,
+        })
+      : {};
 
   return (
     <div className="space-y-6">
@@ -140,6 +172,83 @@ export function OnboardingAboutStep({
           ZIP sets local rates. Candid is for adults — your birth date confirms you&apos;re 18+. Both
           stay private.
         </div>
+        {withAddress && (
+          <div className="mb-3 space-y-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_180px]">
+              <div>
+                <label
+                  className="mb-1.5 block text-[12.5px] font-semibold text-gray-700"
+                  htmlFor="ob-addr1"
+                >
+                  Street address
+                </label>
+                <input
+                  id="ob-addr1"
+                  value={value.addressLine1}
+                  onChange={(e) => onChange({ addressLine1: e.target.value })}
+                  className={`w-full rounded-xl border px-3 py-2.5 text-sm text-gray-900 outline-none transition-shadow placeholder:text-gray-300 focus:border-blue-500 focus:ring-[3px] focus:ring-blue-100 ${
+                    addrErrors.addressLine1 ? "border-red-300 ring-[3px] ring-red-100" : "border-gray-300"
+                  }`}
+                />
+              </div>
+              <div>
+                <label
+                  className="mb-1.5 block text-[12.5px] font-semibold text-gray-700"
+                  htmlFor="ob-addr2"
+                >
+                  Suite / unit
+                </label>
+                <input
+                  id="ob-addr2"
+                  value={value.addressLine2}
+                  onChange={(e) => onChange({ addressLine2: e.target.value })}
+                  className="w-full rounded-xl border border-gray-300 px-3 py-2.5 text-sm text-gray-900 outline-none transition-shadow placeholder:text-gray-300 focus:border-blue-500 focus:ring-[3px] focus:ring-blue-100"
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_100px]">
+              <div>
+                <label
+                  className="mb-1.5 block text-[12.5px] font-semibold text-gray-700"
+                  htmlFor="ob-city"
+                >
+                  City
+                </label>
+                <input
+                  id="ob-city"
+                  value={value.city}
+                  onChange={(e) => onChange({ city: e.target.value })}
+                  className={`w-full rounded-xl border px-3 py-2.5 text-sm text-gray-900 outline-none transition-shadow placeholder:text-gray-300 focus:border-blue-500 focus:ring-[3px] focus:ring-blue-100 ${
+                    addrErrors.city ? "border-red-300 ring-[3px] ring-red-100" : "border-gray-300"
+                  }`}
+                />
+              </div>
+              <div>
+                <label
+                  className="mb-1.5 block text-[12.5px] font-semibold text-gray-700"
+                  htmlFor="ob-state"
+                >
+                  State
+                </label>
+                <input
+                  id="ob-state"
+                  maxLength={2}
+                  placeholder="WA"
+                  value={value.state}
+                  onChange={(e) => onChange({ state: e.target.value.toUpperCase() })}
+                  className={`w-full rounded-xl border px-3 py-2.5 text-sm uppercase text-gray-900 outline-none transition-shadow placeholder:text-gray-300 focus:border-blue-500 focus:ring-[3px] focus:ring-blue-100 ${
+                    addrErrors.state ? "border-red-300 ring-[3px] ring-red-100" : "border-gray-300"
+                  }`}
+                />
+              </div>
+            </div>
+            {(addrErrors.addressLine1 || addrErrors.city || addrErrors.state) && (
+              <div className="text-xs font-medium text-red-600">
+                {addrErrors.addressLine1 ?? addrErrors.city ?? addrErrors.state}
+              </div>
+            )}
+          </div>
+        )}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-[150px_200px]">
           <div>
             <label className="mb-1.5 block text-[12.5px] font-semibold text-gray-700" htmlFor="ob-zip">
