@@ -958,6 +958,16 @@ export const CASE_RAIL = {
   ctaOpenLetterToSend: "Open the letter to send it",
   quietUndoResult: "Undo this result",
 
+  // S312 (F2-S312.1, Andrew-approved copy) — the "no remaining demand" banner.
+  // ONE home for the strings: the letter page AND the rail's send step render
+  // these same four, so the two surfaces can never phrase the state differently.
+  zeroDemandTitle: "This letter may no longer be needed.",
+  zeroDemandBody:
+    "Your latest numbers took the dollar demand out of this letter — it no longer asks the recipient to refund or remove anything. You can dismiss it, or keep it if you still want a corrected, itemized bill on record.",
+  zeroDemandDismiss: "Dismiss letter",
+  zeroDemandKeep: "Keep letter",
+  zeroDemandSaveFailed: "Couldn't save — try again.",
+
   // Reminder foot — dated waits only; hidden once the deadline passes.
   remindFoot: (dateLabel: string): string =>
     `We'll remind you before ${dateLabel} if nothing arrives.`,

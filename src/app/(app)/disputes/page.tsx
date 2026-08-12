@@ -17,7 +17,7 @@ import { LetterView } from "@/components/disputes/LetterView";
 import { fmtRailDate } from "@/lib/case/rail-steps";
 import { OUTCOME_LABELS } from "@/lib/disputes/outcome-taxonomy";
 import type { ProjectedLetterStep } from "@/lib/case/timeline-projector";
-import { isTerminalRung, suggestDoors } from "@/lib/guides/pack-registry";
+import { CASE_RAIL, isTerminalRung, suggestDoors } from "@/lib/guides/pack-registry";
 import { DisputeLetterHero } from "@/components/disputes/DisputeLetterHero";
 import { EvidenceStrengthModal } from "@/components/disputes/EvidenceStrengthModal";
 import { DisputeRecipientCard } from "@/components/disputes/DisputeRecipientCard";
@@ -1836,12 +1836,10 @@ function DisputesContent() {
   const zeroDemandBannerNode =
     noRemainingDemand && !isCancelled ? (
       <div className="rounded-lg border border-sky-200 bg-sky-50 p-3">
-        <p className="text-xs font-semibold text-sky-900">This letter may no longer be needed.</p>
-        <p className="mt-1 text-xs leading-relaxed text-sky-900">
-          Your latest numbers took the dollar demand out of this letter — it no longer asks the
-          recipient to refund or remove anything. You can dismiss it, or keep it if you still want
-          a corrected, itemized bill on record.
-        </p>
+        {/* S312 — same four strings as the rail's inline banner (CASE_RAIL.zeroDemand*):
+            ONE copy home, two surfaces, never a different phrasing of the same state. */}
+        <p className="text-xs font-semibold text-sky-900">{CASE_RAIL.zeroDemandTitle}</p>
+        <p className="mt-1 text-xs leading-relaxed text-sky-900">{CASE_RAIL.zeroDemandBody}</p>
         <div className="mt-2 flex flex-wrap gap-2">
           <button
             type="button"
@@ -1849,7 +1847,7 @@ function DisputesContent() {
             disabled={zeroDemandBusy}
             className="rounded bg-slate-800 px-3 py-1 text-xs font-semibold text-white hover:bg-slate-900 disabled:opacity-50"
           >
-            Dismiss letter
+            {CASE_RAIL.zeroDemandDismiss}
           </button>
           <button
             type="button"
@@ -1857,7 +1855,7 @@ function DisputesContent() {
             disabled={zeroDemandBusy}
             className="rounded border border-sky-300 bg-white px-3 py-1 text-xs font-semibold text-sky-800 hover:bg-sky-100 disabled:opacity-50"
           >
-            Keep letter
+            {CASE_RAIL.zeroDemandKeep}
           </button>
         </div>
       </div>

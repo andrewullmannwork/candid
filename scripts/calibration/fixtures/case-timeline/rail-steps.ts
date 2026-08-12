@@ -461,6 +461,49 @@ const compose = (
     "predicate · cancelled contributes nothing",
     railHasExtension({ letters: t2.letters, offers: [] }) === false && s2.length === 0,
   );
+
+  // ── S312 (F2-S312.1) — the zero-demand draft: the send step carries the
+  //    Dismiss/Keep banner (row-truth via the stamp the letter GET writes);
+  //    a Keep answer suppresses it durably; no stamp → the plain send CTA;
+  //    a stale stamp on a SENT letter is inert (sent letters have no
+  //    send-draft step at all). Post-dismiss = the cancelled pin above. ──
+  {
+    const zeroDraft = mkDispute({ metadata: { letterType: "overcharge", noRemainingDemand: true } });
+    const { steps: zd } = compose([zeroDraft]);
+    const zdSend = zd.find((s) => s.kind === "send-draft");
+    check(
+      "S312 · zero-demand draft → the send step carries the banner",
+      zdSend?.kind === "send-draft" && zdSend.zeroDemand === true,
+      zd.map((s) => s.kind),
+    );
+    const keptDraft = mkDispute({
+      metadata: { letterType: "overcharge", noRemainingDemand: true, zeroDemandKeptAt: "2026-08-12T00:00:00Z" },
+    });
+    const { steps: kd } = compose([keptDraft]);
+    const kdSend = kd.find((s) => s.kind === "send-draft");
+    check(
+      "S312 · the Keep answer suppresses the banner (durable)",
+      kdSend?.kind === "send-draft" && kdSend.zeroDemand === false,
+    );
+    const plainDraft = mkDispute({ metadata: { letterType: "overcharge" } });
+    const { steps: pd } = compose([plainDraft]);
+    const pdSend = pd.find((s) => s.kind === "send-draft");
+    check(
+      "S312 · no stamp → the plain send CTA",
+      pdSend?.kind === "send-draft" && pdSend.zeroDemand === false,
+    );
+    const sentStamped = mkDispute({
+      status: "filed",
+      sent_at: iso(-3),
+      metadata: { letterType: "overcharge", noRemainingDemand: true },
+    });
+    const { steps: ss } = compose([sentStamped]);
+    check(
+      "S312 · a SENT letter never banners (stale stamp inert — no send-draft step)",
+      ss.every((s) => s.kind !== "send-draft"),
+      ss.map((s) => s.kind),
+    );
+  }
   const sentPrimary = mkDispute({ status: "filed", sent_at: iso(-3) });
   const { t: t3, steps: s3 } = compose([sentPrimary]);
   check("predicate · sent letter → extension", railHasExtension({ letters: t3.letters, offers: [] }) === true);

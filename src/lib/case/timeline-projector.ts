@@ -47,7 +47,7 @@ import {
   type OutcomeDetail,
 } from "@/lib/disputes/outcome-taxonomy";
 import { letterRecipientKind, type LetterRecipientKind } from "@/lib/disputes";
-import { resolveLetterTypeFromDispute } from "@/lib/disputes/letter-type";
+import { resolveLetterTypeFromDispute, zeroDemandDismissible } from "@/lib/disputes/letter-type";
 import type { CaseEventKind, CaseEventActor } from "@/lib/case/case-events";
 
 // ── Inputs (narrow row projections — callers select these columns) ──────────
@@ -167,6 +167,14 @@ export interface ProjectedLetterStep {
    * "recovered nothing" from "never said".
    */
   amountRecovered: number | null;
+  /**
+   * S312 (F2-S312.1) — this live draft's demand fell to $0 and the user hasn't
+   * kept it: the rail's send step offers Dismiss/Keep instead of a bare "open
+   * the letter" (Andrew: avoid the extra click). Row-truth via
+   * zeroDemandDismissible — the stamp the letter GET writes when it computes
+   * the fold; the projector never re-derives letter money.
+   */
+  noRemainingDemand: boolean;
 }
 
 export interface ProjectedSentLetterMeta {
@@ -517,6 +525,9 @@ function projectLetterStep(
         }
       : null,
     amountRecovered: coerceAmount(d.amount_recovered),
+    // S312 (F2-S312.1) — row-truth: the stamp the letter GET wrote + live-draft
+    // status + the durable Keep answer, folded by the ONE shared helper.
+    noRemainingDemand: zeroDemandDismissible(d.status, d.sent_at, meta),
   };
 }
 

@@ -567,3 +567,33 @@ export function letterPatientIdentityFromMeta(
 export function isLiveDraftStatus(status: string | null | undefined): boolean {
   return status === "dispute_letter_drafted";
 }
+
+/**
+ * S312 (F2-S312.1) — should a ROW-reading surface offer the "this letter may no
+ * longer be needed" banner (Dismiss / Keep)?
+ *
+ * The row-truth twin of the letter GET's live signal: the GET computes
+ * `noRemainingLetterDemand` fresh from the fold and STAMPS the outcome onto
+ * `metadata.noRemainingDemand` (the same self-heal write family that floats
+ * `amount_disputed`), so row readers — the case projector → the rail — share
+ * one persisted fact instead of re-deriving letter money. The stamp is only
+ * ever written under `dispute_draft_live_rebuild_v1`, so its very existence
+ * carries the flag: OFF in PROD ⇒ no stamps ⇒ every surface silent.
+ *
+ * `zeroDemandKeptAt` is the user's standing "Keep letter" answer — durable by
+ * design (if dollars return, the GET re-stamps `noRemainingDemand: false` and
+ * the condition is false anyway; no clearing machinery).
+ */
+export function zeroDemandDismissible(
+  status: string | null | undefined,
+  sentAt: string | Date | null | undefined,
+  metadata: Record<string, unknown> | null | undefined,
+): boolean {
+  const m = metadata ?? {};
+  return (
+    isLiveDraftStatus(status) &&
+    sentAt == null &&
+    m.noRemainingDemand === true &&
+    !m.zeroDemandKeptAt
+  );
+}

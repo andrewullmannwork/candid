@@ -618,6 +618,15 @@ export async function GET(
               metadata: {
                 ...baseMetadataForRegen,
                 ...(letterVersionHistory ? { letterVersionHistory } : {}),
+                // S312 (F2-S312.1) — stamp the fold's zero-demand verdict beside the
+                // amount float (same write, same fold), so ROW readers — the case
+                // projector → the rail — share the fact without re-deriving letter
+                // money. Written only under dispute_draft_live_rebuild_v1: the
+                // stamp's existence carries the flag (PROD OFF ⇒ no stamps ⇒ every
+                // surface silent).
+                ...(liveRebuildOn && rerendered?.recovery && dispute.sent_at == null
+                  ? { noRemainingDemand: rerendered.recovery.noRemainingDemand }
+                  : {}),
                 planContextFingerprint: fingerprint,
                 planContextUpdatedAt: new Date().toISOString(),
                 // Block C2 item 4 — record which statutory backbone produced this
@@ -661,6 +670,28 @@ export async function GET(
         // so the banner shows on every view of a zero-demand draft, not only
         // the view that happened to rebuild it.
         demandEmpty = noRemainingLetterDemand(rec);
+        // S312 — reconcile the ROW stamp (the rail's row-truth) when the live
+        // computation disagrees with it — the same self-heal-on-view family as
+        // the amount float, for drafts whose last rebuild predates the stamp.
+        // liveRebuildOn is set only when the live apparatus applies, so a VOID
+        // row (the frozen-corpse invariant) can never take this write; sent
+        // letters never reach this branch. updated_at deliberately untouched:
+        // this caches a derived fact, it is not a content change.
+        if (liveRebuildOn && sentAt == null) {
+          const stampMeta = (dispute.metadata as Record<string, unknown> | null) ?? {};
+          if ((stampMeta.noRemainingDemand === true) !== demandEmpty) {
+            const { error: stampErr } = await userScoped(supabase, user.id)
+              .table("dispute_outcomes")
+              .update({ metadata: { ...stampMeta, noRemainingDemand: demandEmpty } })
+              .eq("id", dispute.id);
+            if (stampErr) {
+              console.error(
+                "[disputes/[disputeId]] zero-demand stamp reconcile failed (non-fatal):",
+                stampErr,
+              );
+            }
+          }
+        }
       }
     }
   } catch (err) {

@@ -572,9 +572,41 @@ export function CaseRail({
    */
   const [refiling, setRefiling] = useState<Record<string, boolean>>({});
 
+  // S312 (F2-S312.1) — Dismiss/Keep busy + inline error, keyed by disputeId
+  // (the S300 lesson: a write that fails must show a symptom).
+  const [zeroDemandBusy, setZeroDemandBusy] = useState<Record<string, boolean>>({});
+  const [zeroDemandError, setZeroDemandError] = useState<Record<string, boolean>>({});
+
   if (groups.length === 0) return null;
 
   const goToLetter = (disputeId: string) => router.push(`/disputes?dispute=${disputeId}`);
+
+  // S312 (F2-S312.1) — the rail's Dismiss/Keep, wired to the SAME
+  // /api/disputes/[id]/dismiss route the letter page uses (one writer). On
+  // success the projection refetch does the rest: a dismissed letter leaves
+  // the rail (cancelled ⇒ stage "none"), a kept one drops the banner (the
+  // stamp's Keep answer suppresses it).
+  const runZeroDemand = async (disputeId: string, action: "dismiss" | "keep") => {
+    if (zeroDemandBusy[disputeId]) return;
+    setZeroDemandBusy((m) => ({ ...m, [disputeId]: true }));
+    setZeroDemandError((m) => ({ ...m, [disputeId]: false }));
+    try {
+      const token = await getAuthToken();
+      if (!token) throw new Error("no auth token");
+      const res = await fetch(`/api/disputes/${disputeId}/dismiss`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ action, reason: "zero_demand" }),
+      });
+      if (!res.ok) throw new Error(`dismiss ${res.status}`);
+      onStepInteraction?.();
+      await onRefetch();
+    } catch {
+      setZeroDemandError((m) => ({ ...m, [disputeId]: true }));
+    } finally {
+      setZeroDemandBusy((m) => ({ ...m, [disputeId]: false }));
+    }
+  };
 
   // The rail's ONE write (ruling 6, capture-only): a case event on the record.
   // Fail-quiet UX: on a non-OK response the button simply re-enables — the
@@ -1220,6 +1252,55 @@ export function CaseRail({
             );
           }
           case "send-draft":
+            // S312 (F2-S312.1, Andrew) — a $0-demand draft's send step IS the
+            // banner: Dismiss/Keep act right here (no extra click through the
+            // letter page), wired to the SAME /dismiss route the letter page
+            // uses. "Open the letter" stays as the quiet read-before-deciding
+            // path. Same strings as the letter page (CASE_RAIL.zeroDemand*).
+            if (s.zeroDemand) {
+              return (
+                <RailStep key={s.key} dataLetter={letterId} n={s.badge} title={s.title} last={last}>
+                  <div className="rounded-xl border border-sky-200 bg-sky-50 px-4 py-3.5">
+                    <p className="text-[13px] font-semibold text-sky-900">
+                      {CASE_RAIL.zeroDemandTitle}
+                    </p>
+                    <p className="mt-1 text-xs leading-relaxed text-sky-900">
+                      {CASE_RAIL.zeroDemandBody}
+                    </p>
+                    <div className="mt-2.5 flex flex-wrap items-center gap-2.5">
+                      <button
+                        type="button"
+                        disabled={zeroDemandBusy[s.disputeId] ?? false}
+                        onClick={() => void runZeroDemand(s.disputeId, "dismiss")}
+                        className="rounded-lg bg-slate-800 px-3.5 py-1.5 text-[13px] font-semibold text-white shadow-sm transition-colors hover:bg-slate-900 disabled:opacity-50"
+                      >
+                        {CASE_RAIL.zeroDemandDismiss}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={zeroDemandBusy[s.disputeId] ?? false}
+                        onClick={() => void runZeroDemand(s.disputeId, "keep")}
+                        className="rounded-lg border border-sky-300 bg-white px-3.5 py-1.5 text-[13px] font-semibold text-sky-800 transition-colors hover:bg-sky-100 disabled:opacity-50"
+                      >
+                        {CASE_RAIL.zeroDemandKeep}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => goToLetter(s.disputeId)}
+                        className="text-xs font-medium text-sky-700 underline underline-offset-2 hover:text-sky-900"
+                      >
+                        {CASE_RAIL.ctaOpenLetter}
+                      </button>
+                      {(zeroDemandError[s.disputeId] ?? false) && (
+                        <span className="text-xs text-red-600">
+                          {CASE_RAIL.zeroDemandSaveFailed}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </RailStep>
+              );
+            }
             return (
               <RailStep key={s.key} dataLetter={letterId} n={s.badge} title={s.title} last={last}>
                 <div className="rounded-xl border border-gray-200 bg-white px-4 py-3.5">

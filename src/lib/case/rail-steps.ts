@@ -269,6 +269,14 @@ export type RailStepModel =
       title: string;
       disputeId: string;
       openLetterLabel: string;
+      /**
+       * S312 (F2-S312.1) — the draft's demand fell to $0 (row-truth via the
+       * projection; see ProjectedLetterStep.noRemainingDemand). The rail
+       * renders the Dismiss/Keep banner INLINE on this step instead of the
+       * bare send CTA (Andrew: avoid the extra click); the letter page shows
+       * the same banner from the same strings (CASE_RAIL.zeroDemand*).
+       */
+      zeroDemand: boolean;
     }
   /**
    * S301 — a collections guard-rail step, relocated onto the rail.
@@ -791,6 +799,9 @@ function buildLetterSteps(
       // The DRAFT variant names the act; the sent one below stays a plain
       // "Open this letter" because there is nothing left to send.
       openLetterLabel: CASE_RAIL.ctaOpenLetterToSend,
+      // S312 (F2-S312.1) — straight from the projection (row-truth); the rail
+      // swaps the send CTA for the Dismiss/Keep banner when the demand died.
+      zeroDemand: l.noRemainingDemand,
     });
   } else {
     steps.push({
