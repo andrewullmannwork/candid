@@ -265,6 +265,58 @@ const allAnswered = pendingAssumptionFields(
 );
 check("everything answered → empty set → green", allAnswered.size === 0, JSON.stringify([...allAnswered]));
 
+// ── S312 (F2-S312.2, Andrew) — a field is answered only when EVERY instance is
+// answered. deductible_applies is PER-LINE: since S294 every plan-stated line
+// emits an "answered by the plan document" instance, and the old any-instance
+// answeredByData let a NEIGHBOR's answer silence a line's genuinely open
+// question (the live case: acupuncture/office-visit plan-stated, the allergy
+// line's "I'm not sure" left null → badge went green over an open ask).
+// Amber ⇔ something that affects the math is missing — Andrew's rule. ──
+{
+  const mixed = pendingAssumptionFields(
+    [
+      asum("deductible_applies", { reason: "plan_document", serviceSlug: "acupuncture" }),
+      asum("deductible_applies", { reason: "no_plan_value", serviceSlug: "allergy_injection" }),
+    ],
+    { userNetworkOverride: "in_network", deductibleMet: true, oopMet: false } as Parameters<typeof pendingAssumptionFields>[1],
+    undefined,
+    { deductibleAppliesRowVisible: true },
+  );
+  check(
+    "S312: one line plan-answered + one line open → deductible_applies STAYS pending (no neighbor-silencing)",
+    mixed.has("deductible_applies"),
+    JSON.stringify([...mixed]),
+  );
+  const everyAnswered = pendingAssumptionFields(
+    [
+      asum("deductible_applies", { reason: "plan_document", serviceSlug: "acupuncture" }),
+      asum("deductible_applies", { reason: "plan_document", serviceSlug: "allergy_injection" }),
+    ],
+    { userNetworkOverride: "in_network", deductibleMet: true, oopMet: false } as Parameters<typeof pendingAssumptionFields>[1],
+    undefined,
+    { deductibleAppliesRowVisible: true },
+  );
+  check(
+    "S312: EVERY instance plan-answered → not pending (green stays green)",
+    !everyAnswered.has("deductible_applies"),
+    JSON.stringify([...everyAnswered]),
+  );
+  // The latent service_cost twin, same clearUnactionable path: an answered rate
+  // on one service must not silence another service's open rate question.
+  const svcMixed = pendingAssumptionFields(
+    [
+      asum("service_cost", { reason: "user_override", serviceSlug: "acupuncture" }),
+      asum("service_cost", { reason: "manual_entry", serviceSlug: "mri" }),
+    ],
+    { userNetworkOverride: "in_network", deductibleMet: true, oopMet: false } as Parameters<typeof pendingAssumptionFields>[1],
+  );
+  check(
+    "S312: one service's answered rate must not silence another's open rate",
+    svcMixed.has("service_cost:mri") && !svcMixed.has("service_cost:acupuncture"),
+    JSON.stringify([...svcMixed]),
+  );
+}
+
 const togglesOnly = pendingAssumptionFields(
   [asum("network"), asum("deductible_met"), asum("oop_met")],
   null,

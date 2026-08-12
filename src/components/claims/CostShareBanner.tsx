@@ -354,8 +354,26 @@ export function pendingAssumptionFields(
   // of the user's bills — so it renders (transparency) without counting as
   // outstanding. It stays overridable: the tally only knows uploaded bills, so
   // it's a floor, not the truth. S291.
-  const answeredByData = (field: string) =>
-    assumptions.some((a) => a.field === field && ANSWERED_REASONS.has(a.reason));
+  //
+  // S312 (F2-S312.2, Andrew) — a field is answered only when EVERY instance is
+  // answered (and at least one exists). The old any-instance `some()` was fine
+  // for the claim-scoped singletons (network/deductible_met/oop_met — one
+  // instance per claim) but WRONG for the per-line fields: since S294 every
+  // plan-stated line emits an answered `deductible_applies` instance, so a
+  // neighbor's answer silenced a line's genuinely open question — the badge
+  // went green over a visible ask (live case: acupuncture/office-visit
+  // plan-stated, the allergy line's "I'm not sure" left honestly null). Same
+  // clearUnactionable path silenced a service's open rate behind another
+  // service's answered one. Andrew's rule, stated plainly: amber whenever
+  // something that affects the math is missing. This is the badge-side twin of
+  // S308's hasPendingAssumption ("is any instance still unanswered?") — the
+  // pending-set convention applied per instance, here as the post-pass clear.
+  // The zero-instance guard keeps keys with no engine assumption (plan_identity,
+  // totals_source, estimate:<lineId>) exactly as before: never data-answered.
+  const answeredByData = (field: string) => {
+    const instances = assumptions.filter((a) => a.field === field);
+    return instances.length > 0 && instances.every((a) => ANSWERED_REASONS.has(a.reason));
+  };
   const unanswered = (field: string) => has(field) && !answeredByData(field);
 
   if (unanswered("network") && overrides?.userNetworkOverride == null) pending.add("network");
