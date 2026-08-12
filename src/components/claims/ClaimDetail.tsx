@@ -64,7 +64,7 @@ import {
   undoResultPayload,
   unsendPayload,
 } from "@/lib/disputes/outcome-actions";
-import { CASE_RAIL, GUIDE_4B, GUIDE_CHROME, PHONE_OUTCOME, type GuideFillContext, type GuideFinding } from "@/lib/guides/pack-registry";
+import { CASE_RAIL, COLLECTIONS_CHROME, GUIDE_4B, GUIDE_CHROME, PHONE_OUTCOME, type GuideFillContext, type GuideFinding } from "@/lib/guides/pack-registry";
 
 interface CodeIdentityState {
   identityId: string | null;
@@ -687,6 +687,10 @@ export function ClaimDetail({
   // persisted meta; the component emits on every persist).
   const [phoneFullOpen, setPhoneFullOpen] = useState(false);
   const [guidedPackLive, setGuidedPackLive] = useState<PhonePackState | null>(null);
+  // S309 (Andrew) — the skipped pack's Undo chip bumps this; GuidedPhoneSteps
+  // (mounted-but-hidden while collapsed) clears the skip through its OWN
+  // persist, keeping its optimistic map + emission + server coherent.
+  const [phoneUndoSkipSignal, setPhoneUndoSkipSignal] = useState(0);
 
 
   // Read localStorage once on mount per claim.
@@ -4104,7 +4108,8 @@ export function ClaimDetail({
           <>
             <RailStep
               n={railExtends ? "4" : "4a"}
-              done={guidedPack.concluded}
+              done={guidedPack.concluded && guidedPack.outcome !== "skip"}
+              skipped={guidedPack.outcome === "skip"}
               title={GUIDE_CHROME.packATitle}
               sub={GUIDE_CHROME.packAMeta}
               right={
@@ -4118,27 +4123,41 @@ export function ClaimDetail({
                         {PHONE_OUTCOME.resolvedChipPrefix} · {guidedOutcomeDateLabel}
                       </span>
                     )}
-                    {/* S309 (Andrew) — an un-done step must LOOK un-done on the
-                        collapsed header: complete packs keep the calm emerald
-                        count; a pack with un-checked steps goes amber and NAMES
-                        the open count (the S303 fold vocabulary, reused), so
-                        the recheck ask is visible without re-opening anything. */}
-                    {guidedPack.outcome === "no" && guidedPack.done > 0 && (
-                      guidedPack.done < guidedPack.total ? (
-                        <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-0.5 text-[11.5px] font-semibold text-amber-800 ring-1 ring-inset ring-amber-200">
-                          {GUIDE_CHROME.doneMeta(guidedPack.done, guidedPack.total)} · {CASE_RAIL.foldOpenSteps(guidedPack.total - guidedPack.done)}
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11.5px] font-semibold text-emerald-700 ring-1 ring-inset ring-emerald-200">
-                          {GUIDE_CHROME.doneMeta(guidedPack.done, guidedPack.total)}
-                        </span>
-                      )
+                    {/* Concluded-by-answer now GUARANTEES done === total (the
+                        S309 round-2 rule), so the count chip is always the calm
+                        emerald one. */}
+                    {guidedPack.outcome === "no" && (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11.5px] font-semibold text-emerald-700 ring-1 ring-inset ring-emerald-200">
+                        {GUIDE_CHROME.doneMeta(guidedPack.done, guidedPack.total)}
+                      </span>
+                    )}
+                    {/* S309 (Andrew) — a skipped pack collapses with the
+                        skipped chrome, and the way back in is the offers'
+                        existing Undo pattern. */}
+                    {guidedPack.outcome === "skip" && (
+                      <span className="inline-flex items-center gap-2 text-[11.5px] text-gray-400">
+                        {COLLECTIONS_CHROME.skippedLabel}
+                        <button
+                          type="button"
+                          onClick={() => setPhoneUndoSkipSignal((n) => n + 1)}
+                          className="font-medium text-gray-500 underline underline-offset-2 hover:text-gray-700"
+                        >
+                          {COLLECTIONS_CHROME.undoSkipLabel}
+                        </button>
+                      </span>
                     )}
                     <ShowFullStepButton
                       open={phoneFullOpen}
                       onToggle={() => setPhoneFullOpen((v) => !v)}
                     />
                   </div>
+                ) : guidedPack.outcome != null && guidedPack.done < guidedPack.total ? (
+                  // S309 round 2 (Andrew) — answered but a step still missing:
+                  // the pack stays OPEN and the amber chip NAMES the gap (the
+                  // S303 fold vocabulary), right beside the lit 4b.
+                  <span className="inline-flex items-center gap-1 self-start rounded-full bg-amber-50 px-2.5 py-0.5 text-[11.5px] font-semibold text-amber-800 ring-1 ring-inset ring-amber-200">
+                    {GUIDE_CHROME.doneMeta(guidedPack.done, guidedPack.total)} · {CASE_RAIL.foldOpenSteps(guidedPack.total - guidedPack.done)}
+                  </span>
                 ) : undefined
               }
             >
@@ -4152,6 +4171,7 @@ export function ClaimDetail({
                   initialSteps={guideStepsMeta}
                   getAuthToken={getAuthToken}
                   onItemizedRequest={requestItemizedLetter}
+                  undoSkipSignal={phoneUndoSkipSignal}
                   onStateChange={(s) => {
                     // Collapse ONLY on the not-concluded → concluded TRANSITION;
                     // collapsing on every emit while concluded slammed the panel
