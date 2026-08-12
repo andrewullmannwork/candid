@@ -1827,14 +1827,20 @@ function DisputesContent() {
 
   // S293 (#3) — while the letter's REQUIRED inputs are still missing, the
   // preview must read as pending, not as a finished letter that happens to be
-  // incomplete. The signal is the SAME server-computed readiness floor the
-  // needs panel's "Not ready to send" pill reads (strength.readiness — one
-  // derivation, the two surfaces cannot disagree); null readiness (legacy /
-  // flag-off payloads) → no treatment, and a sent letter is never dimmed.
-  // Visuals reuse the LockedOverlay dim recipe (blur + opacity + inert), the
+  // incomplete. The signal is the SAME readiness floor the needs panel's
+  // "Not ready to send" pill reads; null readiness (legacy / flag-off
+  // payloads) → no treatment, and a sent letter is never dimmed. Visuals
+  // reuse the LockedOverlay dim recipe (blur + opacity + inert), the
   // codebase's canonical "present but not usable yet" treatment.
+  // S309 F11 (Andrew: "super big lag… once they click a button that should
+  // allow the letter to be read it opens up") — reads effectiveReadiness,
+  // the S302 optimistic re-derivation every OTHER readiness consumer already
+  // uses. This was the one raw `strength.readiness` reader left, so the blur
+  // waited out the debounced reconcile + the ~5s GET after the identity
+  // confirm while the pill said ready — the S302 drift class, one consumer
+  // behind. The reconcile still lands server truth; snap-back is free.
   const letterPending =
-    strength?.readiness?.state === "attention" && !alreadySent;
+    effectiveReadiness?.state === "attention" && !alreadySent;
 
   const articleNode = (
     <article id="dispute-letter-article" className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
