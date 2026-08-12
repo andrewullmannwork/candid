@@ -23,7 +23,9 @@ import {
 import {
   resolveLetterRecovery,
   isPreciseDollarAssertable,
+  noRemainingLetterDemand,
   type LineRecovery,
+  type LetterRecoveryResult,
 } from "../../../../src/lib/disputes/dispute-grounds";
 import { LETTER_TEMPLATES, buildSenderBlock } from "../../../../src/lib/disputes/templates";
 import type {
@@ -504,6 +506,48 @@ console.log("\nS312 — the provider letter argues from the bill (evidence restr
   check("S312 insurer: no bill-view lead sentence", !ins.includes("This bill charges me"));
   check("S312 insurer: no sums block", !ins.includes("Charged to me on this bill:"));
   check("S312 insurer: the F17 overpayment never folds insurer-side", !ins.includes("Refund the $10.00"));
+
+  // ── F2-S312.1 — noRemainingLetterDemand: the "this letter may no longer be
+  //    needed" signal reads ONLY the fold (the same object the asks render
+  //    from). Provider at reset-paid → TRUE (its money died); at overpaid →
+  //    FALSE ($10 demand); insurer → FALSE ($67.18 reprocess demand); a
+  //    WEAKENED fold → FALSE (hidden is not gone); an insurer fold carrying a
+  //    live $0 set-tier ask (duplicate burden-shift) → FALSE (a real ask);
+  //    attestation-subsumed sets don't count (argued nowhere). ──
+  // The engine basis (S6's exact case: $30 copay, deductible-exempt, network
+  // answered) so the disputed line is ASSERTABLE — the real production shape.
+  const SERVICE_COPAY_312: ServiceCostShare = { covered: true, copay: 30, coinsurance: null, deductibleApplies: false, userStatedRate: false };
+  const basis312 = computeCostShareV2({
+    line: { billed: 157.5, allowed: 97.18, patientPaid: 97.18, patientResponsibility: 97.18 },
+    service: SERVICE_COPAY_312,
+    insurer: EMPTY_INSURER,
+    plan: PLAN,
+    accumulator: null,
+    overrides: { ...NO_OVERRIDE, deductibleMet: false, userNetworkOverride: "in_network" },
+    networkLine: null,
+    networkClaim: null,
+    claimInsurerPaidZero: true,
+  });
+  const basisMap312 = new Map([["li-us", basis312]]);
+  const proFold = resolveLetterRecovery(mk312(239.71), basisMap312, "provider");
+  const proFoldOverpaid = resolveLetterRecovery(mk312(249.71), basisMap312, "provider");
+  const insFold = resolveLetterRecovery(mk312(239.71), basisMap312, "insurer");
+  check("F2-S312.1 provider fold at reset paid → no remaining demand", noRemainingLetterDemand(proFold) === true, proFold.total);
+  check("F2-S312.1 provider fold at overpaid $10 → demand stands", noRemainingLetterDemand(proFoldOverpaid) === false, proFoldOverpaid.total);
+  check("F2-S312.1 insurer fold → demand stands ($67.18)", noRemainingLetterDemand(insFold) === false, insFold.total);
+  // NO engine basis (a load failure / legacy partial state): the line's dollars
+  // drop WITHOUT `weakened` — the unassertable-demand guard catches it, never
+  // the banner (this exact pin failing-first is what surfaced the gap).
+  const insFoldNoBasis = resolveLetterRecovery(mk312(239.71), new Map(), "insurer");
+  check("F2-S312.1 missing basis → FALSE via the unassertable-demand guard", noRemainingLetterDemand(insFoldNoBasis) === false, insFoldNoBasis.byLine.get("li-us"));
+  const emptyFold: LetterRecoveryResult = {
+    byLine: new Map(), total: 0, totalRefund: 0, totalWriteOff: 0, capBoundLineIds: [],
+    weakened: false, strengthenableFields: [], claimRecoveries: [], setRecoveries: [], clampBoundClaimIds: [],
+  };
+  check("F2-S312.1 weakened fold → FALSE (hidden is not gone)", noRemainingLetterDemand({ ...emptyFold, weakened: true, strengthenableFields: ["deductible"] }) === false);
+  const dupSet = { claimId: "c", type: "duplicate" as const, findingId: "f", title: "dup", memberLineItemIds: ["a", "b"], removedLineItemIds: ["b"], recovery: 0, refund: 0, writeOff: 0, attestationSubsumed: false };
+  check("F2-S312.1 live $0 set ask (insurer burden-shift) → FALSE", noRemainingLetterDemand({ ...emptyFold, setRecoveries: [dupSet] }) === false);
+  check("F2-S312.1 attestation-subsumed set doesn't count → TRUE", noRemainingLetterDemand({ ...emptyFold, setRecoveries: [{ ...dupSet, attestationSubsumed: true }] }) === true);
 }
 
 console.log(`\ncost-share-v2 letter-recovery: ${fails.length === 0 ? "ALL GREEN ✓" : `${fails.length} FAILED`}`);

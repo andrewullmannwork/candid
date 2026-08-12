@@ -20,7 +20,7 @@ import { letterPatientName, pickPatientName, type LetterPatientIdentity } from "
 import { buildPriorContactRecital, RECITAL_IN_OPENING } from "./prior-contact";
 import { loadCaseProjection } from "@/lib/case/load-case-timeline";
 import { guidedCallLogFromMeta } from "@/lib/guides/pack-registry";
-import { resolveLetterRecovery } from "./dispute-grounds";
+import { resolveLetterRecovery, noRemainingLetterDemand } from "./dispute-grounds";
 import { loadDisputeGroundBasis } from "./dispute-ground-basis";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 
@@ -83,6 +83,9 @@ export interface RerenderResult {
     total: number;
     weakened: boolean;
     strengthenableFields: Array<"deductible" | "oop" | "network">;
+    /** S312 (F2-S312.1) — noRemainingLetterDemand over the full fold this render
+     *  used (computed at the source; the projection here is deliberately slim). */
+    noRemainingDemand: boolean;
   } | null;
 }
 
@@ -261,7 +264,15 @@ export async function rerenderDisputeLetter(
   return {
     body: finalBody,
     recovery: recovery
-      ? { total: recovery.total, weakened: recovery.weakened, strengthenableFields: recovery.strengthenableFields }
+      ? {
+          total: recovery.total,
+          weakened: recovery.weakened,
+          strengthenableFields: recovery.strengthenableFields,
+          // S312 (F2-S312.1) — computed HERE, where the full fold lives, so the
+          // "may no longer be needed" signal is the same derivation the letter
+          // body just rendered from (the projection above is deliberately slim).
+          noRemainingDemand: noRemainingLetterDemand(recovery),
+        }
       : null,
   };
 }

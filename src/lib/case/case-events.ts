@@ -39,6 +39,14 @@ export const CASE_EVENT_KINDS = [
   "letter_unsent",
   "letter_redrafted",
   "letter_downloaded",
+  // S312 (F2-S312.1) — the user withdrew a never-sent draft (status →
+  // "cancelled"; the row becomes a read-only exhibit per the S308 void rule).
+  // Its own kind: a dismissal is the user declining the letter, not an
+  // outcome of sending one. Payload carries `reason` ("zero_demand" when the
+  // no-remaining-demand banner prompted it, "user" otherwise) — flywheel
+  // signal for WHY drafted letters die. Emitter: the dismiss route, same
+  // change. No migration — mig 221 shape-checks `kind`. Count: 21 → 22.
+  "letter_dismissed",
   // Waits + outcomes
   "response_logged",
   "outcome_undone",

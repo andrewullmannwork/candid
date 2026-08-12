@@ -840,3 +840,36 @@ function round2(n: number): number {
 /** R3 step 5.3 — the full recovery result (byLine + fold/clamp pools + set/claim tiers + clampBound).
  *  buildRequestSection consumes it to argue the set/claim grounds + degrade on a bound clamp. */
 export type LetterRecoveryResult = ReturnType<typeof resolveLetterRecovery>;
+
+/**
+ * S312 (F2-S312.1, Andrew's ruling) — "this letter may no longer be needed."
+ *
+ * TRUE when the letter's OWN recipient-scoped demand has fallen to nothing:
+ * the fold total is $0, no dollar was merely HIDDEN behind an unconfirmed
+ * assumption (`weakened` letters still argue their asks and prompt the user to
+ * strengthen — hidden is not gone), and no zero-dollar set-tier ask survives
+ * (the insurer letter's duplicate/unbundling burden-shift asks are DELIBERATELY
+ * $0 and still real asks; an attestation-subsumed set is argued nowhere, so it
+ * doesn't count). Claim-tier rows need no separate check: provider-side they
+ * fold into `total`, insurer-side they are never argued.
+ *
+ * Reads ONLY the fold's outputs — the same object the letter's asks and
+ * `amount_disputed` render from — so the banner can never disagree with the
+ * letter's own body (one derivation). Liveness (never-sent draft), the
+ * dispute_draft_live_rebuild_v1 gate, and the user's standing "Keep letter"
+ * answer are the ROUTE's business; this predicate is pure demand math.
+ */
+export function noRemainingLetterDemand(recovery: LetterRecoveryResult): boolean {
+  return (
+    recovery.total === 0 &&
+    !recovery.weakened &&
+    !recovery.setRecoveries.some((s) => !s.attestationSubsumed) &&
+    // Fail-closed twin of `weakened` (its own fixture caught this): a line whose
+    // engine basis is MISSING drops its dollars without setting `weakened`
+    // (resolveLetterRecovery only marks weakened when a result exists). A line
+    // still carrying an unassertable non-zero demand means dollars were dropped,
+    // not settled — never "no longer needed". Showing the banner wrongly kills a
+    // real letter; missing it costs nothing.
+    !Array.from(recovery.byLine.values()).some((r) => !r.assertable && r.capped > 0)
+  );
+}

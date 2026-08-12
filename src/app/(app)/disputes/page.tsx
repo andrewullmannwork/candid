@@ -257,6 +257,15 @@ function DisputesContent() {
   const [isStale, setIsStale] = useState(false);
   const [staleBannerCollapsed, setStaleBannerCollapsed] = useState(false);
   const [refreshingLetter, setRefreshingLetter] = useState(false);
+  // S312 (F2-S312.1, Andrew's ruling) — "this letter may no longer be needed".
+  // Server-folded boolean (live never-sent draft + $0 demand + flag + not kept);
+  // the client only renders it. `zeroDemandBusy` guards the Dismiss/Keep POSTs.
+  const [noRemainingDemand, setNoRemainingDemand] = useState(false);
+  const [zeroDemandBusy, setZeroDemandBusy] = useState(false);
+  // S312 (F2-S311.6) — the cancel stamp for the cancelled band ("cancelled on
+  // {date}"). updated_at is stable after cancel: the S311 void guards froze
+  // every writer, so the last write IS the cancellation.
+  const [disputeUpdatedAt, setDisputeUpdatedAt] = useState<string | null>(null);
   // §18.10.D — the "confirm to strengthen" signal from the dispute GET/redraft. Non-null +
   // fields populated only when the deductible-aware letter omitted a precise dollar.
   const [strengthenLetter, setStrengthenLetter] = useState<{ weakened: boolean; fields: StrengthField[] } | null>(null);
@@ -484,6 +493,10 @@ function DisputesContent() {
     // navigation re-expands the banner; a refresh keeps the user's collapse
     // state (the refreshed letter is no longer stale anyway).
     setIsStale(data.isStale === true);
+    // S312 (F2-S312.1) — the "may no longer be needed" banner signal + the
+    // cancel stamp for the cancelled band (F2-S311.6).
+    setNoRemainingDemand(data.noRemainingDemand === true);
+    setDisputeUpdatedAt(typeof data.updatedAt === "string" ? data.updatedAt : null);
     if (!opts?.refresh) { setStaleBannerCollapsed(false); setStrengthenCollapsed(false); }
     setPlanContext(data.planContext ?? null);
     setEvidence(data.evidence ?? null);
@@ -1781,6 +1794,75 @@ function DisputesContent() {
     )
   ) : null;
 
+  // S312 (F2-S311.6) — a cancelled letter is a read-only exhibit: the band names
+  // it, the body stays readable, and the action surfaces (checklist spine,
+  // toolbar) hide below rather than render clickable-but-refused. The server
+  // guards (409 letter_void) stay as the backstop.
+  const isCancelled = disputeStatus === "cancelled";
+  const cancelledBandNode = isCancelled ? (
+    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+      <p className="text-xs leading-relaxed text-slate-600">
+        This letter was cancelled
+        {disputeUpdatedAt ? ` on ${formatFiledDate(disputeUpdatedAt)}` : ""} — kept for your
+        records.
+      </p>
+    </div>
+  ) : null;
+
+  // S312 (F2-S312.1, Andrew's ruling) — "this letter may no longer be needed."
+  // Dismiss → the letter becomes a cancelled exhibit (status flips locally so the
+  // band + hides render in the click's response; the route wrote the same truth).
+  // Keep → the banner stands down durably (metadata.zeroDemandKeptAt server-side).
+  const handleZeroDemand = async (action: "dismiss" | "keep") => {
+    if (!user || !disputeId || zeroDemandBusy) return;
+    setZeroDemandBusy(true);
+    try {
+      const token = await user.firebaseUser.getIdToken();
+      const res = await fetch(`/api/disputes/${disputeId}/dismiss`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ action, reason: "zero_demand" }),
+      });
+      if (!res.ok) return; // banner stays; the guards' refusal is the truth
+      setNoRemainingDemand(false);
+      if (action === "dismiss") {
+        setDisputeStatus("cancelled");
+        setDisputeUpdatedAt(new Date().toISOString());
+      }
+    } finally {
+      setZeroDemandBusy(false);
+    }
+  };
+  const zeroDemandBannerNode =
+    noRemainingDemand && !isCancelled ? (
+      <div className="rounded-lg border border-sky-200 bg-sky-50 p-3">
+        <p className="text-xs font-semibold text-sky-900">This letter may no longer be needed.</p>
+        <p className="mt-1 text-xs leading-relaxed text-sky-900">
+          Your latest numbers took the dollar demand out of this letter — it no longer asks the
+          recipient to refund or remove anything. You can dismiss it, or keep it if you still want
+          a corrected, itemized bill on record.
+        </p>
+        <div className="mt-2 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => handleZeroDemand("dismiss")}
+            disabled={zeroDemandBusy}
+            className="rounded bg-slate-800 px-3 py-1 text-xs font-semibold text-white hover:bg-slate-900 disabled:opacity-50"
+          >
+            Dismiss letter
+          </button>
+          <button
+            type="button"
+            onClick={() => handleZeroDemand("keep")}
+            disabled={zeroDemandBusy}
+            className="rounded border border-sky-300 bg-white px-3 py-1 text-xs font-semibold text-sky-800 hover:bg-sky-100 disabled:opacity-50"
+          >
+            Keep letter
+          </button>
+        </div>
+      </div>
+    ) : null;
+
   // §18.10.D — the "confirm to strengthen + rebuild" prompt. Present only when the deductible-
   // aware letter omitted a precise dollar AND there are user-fixable inputs. Confirming writes
   // the same cost-share overrides the claim page uses; Rebuild reuses handleRefreshLetter
@@ -3069,16 +3151,21 @@ function DisputesContent() {
            "What to do next" list is superseded by the UnifiedTodo. */
         <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_22rem]">
           <div className="min-w-0 space-y-5">
+            {/* S312 (F2-S311.6) — cancelled = exhibit: the band leads, the
+                action surfaces (checklist spine + toolbar) hide, the letter
+                body stays readable below. */}
+            {cancelledBandNode}
+            {zeroDemandBannerNode}
             {staleBannerNode}
             {strengthenPromptNode}
             {dataTrustBannerNode}
             {/* S286 — "The case" card retired in v3: its timeline, countdown,
                 and stage actions live INSIDE the UnifiedTodo spine now. The
                 legacy (flag-OFF) layout keeps CaseSummary unchanged. */}
-            {unifiedTodoNode}
+            {!isCancelled && unifiedTodoNode}
             {heroNode}
             {recipientNode}
-            {toolbarNode}
+            {!isCancelled && toolbarNode}
             {articleNode}
           </div>
           {/* Block C2 — the rail is taller than the viewport on most letters;
@@ -3098,13 +3185,16 @@ function DisputesContent() {
         </div>
       ) : (
         <>
+          {/* S312 (F2-S311.6) — same cancelled-exhibit rule on the legacy layout. */}
+          {cancelledBandNode}
+          {zeroDemandBannerNode}
           {staleBannerNode}
           {strengthenPromptNode}
           {heroNode}
           {recipientNode}
-          {toolbarNode}
+          {!isCancelled && toolbarNode}
           {articleNode}
-          {nextStepsNode}
+          {!isCancelled && nextStepsNode}
           {caseFileNode}
         </>
       )}
