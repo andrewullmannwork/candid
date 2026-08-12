@@ -452,6 +452,9 @@ export async function POST(req: NextRequest) {
         collector,
         debtWithinWindow,
         priorContactRecital,
+        // S310 (Andrew) — see TemplateParams.holdCallAt.
+        holdCallAt:
+          guidedCallLog?.find((c) => c.kind === "billing_hold_call")?.calledAt ?? null,
       });
 
       // Defense-in-depth: generateDisputeLetter returns null when the data-trust

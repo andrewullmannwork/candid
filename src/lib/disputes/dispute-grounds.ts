@@ -416,6 +416,20 @@ const FINDING_TO_GROUND: ReadonlyMap<FindingType, DisputeGroundType> = (() => {
  * gated. Derive it from the resolved letter type via `letterRecipientKind` so the persisted
  * `amount_disputed` and the rendered body agree per recipient.
  */
+/**
+ * S310 F18 — line-tier grounds whose REFUND the provider (not the insurer)
+ * owes back: charges for care not received, and duplicate/unbundled billing.
+ * Everything else in the line tier (cost-share misapplication, coverage
+ * grounds) refunds through the insurer's reprocessing. Explicit by ground —
+ * obligationElements model evidence duties, not money direction, so deriving
+ * this from them would be wrong.
+ */
+const PROVIDER_REFUND_LINE_GROUNDS: ReadonlySet<DisputeGroundType> = new Set([
+  "service_not_rendered",
+  "duplicate",
+  "unbundling",
+]);
+
 export function resolveLetterRecovery(
   evidence: DisputeEvidence | null,
   basis: Map<string, CostShareV2Result>,
@@ -495,11 +509,22 @@ export function resolveLetterRecovery(
     return m ? { ...l, patientPaid: m.paid, patientOwes: m.owes } : l;
   };
 
-  type ClaimPool = { refundRaw: number; writeOffRaw: number; paidCap: number; respHeader: number; lineOwes: number };
+  // S310 F18 (Andrew) — a letter's total is the sum of the demands its own
+  // body makes. The refund pool splits by WHO owes the money back: cost-share
+  // and coverage refunds are the INSURER letter's demand (the fix is
+  // reprocessing), while a not-rendered or duplicate/unbundling refund is the
+  // PROVIDER's (they charged for what they shouldn't have). The write-off pool
+  // is provider/collector-side by construction — the balance is theirs to stop
+  // billing ("Provider must forgive"). This completes the recipient-aware fold
+  // the set + claim tiers (5.4 1a) already follow; before it, the provider
+  // letter's amount_disputed headlined the insurer letter's money (live-caught
+  // S310: provider row 127.47 vs its own 60.29 claim).
+  type ClaimPool = { refundInsurerRaw: number; refundProviderRaw: number; writeOffRaw: number; paidCap: number; respHeader: number; lineOwes: number };
   const pools = new Map<string, ClaimPool>();
   for (const claim of evidence.claims) {
     pools.set(claim.claimId, {
-      refundRaw: 0,
+      refundInsurerRaw: 0,
+      refundProviderRaw: 0,
       writeOffRaw: 0,
       paidCap: claim.effectiveTotals.patientPaid,
       respHeader: claim.effectiveTotals.patientResponsibility,
@@ -585,11 +610,16 @@ export function resolveLetterRecovery(
       const refundable = Math.max(0, (line.patientPaid ?? 0) - (shouldOwe ?? 0));
       const refund = Math.min(capped, refundable);
       const writeOff = Math.max(0, capped - refund);
+      // S310 F18 — the line's refund family (see the pool comment above). A
+      // line carrying any provider-refund ground routes its refund to the
+      // provider pool (removal dominates reprice — the existing precedence).
+      const providerRefundLine = grounds.some((g) => PROVIDER_REFUND_LINE_GROUNDS.has(g.type));
 
       if (assertable) {
         // R3 step 5.3 — refund + writeOff === capped → the pool sum equals the former `total += capped`.
         if (pool) {
-          pool.refundRaw += refund;
+          if (providerRefundLine) pool.refundProviderRaw += refund;
+          else pool.refundInsurerRaw += refund;
           pool.writeOffRaw += writeOff;
         }
       } else if (result) {
@@ -663,7 +693,7 @@ export function resolveLetterRecovery(
     // line is folded as not-rendered in the line tier instead; folding here too would double-count).
     const setPool = pools.get(a.claimId);
     if (setPool && recipient === "provider" && !attestationSubsumed) {
-      setPool.refundRaw += refundRaw;
+      setPool.refundProviderRaw += refundRaw;
       setPool.writeOffRaw += writeOffRaw;
     }
     setRecoveries.push({
@@ -720,7 +750,7 @@ export function resolveLetterRecovery(
       const refundRaw = settled ? recoveryRaw : 0;
       const writeOffRaw = settled ? 0 : recoveryRaw;
       if (claimPool && recipient === "provider") {
-        claimPool.refundRaw += refundRaw;
+        claimPool.refundProviderRaw += refundRaw;
         claimPool.writeOffRaw += writeOffRaw;
       }
       claimRecoveries.push({
@@ -751,7 +781,7 @@ export function resolveLetterRecovery(
     );
     if (overpaid >= 1) {
       const claimPool = pools.get(claim.claimId);
-      if (claimPool && recipient === "provider") claimPool.refundRaw += overpaid;
+      if (claimPool && recipient === "provider") claimPool.refundProviderRaw += overpaid;
       claimRecoveries.push({
         claimId: claim.claimId,
         type: "provider_overpayment",
@@ -773,9 +803,16 @@ export function resolveLetterRecovery(
   let totalRefundRaw = 0;
   let totalWriteOffRaw = 0;
   for (const [claimId, p] of pools) {
-    const clampedRefund = Math.min(p.refundRaw, p.paidCap);
-    const clampedWriteOff = Math.min(p.writeOffRaw, Math.max(p.respHeader, p.lineOwes));
-    if (clampedRefund < p.refundRaw - 0.005 || clampedWriteOff < p.writeOffRaw - 0.005) {
+    // S310 F18 — each recipient's totals count only the demands ITS letter
+    // makes: the insurer letter claims the insurer-family refunds and never a
+    // write-off (an insurer doesn't hold the balance; its fix is reprocessing);
+    // the provider/collector letter claims the provider-family refunds + the
+    // write-offs. Clamps unchanged, applied to the recipient's own raws.
+    const refundRaw = recipient === "insurer" ? p.refundInsurerRaw : p.refundProviderRaw;
+    const writeOffRaw = recipient === "insurer" ? 0 : p.writeOffRaw;
+    const clampedRefund = Math.min(refundRaw, p.paidCap);
+    const clampedWriteOff = Math.min(writeOffRaw, Math.max(p.respHeader, p.lineOwes));
+    if (clampedRefund < refundRaw - 0.005 || clampedWriteOff < writeOffRaw - 0.005) {
       clampBoundClaimIds.push(claimId);
     }
     totalRefundRaw += clampedRefund;

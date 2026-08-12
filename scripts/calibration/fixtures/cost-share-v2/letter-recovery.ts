@@ -160,8 +160,20 @@ function makeBill(): ParsedBill {
 }
 
 // Render the "overcharge" provider letter and isolate its RELIEF-REQUESTED block.
-function renderReqBlock(evidence: DisputeEvidence, letterRecovery?: Map<string, LineRecovery>): string {
+function renderReqBlock(evidence: DisputeEvidence, letterRecovery?: Map<string, LineRecovery>, holdCallAt?: string | null): string {
   const body = LETTER_TEMPLATES["overcharge"].body({
+    patientName: "Jordan Sample", providerName: "Sample Medical Center", serviceDate: "2024-03-15",
+    findings: [], bill: makeBill(), planContext: null, evidence,
+    gateUnverified: true, v3DesignOn: true, disputeGroundsOn: true, letterRecovery, holdCallAt,
+  });
+  const i = body.indexOf("RELIEF REQUESTED");
+  return i >= 0 ? body.slice(i) : body;
+}
+
+// S310 F18 — the insurer-letter twin, so the refund demand's HOME is pinned in
+// both directions (provider letter never prints it; insurer letter does).
+function renderInsurerReqBlock(evidence: DisputeEvidence, letterRecovery?: Map<string, LineRecovery>): string {
+  const body = LETTER_TEMPLATES["insurance_appeal"].body({
     patientName: "Jordan Sample", providerName: "Sample Medical Center", serviceDate: "2024-03-15",
     findings: [], bill: makeBill(), planContext: null, evidence,
     gateUnverified: true, v3DesignOn: true, disputeGroundsOn: true, letterRecovery,
@@ -186,8 +198,15 @@ console.log("\nS1 — pre-deductible (known not-met): the $240 blind over-claim 
   check("S1 letter dollar == card recovery == $0", near(byLine.refund + byLine.writeOff, result.potentialRecovery), byLine);
   const off = renderReqBlock(evidence); // no letterRecovery → deductible-blind fallback
   const on = renderReqBlock(evidence, new Map([["li-1", { ...byLine }]]));
-  check("S1 OFF (blind) demands the $240.00 the patient legitimately owes", off.includes("$240.00"), off.match(/\$[\d,.]+/g));
+  // S310 F18 — the cost-share refund is the INSURER letter's demand; a
+  // provider letter never prints it, even on the blind OFF path. The legacy
+  // blind over-claim (and its ON-path elimination) now pins on the insurer.
+  check("S1 provider letter never demands the cost-share refund — OFF path included (S310 F18)", !off.includes("$240.00"), off.match(/\$[\d,.]+/g));
   check("S1 ON omits the $240 over-claim (only the reprocess demand)", !on.includes("$240.00"));
+  const insOff = renderInsurerReqBlock(evidence);
+  const insOn = renderInsurerReqBlock(evidence, new Map([["li-1", { ...byLine }]]));
+  check("S1 insurer OFF (blind) demands the $240.00 the patient legitimately owes", insOff.includes("$240.00"), insOff.match(/\$[\d,.]+/g));
+  check("S1 insurer ON omits the $240 over-claim", !insOn.includes("$240.00"));
 }
 
 // ── S2 — deductible MET: a REAL $240 recovery; letter dollar == card recovery exactly. ──
@@ -201,7 +220,36 @@ console.log("\nS2 — deductible met: real $240 recovery preserved (letter == ca
   check("S2 refund == $240, writeOff == $0", near(byLine.refund, 240) && near(byLine.writeOff, 0), byLine);
   check("S2 letter dollar == card recovery == $240", near(byLine.refund + byLine.writeOff, result.potentialRecovery), byLine);
   const on = renderReqBlock(evidence, new Map([["li-1", { ...byLine }]]));
-  check("S2 ON letter demands the $240.00 refund", on.includes("$240.00"));
+  // S310 F18 — the real $240 refund is the INSURER letter's demand; the
+  // provider letter keeps its correction ask without the refund clause.
+  check("S2 provider letter carries no refund demand (S310 F18)", !on.includes("$240.00"));
+  check(
+    "S2 insurer ON letter demands the $240.00 refund",
+    renderInsurerReqBlock(evidence, new Map([["li-1", { ...byLine }]])).includes("$240.00"),
+  );
+}
+
+// ── S310 — the collections-hold ask: an attested phone hold upgrades the standing
+//    clause to a written confirmation of THAT call (Andrew-approved copy). ──
+console.log("\nS310 — hold ask: standing clause vs written confirmation of the attested call");
+{
+  const ev = makeEvidence();
+  ev.claims[0].lineItemEvidence[0] = { ...ev.claims[0].lineItemEvidence[0], patientOwes: 120 };
+  const plain = renderReqBlock(ev);
+  check(
+    "S310 hold: standing clause asks for the hold when no call is attested",
+    plain.includes("place any collection activity for this balance on hold"),
+  );
+  const withCall = renderReqBlock(ev, undefined, "2026-08-11T20:00:00.000Z");
+  check(
+    "S310 hold: attested call upgrades to the written confirmation",
+    withCall.includes("Please confirm in writing the hold I requested by phone on August 11, 2026."),
+    withCall.match(/hold[^\n]*/g),
+  );
+  check(
+    "S310 hold: the generic clause stands down when confirming",
+    !withCall.includes("place any collection activity for this balance on hold"),
+  );
 }
 
 // ── S3 — deductible UNKNOWN (no accumulator): §18.10.D OMIT — the dollar rests on a guess. ──

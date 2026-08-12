@@ -199,20 +199,26 @@ export async function rerenderDisputeLetter(
   const recitalRecipient = letterRecipientKind(letterType);
   const recitalInOpening = RECITAL_IN_OPENING.has(letterType);
   const caseProjection = await loadCaseProjection(supabase, userId, claimId);
+  const recitalCallLog = guidedCallLogFromMeta(
+    ((claim.metadata as Record<string, unknown> | null)?.guideSteps as
+      | Record<string, { checkedAt?: string | null; note?: string }>
+      | undefined) ?? null,
+  );
   const priorContactRecital = buildPriorContactRecital({
     variant: recitalInOpening ? "opening" : "signoff",
     history: caseProjection?.projected.history ?? null,
     letters: caseProjection?.projected.letters ?? null,
-    callLog: guidedCallLogFromMeta(
-      ((claim.metadata as Record<string, unknown> | null)?.guideSteps as
-        | Record<string, { checkedAt?: string | null; note?: string }>
-        | undefined) ?? null,
-    ),
+    callLog: recitalCallLog,
     recipientKind: recitalRecipient,
     letterType,
     excludeDisputeId: params.composingDisputeId,
     includeOtherTrack: true,
   });
+  // S310 (Andrew) — the attested billing-office hold call (the same entry the
+  // recital renders) upgrades the standing collections-hold ask to a written
+  // confirmation of that request.
+  const holdCallAt =
+    recitalCallLog?.find((c) => c.kind === "billing_hold_call")?.calledAt ?? null;
 
   const body = template.body({
     patientName: bill.patient.name ?? "",
@@ -227,6 +233,7 @@ export async function rerenderDisputeLetter(
     disputeGroundsOn,
     attestingName: params.attestingName,
     letterRecovery,
+    holdCallAt,
     recovery: recovery ?? undefined,
     noPlanCoverageRequestOn,
     // Zone-3 (S266) — escalation/collections inputs for the ladder-advance

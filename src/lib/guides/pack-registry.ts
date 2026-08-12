@@ -165,7 +165,10 @@ export const PACK_A_INSURER_STEPS: GuideStep[] = [
   },
   {
     id: "packA:ins-ask-hold",
-    title: "Call the billing office — ask for a hold",
+    // S310 (Andrew-approved) — "the billing office" inside the INSURER pack read
+    // as the insurer's; it is the provider's (the hold protects against their
+    // collections while the insurer re-reviews).
+    title: "Call the provider's billing office — ask for a hold",
     copy: "Keeps the bill out of collections while your insurer re-reviews.",
     script: billingHoldScript,
     control: "checkbox",

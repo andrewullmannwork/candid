@@ -503,7 +503,11 @@ const notRenderedLine = makeLine({
   const prov = resolveLetterRecovery(ev, EMPTY_BASIS, "provider");
   const ins = resolveLetterRecovery(ev, EMPTY_BASIS, "insurer");
   check("RC provider folds the claim tier → total 566 (line 420 + claim 146)", near(prov.total, 566), prov.total);
-  check("RC insurer excludes the claim tier → total 420 (line only)", near(ins.total, 420), ins.total);
+  // S310 F18 — a not-rendered refund is the PROVIDER's to pay back (they
+  // charged for care not received); the insurer letter's ask on such lines is
+  // reprocess/recoup, not a patient refund. The insurer headline therefore
+  // excludes the line tier's provider-family refunds too — total 0 here.
+  check("RC insurer excludes claim tier AND provider-family line refunds → total 0 (S310 F18)", near(ins.total, 0), ins.total);
   check("RC claimRecoveries populated for BOTH recipients", prov.claimRecoveries.length === 1 && ins.claimRecoveries.length === 1, { prov: prov.claimRecoveries.length, ins: ins.claimRecoveries.length });
 }
 

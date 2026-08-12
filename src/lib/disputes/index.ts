@@ -109,6 +109,8 @@ export interface GenerateDisputeLetterOptions {
    * Absent/empty → omitted, byte-identical letter.
    */
   priorContactRecital?: string;
+  /** S310 — the attested billing-office hold call's instant (see TemplateParams). */
+  holdCallAt?: string | null;
 }
 
 export function generateDisputeLetter(
@@ -129,7 +131,7 @@ export function generateDisputeLetter(
     ? { planEvidence: optionsOrPlanEvidence }
     : (optionsOrPlanEvidence ?? {});
   const { planEvidence, planContext, evidence, gateUnverified, enforceDataTrustGate, disputeGroundsOn, disputeGroundBasis, noPlanCoverageRequestOn,
-    certifiedMail, appealExhausted, collector, debtWithinWindow, priorContactRecital } =
+    certifiedMail, appealExhausted, collector, debtWithinWindow, priorContactRecital, holdCallAt } =
     options;
 
   // Resolve the letter type up front (was below, before the template lookup) so the recovery fold
@@ -187,6 +189,7 @@ export function generateDisputeLetter(
     v3DesignOn: enforceDataTrustGate ?? false,
     disputeGroundsOn: disputeGroundsOn ?? false,
     letterRecovery,
+    holdCallAt,
     recovery,
     noPlanCoverageRequestOn: noPlanCoverageRequestOn ?? false,
     // S300 — ONE placement decision (below) governs both branches, so a letter

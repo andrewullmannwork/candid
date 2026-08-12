@@ -105,6 +105,13 @@ interface TemplateParams {
    */
   attestingName?: string;
   /**
+   * S310 (Andrew) — the attested billing-office hold call's instant, when one
+   * exists (same callLog entry the recital renders). buildRequestSection
+   * upgrades the standing collections-hold ask to a written confirmation of
+   * that call. Absent → the standing ask, byte-identical.
+   */
+  holdCallAt?: string | null;
+  /**
    * §18 incr-4 (dispute_grounds_v1) — the per-line DEDUCTIBLE-AWARE recovery dollars
    * (resolveLetterRecovery, keyed by lineItemId). When present, buildRequestSection
    * sources the cost-share + balance-billing refund/write-off from here (== the card
@@ -585,8 +592,12 @@ export function buildRequestSection(params: {
   // `dispute.metadata.finAssistOptIn` opt-in); defaults false → byte-identical. See
   // TemplateParams.finAssistContext.
   finAssistContext?: boolean;
+  /** S310 (Andrew) — the attested billing-office hold call's instant, when one
+   *  exists (the same callLog entry the recital renders). Upgrades the
+   *  standing collections-hold ask to a written confirmation of that call. */
+  holdCallAt?: string | null;
 }): string {
-  const { evidence, planContext, recipient, letterRecovery, recovery, noPlanCoverageRequestOn, demandsEnabled, finAssistContext } = params;
+  const { evidence, planContext, recipient, letterRecovery, recovery, noPlanCoverageRequestOn, demandsEnabled, finAssistContext, holdCallAt } = params;
   if (!evidence) return "";
   const allLines = evidence.claims.flatMap((c) => c.lineItemEvidence);
   if (allLines.length === 0) return "";
@@ -659,6 +670,12 @@ export function buildRequestSection(params: {
   // Item A — set when the no-plan coverage hold (below) already requested a collections hold, so
   // the standing collections-hold doesn't render twice.
   let collectionsHoldRequested = false;
+  // S310 (Andrew-approved fold) — when both the cost-share correction ask and
+  // the coverage-track correction ask would render on a provider letter, they
+  // fold into ONE sentence (the write-off clause carried along). These track
+  // the cost-share ask so the coverage section can replace it in place.
+  let costShareAskIndex: number | null = null;
+  let costShareWriteOffClause = "";
 
   // 1) service_not_rendered (attested) — strongest; leads.
   if (b.attested.length > 0) {
@@ -725,8 +742,19 @@ export function buildRequestSection(params: {
       ? `reprocess the affected ${many ? "charges" : "charge"} applying the cost-sharing my plan specifies (cited above)`
       : `correct my bill to the cost-sharing my plan specifies (cited above)`;
     const remedy: string[] = [];
-    if (refund > 0) remedy.push(`refund the ${formatCurrency(refund)} I overpaid`);
-    if (writeOff > 0) remedy.push(`write off the ${formatCurrency(writeOff)} billed above my correct responsibility`);
+    // S310 F18 (Andrew) — each letter claims only ITS party's money, mirroring
+    // the panel rows: the cost-share refund is the INSURER letter's demand
+    // (the fix is reprocessing), the write-off the provider/collector
+    // letter's (the balance is theirs to stop billing). Same rule as
+    // resolveLetterRecovery's recipient-scoped totals, so the sentence, the
+    // headline amount, and the panel agree by construction.
+    if (isInsurer && refund > 0) remedy.push(`refund the ${formatCurrency(refund)} I overpaid`);
+    if (!isInsurer && writeOff > 0) remedy.push(`write off the ${formatCurrency(writeOff)} billed above my correct responsibility`);
+    costShareAskIndex = asks.length;
+    costShareWriteOffClause =
+      !isInsurer && writeOff > 0
+        ? `, and write off the ${formatCurrency(writeOff)} billed above my correct responsibility`
+        : "";
     asks.push(`${capFirst(verb)}${remedy.length ? `, and ${joinClauses(remedy)}` : ""}.`);
   }
 
@@ -754,6 +782,12 @@ export function buildRequestSection(params: {
           `Until my insurer issues its coverage determination, place any collection activity on this balance on hold and do not report it to a credit bureau. Once the insurer determines how the claim should have been processed, rebill me for only the patient cost-share its determination establishes.`,
         );
         collectionsHoldRequested = true; // dedup: the standing collections-hold (Item A) won't double up
+      } else if (costShareAskIndex != null) {
+        // S310 (Andrew-approved fold) — the two "correct my bill" asks were
+        // near-duplicates when both fired; ONE sentence replaces the
+        // cost-share ask in place, keeping its write-off clause.
+        asks[costShareAskIndex] =
+          `Correct my bill to reflect only the cost-sharing my plan specifies for these services (cited above), as determined by my insurer${costShareWriteOffClause}.`;
       } else {
         asks.push(
           `Correct my bill to reflect only my cost-sharing under my plan's coverage of ${b.coverage.length > 1 ? "these services" : "this service"}, as determined by my insurer.`,
@@ -1005,8 +1039,14 @@ export function buildRequestSection(params: {
   // no redundant second hold. (When the no-plan hold pre-empted this one, collections are already
   // held by it and no false FA reference exists → FA-awareness stays scoped to this hold.)
   if (!isInsurer && !collectionsHoldRequested && allLines.some((li) => (li.patientOwes ?? 0) > 0)) {
+    // S310 (Andrew-approved) — when the user already requested the hold by
+    // phone (the attested billing-office call this letter also recites), the
+    // ask upgrades to a written confirmation of THAT request; otherwise the
+    // standing launch clause asks for the hold fresh.
     asks.push(
-      `I dispute these charges. While this dispute is unresolved${faActive ? " and my financial-assistance request is under review" : ""}, place any collection activity for this balance on hold and do not report it to a credit bureau. If it has already been reported, report it as disputed.`,
+      holdCallAt
+        ? `Please confirm in writing the hold I requested by phone on ${easternDate(holdCallAt)}.`
+        : `I dispute these charges. While this dispute is unresolved${faActive ? " and my financial-assistance request is under review" : ""}, place any collection activity for this balance on hold and do not report it to a credit bureau. If it has already been reported, report it as disputed.`,
     );
   }
 
@@ -1537,6 +1577,7 @@ const overchargeTemplate: LetterTemplate = {
     disputeGroundsOn,
     attestingName,
     letterRecovery,
+    holdCallAt,
     recovery,
     noPlanCoverageRequestOn,
     finAssistContext,
@@ -1606,7 +1647,7 @@ const overchargeTemplate: LetterTemplate = {
     // Block C2 item 4 — v3 replaces the fixed "I am requesting 1/2/3" list with
     // the conditional request tree (provider voice). OFF → byte-identical.
     const requestBlock = (v3DesignOn ?? false)
-      ? buildRequestSection({ evidence, planContext, recipient: "provider", letterRecovery, recovery, noPlanCoverageRequestOn, finAssistContext, demandsEnabled: disputeGroundsOn ?? false })
+      ? buildRequestSection({ evidence, planContext, recipient: "provider", letterRecovery, recovery, noPlanCoverageRequestOn, finAssistContext, demandsEnabled: disputeGroundsOn ?? false, holdCallAt })
       : `I am requesting the following:
 
 1. A detailed, itemized bill showing all charges, procedure codes (CPT/HCPCS), and quantities.
@@ -1888,6 +1929,7 @@ const balanceBillingTemplate: LetterTemplate = {
     disputeGroundsOn,
     attestingName,
     letterRecovery,
+    holdCallAt,
     recovery,
     noPlanCoverageRequestOn,
     finAssistContext,
@@ -1930,7 +1972,7 @@ const balanceBillingTemplate: LetterTemplate = {
     // Block C2 item 4 — v3 replaces the fixed "I am requesting 1/2/3" list with
     // the conditional request tree (provider voice). OFF → byte-identical.
     const requestBlock = (v3DesignOn ?? false)
-      ? buildRequestSection({ evidence, planContext, recipient: "provider", letterRecovery, recovery, noPlanCoverageRequestOn, finAssistContext, demandsEnabled: disputeGroundsOn ?? false })
+      ? buildRequestSection({ evidence, planContext, recipient: "provider", letterRecovery, recovery, noPlanCoverageRequestOn, finAssistContext, demandsEnabled: disputeGroundsOn ?? false, holdCallAt })
       : `I am requesting:
 
 1. An immediate review of these charges
@@ -1999,6 +2041,7 @@ const duplicateChargeTemplate: LetterTemplate = {
     disputeGroundsOn,
     v3DesignOn,
     letterRecovery,
+    holdCallAt,
     recovery,
     noPlanCoverageRequestOn,
     finAssistContext,
@@ -2038,7 +2081,7 @@ const duplicateChargeTemplate: LetterTemplate = {
     // path / the evidence:null fixture variant) fall to the legacy list — duplicate has no separate
     // closing line, so an empty relief would read abruptly (unlike overcharge, which has one).
     const requestBlock = ((v3DesignOn ?? false) && evidence)
-      ? buildRequestSection({ evidence, planContext, recipient: "provider", letterRecovery, recovery, noPlanCoverageRequestOn, finAssistContext, demandsEnabled: disputeGroundsOn ?? false })
+      ? buildRequestSection({ evidence, planContext, recipient: "provider", letterRecovery, recovery, noPlanCoverageRequestOn, finAssistContext, demandsEnabled: disputeGroundsOn ?? false, holdCallAt })
       : `I am requesting:
 
 1. A detailed review of each charge listed above
