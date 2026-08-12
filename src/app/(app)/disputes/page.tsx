@@ -10,13 +10,14 @@ import { LockedOverlay } from "@/components/shared/LockedOverlay";
 import { InlineSubscribePanel } from "@/components/billing/InlineSubscribePanel";
 import { disputeUrlForResult } from "@/lib/disputes/url";
 import { letterRecipientKind } from "@/lib/disputes";
+import { RECIPIENT_DEPARTMENT_LINE } from "@/lib/disputes/letter-type";
 import { unsendPayload } from "@/lib/disputes/outcome-actions";
 import { LETTER_TYPE_LABELS, parseLetterDate, type LetterPatientIdentity } from "@/lib/disputes/letter-type";
 import { LetterView } from "@/components/disputes/LetterView";
 import { fmtRailDate } from "@/lib/case/rail-steps";
 import { OUTCOME_LABELS } from "@/lib/disputes/outcome-taxonomy";
 import type { ProjectedLetterStep } from "@/lib/case/timeline-projector";
-import { isTerminalRung, suggestDoors } from "@/lib/guides/pack-registry";
+import { CASE_RAIL, isTerminalRung, suggestDoors } from "@/lib/guides/pack-registry";
 import { DisputeLetterHero } from "@/components/disputes/DisputeLetterHero";
 import { EvidenceStrengthModal } from "@/components/disputes/EvidenceStrengthModal";
 import { DisputeRecipientCard } from "@/components/disputes/DisputeRecipientCard";
@@ -229,6 +230,16 @@ function DisputesContent() {
     () => !!searchParams.get("dispute"),
   );
   const [planContext, setPlanContext] = useState<PlanContext | null>(null);
+  // S310 (F14a, optimistic) — a just-saved name shows in the claim-details
+  // facts immediately; server truth replaces it after the refetch. Cleared on
+  // success (post-refetch, so no flicker) and on failure (the snapback).
+  const [factsOptimistic, setFactsOptimistic] = useState<{
+    provider?: string;
+    insurer?: string;
+    // S310 (sender block) — the just-saved mailing address, shown until the
+    // reconcile carries server truth.
+    address?: { line1: string; line2: string | null; city: string; state: string; zip: string };
+  }>({});
   const [evidence, setEvidence] = useState<DisputeEvidence | null>(null);
   const [nameMismatch, setNameMismatch] = useState<{ billName: string; profileName: string } | null>(null);
   // Phase 4 Task 4-E: server-authoritative flag state for cite-grade gating on
@@ -246,6 +257,17 @@ function DisputesContent() {
   const [isStale, setIsStale] = useState(false);
   const [staleBannerCollapsed, setStaleBannerCollapsed] = useState(false);
   const [refreshingLetter, setRefreshingLetter] = useState(false);
+  // S312 (F2-S312.1, Andrew's ruling) — "this letter may no longer be needed".
+  // Server-folded boolean (live never-sent draft + $0 demand + flag + not kept);
+  // the client only renders it. `zeroDemandBusy` guards the Dismiss/Keep POSTs.
+  const [noRemainingDemand, setNoRemainingDemand] = useState(false);
+  const [zeroDemandBusy, setZeroDemandBusy] = useState(false);
+  // S312 optimistic snapback — the returned banner wears this inline error.
+  const [zeroDemandFailed, setZeroDemandFailed] = useState(false);
+  // S312 (F2-S311.6) — the cancel stamp for the cancelled band ("cancelled on
+  // {date}"). updated_at is stable after cancel: the S311 void guards froze
+  // every writer, so the last write IS the cancellation.
+  const [disputeUpdatedAt, setDisputeUpdatedAt] = useState<string | null>(null);
   // §18.10.D — the "confirm to strengthen" signal from the dispute GET/redraft. Non-null +
   // fields populated only when the deductible-aware letter omitted a precise dollar.
   const [strengthenLetter, setStrengthenLetter] = useState<{ weakened: boolean; fields: StrengthField[] } | null>(null);
@@ -332,7 +354,10 @@ function DisputesContent() {
   const [providerAddressOpen, setProviderAddressOpen] = useState(false);
   // S74 — Mark-sent button state + transient toast.
   const [markingSent, setMarkingSent] = useState(false);
-  const [markSentToast, setMarkSentToast] = useState<string | null>(null);
+  // S311 (§A round-6) — {kind} mirrors redraftToast: the void-guard refusal
+  // was rendering in the SUCCESS-green toolbar toast, far from the checklist
+  // button that was clicked; errors are amber AND surface inline at the row.
+  const [markSentToast, setMarkSentToast] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   // S74.6 D5 §E.2 — outcome reporting modal state.
   const [outcomeModalOpen, setOutcomeModalOpen] = useState(false);
   // Zone-3 (S266) — advisory next rung surfaced after an outcome is reported.
@@ -470,6 +495,10 @@ function DisputesContent() {
     // navigation re-expands the banner; a refresh keeps the user's collapse
     // state (the refreshed letter is no longer stale anyway).
     setIsStale(data.isStale === true);
+    // S312 (F2-S312.1) — the "may no longer be needed" banner signal + the
+    // cancel stamp for the cancelled band (F2-S311.6).
+    setNoRemainingDemand(data.noRemainingDemand === true);
+    setDisputeUpdatedAt(typeof data.updatedAt === "string" ? data.updatedAt : null);
     if (!opts?.refresh) { setStaleBannerCollapsed(false); setStrengthenCollapsed(false); }
     setPlanContext(data.planContext ?? null);
     setEvidence(data.evidence ?? null);
@@ -1123,11 +1152,22 @@ function DisputesContent() {
         const data = await res.json().catch(() => ({}));
         throw new Error(data?.error || `mark-sent failed (${res.status})`);
       }
-      setMarkSentToast("Marked as sent. Follow-up reminders are scheduled.");
+      setMarkSentToast({ kind: "success", text: "Marked as sent. Follow-up reminders are scheduled." });
       void fetchDispute(disputeId);
     } catch (err) {
       setDisputeStatus(prevStatus);
-      setMarkSentToast(err instanceof Error ? err.message : "Failed to mark as sent");
+      // S311 (Andrew, §A round-3) — the void guard's refusal was invisible:
+      // the raw machine code surfaced as the toast (or nothing readable), so
+      // the by-design refusal on a cancelled letter read as a bug. Machine
+      // codes map to plain language here; everything else keeps its message.
+      const msg = err instanceof Error ? err.message : "";
+      setMarkSentToast({
+        kind: "error",
+        text:
+          msg === "letter_cancelled"
+            ? "This letter was cancelled — it can't be marked as sent."
+            : msg || "Failed to mark as sent",
+      });
     } finally {
       setMarkingSent(false);
       setTimeout(() => setMarkSentToast(null), 6000);
@@ -1153,7 +1193,7 @@ function DisputesContent() {
       return true;
     } catch {
       setDisputeStatus(prevStatus);
-      setMarkSentToast("Couldn't undo — please try again.");
+      setMarkSentToast({ kind: "error", text: "Couldn't undo — please try again." });
       setTimeout(() => setMarkSentToast(null), 6000);
       return false;
     }
@@ -1535,6 +1575,98 @@ function DisputesContent() {
     if (disputeId) await fetchDispute(disputeId);
   };
 
+  // S310 (F14a) — name corrections from the claim-details block + the
+  // "These look right" name vouch. One write path per name: the claim-scoped
+  // provider-contact route (the same one the address form posts to) and the
+  // plan row's insurer-name route. The refetch is the SAME plain GET every
+  // other edit uses — its own drift machinery rebuilds the live draft with
+  // the corrected name (both names sit inside the watched compose basis /
+  // plan context).
+  const printsInsurerName = letter ? letterRecipientKind(letter.letterType) === "insurer" : false;
+  const authedNamePost = async (url: string, body: unknown): Promise<void> => {
+    const token = await getAuthToken();
+    if (!token) throw new Error("not signed in");
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`save failed (${res.status})`);
+  };
+  const clearFactsOptimistic = (field: "provider" | "insurer" | "address") =>
+    setFactsOptimistic((p) => {
+      const next = { ...p };
+      delete next[field];
+      return next;
+    });
+  const fixProviderName = async (name: string): Promise<void> => {
+    const claimId = letter?.auditReportId;
+    if (!claimId) throw new Error("no claim");
+    // Optimistic — the facts line shows the name in this render; the panel's
+    // editor has already closed. Failure clears the override and rethrows so
+    // the row snaps back open with the error.
+    setFactsOptimistic((p) => ({ ...p, provider: name }));
+    try {
+      await authedNamePost(`/api/claims/${claimId}/provider-contact`, { name });
+      await refetchAfterChange();
+      clearFactsOptimistic("provider");
+    } catch (err) {
+      clearFactsOptimistic("provider");
+      throw err;
+    }
+  };
+  const fixInsurerName = async (name: string): Promise<void> => {
+    const planId = planContext?.plan?.id;
+    if (!planId) throw new Error("no plan");
+    setFactsOptimistic((p) => ({ ...p, insurer: name }));
+    try {
+      await authedNamePost(`/api/plan/insurer-name`, { planId, insurerName: name });
+      await refetchAfterChange();
+      clearFactsOptimistic("insurer");
+    } catch (err) {
+      clearFactsOptimistic("insurer");
+      throw err;
+    }
+  };
+  const fixUserAddress = async (addr: {
+    line1: string;
+    line2: string | null;
+    city: string;
+    state: string;
+    zip: string;
+  }): Promise<void> => {
+    // S310 (sender block) — writes the user's OWN profiles row through the
+    // EXISTING /api/profile route (the same one the profile page uses); the
+    // refetch re-resolves planContext.userAddress and the drift machinery
+    // rebuilds the draft with the sender block.
+    setFactsOptimistic((p) => ({ ...p, address: addr }));
+    try {
+      await authedNamePost(`/api/profile`, {
+        address_line1: addr.line1,
+        address_line2: addr.line2 ?? "",
+        city: addr.city,
+        state: addr.state,
+        zip_code: addr.zip,
+      });
+      await refetchAfterChange();
+      clearFactsOptimistic("address");
+    } catch (err) {
+      clearFactsOptimistic("address");
+      throw err;
+    }
+  };
+  const vouchNames = (): void => {
+    // Fire-and-forget flywheel stamps; never blocks or fails the confirm.
+    const claimId = letter?.auditReportId;
+    if (claimId) {
+      void authedNamePost(`/api/claims/${claimId}/provider-contact`, { confirmName: true }).catch(() => {});
+    }
+    const planId = planContext?.plan?.id;
+    if (printsInsurerName && planId) {
+      void authedNamePost(`/api/plan/insurer-name`, { planId, confirm: true }).catch(() => {});
+    }
+  };
+
   if (!letter) {
     if (disputeFetching) {
       // S132 iter-8 — unified cube loader.
@@ -1576,7 +1708,14 @@ function DisputesContent() {
     : null;
   const providerName = evidence?.claims?.[0]?.providerName ?? null;
   const serviceDate = evidence?.claims?.[0]?.dateOfService ?? letter.createdAt;
-  const potentialRecovery = evidence?.totals?.totalDiscrepancy ?? null;
+  // S311 — the hero chip is the LETTER's own money (S310: a letter and its
+  // headline chip are the same money — amount_disputed comes from the
+  // recipient-scoped fold the sentences render from). The claim-level
+  // evidence total stays only as the legacy fallback for rows without an
+  // amount: on the provider letter the two DIVERGE ($60.29 letter vs the
+  // insurer's $67.18 evidence discrepancy), and the chip was advertising the
+  // other party's money.
+  const potentialRecovery = amountDisputed ?? evidence?.totals?.totalDiscrepancy ?? null;
   const letterTypeLabel = LETTER_TYPE_LABELS[letter.letterType] ?? letter.letterType;
 
   const shortRef = letter.id.slice(0, 8).toUpperCase();
@@ -1656,6 +1795,93 @@ function DisputesContent() {
       </div>
     )
   ) : null;
+
+  // S312 (F2-S311.6) — a cancelled letter is a read-only exhibit: the band names
+  // it, the body stays readable, and the action surfaces (checklist spine,
+  // toolbar) hide below rather than render clickable-but-refused. The server
+  // guards (409 letter_void) stay as the backstop.
+  const isCancelled = disputeStatus === "cancelled";
+  const cancelledBandNode = isCancelled ? (
+    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+      <p className="text-xs leading-relaxed text-slate-600">
+        This letter was cancelled
+        {disputeUpdatedAt ? ` on ${formatFiledDate(disputeUpdatedAt)}` : ""} — kept for your
+        records.
+      </p>
+    </div>
+  ) : null;
+
+  // S312 (F2-S312.1, Andrew's ruling) — "this letter may no longer be needed."
+  // OPTIMISTIC with snapback (Andrew, the S310 editor idiom): the click's render
+  // settles the page — Dismiss shows the cancelled band + hides the actions,
+  // Keep drops the banner — and the POST runs behind it. Failure snaps every
+  // flipped state back and the returned banner wears the inline error (the
+  // S300 lesson: a failed write must show a symptom). mutationGenRef guards an
+  // in-flight GET from clobbering the optimistic state (the page's standing
+  // pattern, same as the outcome modal).
+  const handleZeroDemand = async (action: "dismiss" | "keep") => {
+    if (!user || !disputeId || zeroDemandBusy) return;
+    setZeroDemandBusy(true);
+    setZeroDemandFailed(false);
+    const prevStatus = disputeStatus;
+    const prevUpdatedAt = disputeUpdatedAt;
+    mutationGenRef.current += 1;
+    setNoRemainingDemand(false);
+    if (action === "dismiss") {
+      setDisputeStatus("cancelled");
+      setDisputeUpdatedAt(new Date().toISOString());
+    }
+    try {
+      const token = await user.firebaseUser.getIdToken();
+      const res = await fetch(`/api/disputes/${disputeId}/dismiss`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ action, reason: "zero_demand" }),
+      });
+      if (!res.ok) throw new Error(`dismiss ${res.status}`);
+    } catch {
+      // Snapback — the banner returns carrying the failure.
+      mutationGenRef.current += 1;
+      setNoRemainingDemand(true);
+      if (action === "dismiss") {
+        setDisputeStatus(prevStatus);
+        setDisputeUpdatedAt(prevUpdatedAt);
+      }
+      setZeroDemandFailed(true);
+    } finally {
+      setZeroDemandBusy(false);
+    }
+  };
+  const zeroDemandBannerNode =
+    noRemainingDemand && !isCancelled ? (
+      <div className="rounded-lg border border-sky-200 bg-sky-50 p-3">
+        {/* S312 — same four strings as the rail's inline banner (CASE_RAIL.zeroDemand*):
+            ONE copy home, two surfaces, never a different phrasing of the same state. */}
+        <p className="text-xs font-semibold text-sky-900">{CASE_RAIL.zeroDemandTitle}</p>
+        <p className="mt-1 text-xs leading-relaxed text-sky-900">{CASE_RAIL.zeroDemandBody}</p>
+        <div className="mt-2 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => handleZeroDemand("dismiss")}
+            disabled={zeroDemandBusy}
+            className="rounded bg-slate-800 px-3 py-1 text-xs font-semibold text-white hover:bg-slate-900 disabled:opacity-50"
+          >
+            {CASE_RAIL.zeroDemandDismiss}
+          </button>
+          <button
+            type="button"
+            onClick={() => handleZeroDemand("keep")}
+            disabled={zeroDemandBusy}
+            className="rounded border border-sky-300 bg-white px-3 py-1 text-xs font-semibold text-sky-800 hover:bg-sky-100 disabled:opacity-50"
+          >
+            {CASE_RAIL.zeroDemandKeep}
+          </button>
+          {zeroDemandFailed && (
+            <span className="text-xs text-red-600">{CASE_RAIL.zeroDemandSaveFailed}</span>
+          )}
+        </div>
+      </div>
+    ) : null;
 
   // §18.10.D — the "confirm to strengthen + rebuild" prompt. Present only when the deductible-
   // aware letter omitted a precise dollar AND there are user-fixable inputs. Confirming writes
@@ -1813,8 +2039,14 @@ function DisputesContent() {
         </div>
       )}
       {markSentToast && (
-        <div className="mt-2 rounded-md bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
-          {markSentToast}
+        <div
+          className={`mt-2 rounded-md px-3 py-2 text-xs ${
+            markSentToast.kind === "error"
+              ? "bg-amber-50 text-amber-800"
+              : "bg-emerald-50 text-emerald-800"
+          }`}
+        >
+          {markSentToast.text}
         </div>
       )}
       {outcomeToast && (
@@ -1827,14 +2059,20 @@ function DisputesContent() {
 
   // S293 (#3) — while the letter's REQUIRED inputs are still missing, the
   // preview must read as pending, not as a finished letter that happens to be
-  // incomplete. The signal is the SAME server-computed readiness floor the
-  // needs panel's "Not ready to send" pill reads (strength.readiness — one
-  // derivation, the two surfaces cannot disagree); null readiness (legacy /
-  // flag-off payloads) → no treatment, and a sent letter is never dimmed.
-  // Visuals reuse the LockedOverlay dim recipe (blur + opacity + inert), the
+  // incomplete. The signal is the SAME readiness floor the needs panel's
+  // "Not ready to send" pill reads; null readiness (legacy / flag-off
+  // payloads) → no treatment, and a sent letter is never dimmed. Visuals
+  // reuse the LockedOverlay dim recipe (blur + opacity + inert), the
   // codebase's canonical "present but not usable yet" treatment.
+  // S309 F11 (Andrew: "super big lag… once they click a button that should
+  // allow the letter to be read it opens up") — reads effectiveReadiness,
+  // the S302 optimistic re-derivation every OTHER readiness consumer already
+  // uses. This was the one raw `strength.readiness` reader left, so the blur
+  // waited out the debounced reconcile + the ~5s GET after the identity
+  // confirm while the pill said ready — the S302 drift class, one consumer
+  // behind. The reconcile still lands server truth; snap-back is free.
   const letterPending =
-    strength?.readiness?.state === "attention" && !alreadySent;
+    effectiveReadiness?.state === "attention" && !alreadySent;
 
   const articleNode = (
     <article id="dispute-letter-article" className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
@@ -2148,8 +2386,24 @@ function DisputesContent() {
                 (patientIdentityResolved
                   ? letterPatientNameSrv ?? accountName
                   : (nameMismatch?.billName ?? nameMismatch?.profileName ?? accountName)) || null,
-              providerName: evidence?.claims?.[0]?.providerName ?? null,
+              providerName: factsOptimistic.provider ?? evidence?.claims?.[0]?.providerName ?? null,
               serviceDate: evidence?.claims?.[0]?.dateOfService ?? null,
+              // S310 (sender block) — the letters print this address above the
+              // dateline when complete; the row lets the user fix it in place.
+              userAddress: factsOptimistic.address ?? planContext?.userAddress ?? null,
+              // S310 — only insurer-recipient letters print the insurer, so
+              // only they carry the fact (and its fix row). Same coalesce the
+              // letter's recipient block resolves through; optimistic override
+              // first so a just-saved fix shows at once.
+              ...(printsInsurerName
+                ? {
+                    insurerName:
+                      factsOptimistic.insurer ??
+                      planContext?.insurer?.name ??
+                      planContext?.plan?.insurerName ??
+                      null,
+                  }
+                : {}),
             }
           : null
       }
@@ -2178,6 +2432,10 @@ function DisputesContent() {
         })
       }
       onResolvePatient={resolvePatientChoice}
+      onFixProviderName={letter?.auditReportId ? fixProviderName : undefined}
+      onFixInsurerName={printsInsurerName && planContext?.plan?.id ? fixInsurerName : undefined}
+      onFixUserAddress={fixUserAddress}
+      onVouchNames={vouchNames}
       onEditLetter={() => setIsEditing(true)}
       onReviewAttestation={() => {
         // S293 (#11) — jump to the attestation STEP, not the evidence card.
@@ -2507,6 +2765,7 @@ function DisputesContent() {
       }
       onDownload={handleDownload}
       onMarkSent={handleMarkSent}
+      markSentError={markSentToast?.kind === "error" ? markSentToast.text : null}
       markingSent={markingSent}
       initialChecks={checklist}
       onPersistCheck={handlePersistCheck}
@@ -2912,16 +3171,21 @@ function DisputesContent() {
            "What to do next" list is superseded by the UnifiedTodo. */
         <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_22rem]">
           <div className="min-w-0 space-y-5">
+            {/* S312 (F2-S311.6) — cancelled = exhibit: the band leads, the
+                action surfaces (checklist spine + toolbar) hide, the letter
+                body stays readable below. */}
+            {cancelledBandNode}
+            {zeroDemandBannerNode}
             {staleBannerNode}
             {strengthenPromptNode}
             {dataTrustBannerNode}
             {/* S286 — "The case" card retired in v3: its timeline, countdown,
                 and stage actions live INSIDE the UnifiedTodo spine now. The
                 legacy (flag-OFF) layout keeps CaseSummary unchanged. */}
-            {unifiedTodoNode}
+            {!isCancelled && unifiedTodoNode}
             {heroNode}
             {recipientNode}
-            {toolbarNode}
+            {!isCancelled && toolbarNode}
             {articleNode}
           </div>
           {/* Block C2 — the rail is taller than the viewport on most letters;
@@ -2941,13 +3205,16 @@ function DisputesContent() {
         </div>
       ) : (
         <>
+          {/* S312 (F2-S311.6) — same cancelled-exhibit rule on the legacy layout. */}
+          {cancelledBandNode}
+          {zeroDemandBannerNode}
           {staleBannerNode}
           {strengthenPromptNode}
           {heroNode}
           {recipientNode}
-          {toolbarNode}
+          {!isCancelled && toolbarNode}
           {articleNode}
-          {nextStepsNode}
+          {!isCancelled && nextStepsNode}
           {caseFileNode}
         </>
       )}
@@ -3065,10 +3332,10 @@ function DisputesContent() {
         />
       ) : null}
 
-      {disputeId ? (
+      {letter?.auditReportId ? (
         <ProviderAddressModal
           open={providerAddressOpen}
-          disputeId={disputeId}
+          claimId={letter.auditReportId}
           initialName={planContext?.providerContact?.name ?? null}
           initialAddressFields={planContext?.providerContact?.addressFields ?? null}
           initialPhone={planContext?.providerContact?.phone ?? null}
@@ -3322,15 +3589,18 @@ function recipientFromPlanContext(
   letterType: DisputeLetter["letterType"],
 ): DisputeLetter["recipient"] {
   const insurer = planContext?.insurer ?? null;
-  // Appeals go to the insurer; everything else (overcharge, balance billing,
-  // duplicate charges, itemized requests, self-pay negotiation) goes to the
-  // provider billing department. S74: the provider mailing address now flows
-  // through planContext.providerContact so we can render it in the card.
-  if (letterType === "insurance_appeal" && insurer) {
+  // S311 — the branch is the SHARED letterRecipientKind (the ad-hoc
+  // `letterType === "insurance_appeal"` re-derivation was the S299/S300
+  // defect family this card had kept: external reviews are insurer-directed
+  // and were falling to the provider branch), and the role line is the SHARED
+  // department map the letter's own recipient block prints — the card can no
+  // longer describe a different envelope than the letter below it. Collector
+  // letters keep today's provider-branch behavior (no department map entry).
+  if (letterRecipientKind(letterType) === "insurer" && insurer) {
     const addr = insurer.appealsAddress;
     return {
       name: insurer.name,
-      role: "Member Services — Appeals",
+      role: RECIPIENT_DEPARTMENT_LINE.insurer,
       address: addr
         ? [addr.line1, addr.line2, `${addr.city}, ${addr.state} ${addr.postalCode}`].filter(Boolean).join("\n")
         : undefined,
@@ -3341,16 +3611,16 @@ function recipientFromPlanContext(
   if (provider && (provider.name || provider.address)) {
     return {
       name: provider.name ?? "Provider",
-      role: "Billing Department",
+      role: RECIPIENT_DEPARTMENT_LINE.provider,
       address: provider.address ?? undefined,
       phone: provider.phone ?? undefined,
     };
   }
   // Fallback when neither side resolved — preserves legacy behavior.
-  if (letterType === "insurance_appeal") {
-    return { name: "Insurance Appeals", role: "Appeals Department" };
+  if (letterRecipientKind(letterType) === "insurer") {
+    return { name: "Insurance Appeals", role: RECIPIENT_DEPARTMENT_LINE.insurer };
   }
-  return { name: "Provider", role: "Billing Department" };
+  return { name: "Provider", role: RECIPIENT_DEPARTMENT_LINE.provider };
 }
 
 function RequestItemizedBill() {

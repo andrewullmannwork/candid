@@ -18,7 +18,7 @@ import { ProviderAddressForm } from "./ProviderAddressForm";
 
 interface Props {
   open: boolean;
-  disputeId: string;
+  claimId: string;
   initialName: string | null;
   initialAddressFields: {
     addressLine1?: string | null;
@@ -36,7 +36,7 @@ interface Props {
 
 export function ProviderAddressModal({
   open,
-  disputeId,
+  claimId,
   initialName,
   initialAddressFields,
   initialPhone,
@@ -55,7 +55,7 @@ export function ProviderAddressModal({
       ariaLabel="Provider mailing address"
     >
       <ProviderAddressForm
-        disputeId={disputeId}
+        claimId={claimId}
         initialName={initialName}
         initialAddress={null}
         initialAddressFields={initialAddressFields}

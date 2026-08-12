@@ -123,7 +123,8 @@ const base = { prorated: false, paidTotal: 0, balanceTotal: 0, refundComponent: 
     d.spreadSentence === "Your bill reports payments only as one total, so we split $154.49 across the charged lines by their share of the bill.",
     d.spreadSentence,
   );
-  check("banner refund sub — tense fix", d.refundSub === "+$52.82 refund to request", d.refundSub);
+  check("banner refund sub — party-named (S310)", d.refundSub === "+$52.82 from your insurer", d.refundSub);
+  check("banner overpaid sub absent when nothing was paid above the charge", d.overpaidSub === null);
   check("banner forgiveness sub absent under $1", d.forgivenessSub === null);
 
   // Bill card — state 1 (paid, refund-shaped)
@@ -137,7 +138,9 @@ const base = { prorated: false, paidTotal: 0, balanceTotal: 0, refundComponent: 
     d.bill.paidSplit!.equation === "$101.67 + $52.82 = the $154.49 you paid ✓",
     d.bill.paidSplit!.equation,
   );
-  check("bill: single split carries the $0.00 forgiveness companion", d.bill.paidSplit!.forgivenessZero === true);
+  // S310 (Andrew) — the zero-companion rule is REMOVED: a row renders only
+  // while ≥ $1. The pin asserts the mechanism's absence so it can't creep back.
+  check("bill: no zero-companion field on the paid split (S310)", !("forgivenessZero" in d.bill.paidSplit!));
   check("bill: no balance split on a settled bill", d.bill.balanceSplit === null);
 }
 
@@ -159,7 +162,7 @@ const base = { prorated: false, paidTotal: 0, balanceTotal: 0, refundComponent: 
     d.bill.balanceSplit!.equation === "$101.67 + $52.82 = the $154.49 balance ✓",
     d.bill.balanceSplit!.equation,
   );
-  check("state 2: single split carries the $0.00 refund companion", d.bill.balanceSplit!.refundZero === true);
+  check("state 2: no zero-companion field on the balance split (S310)", !("refundZero" in d.bill.balanceSplit!));
   check("state 2: banner forgiveness sub — approved copy", d.forgivenessSub === "$52.82 to remove from your balance", d.forgivenessSub);
 }
 
@@ -180,7 +183,7 @@ const base = { prorated: false, paidTotal: 0, balanceTotal: 0, refundComponent: 
     d.bill.balanceSplit!.equation === "$21.67 + $32.82 = the $54.49 balance ✓",
     d.bill.balanceSplit!.equation,
   );
-  check("state 3: NO zero-companion rows in either split", d.bill.paidSplit!.forgivenessZero === false && d.bill.balanceSplit!.refundZero === false);
+  check("state 3: splits carry only real rows (S310 — no zero-companion fields)", !("forgivenessZero" in d.bill.paidSplit!) && !("refundZero" in d.bill.balanceSplit!));
   check("state 3: charged = paid + balance", d.bill.chargedToYou === 154.49, d.bill.chargedToYou);
 }
 
@@ -282,6 +285,81 @@ const base = { prorated: false, paidTotal: 0, balanceTotal: 0, refundComponent: 
   check("sub-$1 result is none, not a penny row", d.rows[2].result.kind === "none");
   check("unpaid line speaks in balance relief", d.rows[3].paidLabel === "Still billed" && d.rows[3].resultLabel === "Off your balance");
   check("banner shows both subs when both components ≥ $1", d.refundSub !== null && d.forgivenessSub !== null);
+}
+
+// ── S309 F2 (V3, Andrew-approved) — planTermCell: the table's PLAN-SAYS
+//    sub-line, composed beside planTerm so the table and the panel share ONE
+//    wording derivation. Full case matrix; "no deductible" only on an
+//    EXPLICIT deductibleApplies=false, never on unknown. ──────────────────
+{
+  const d = buildSavingsDerivation({
+    ...base,
+    lines: [
+      line("coins-unmet", { coinsurance: 0.1, deductibleApplies: true, deductibleMet: false, deductibleMax: 2000, shouldOwe: 90.7 }),
+      line("coins-met", { coinsurance: 0.2, deductibleApplies: true, deductibleMet: true, shouldOwe: 20 }),
+      line("coins-exempt", { coinsurance: 0.2, deductibleApplies: false, shouldOwe: 20 }),
+      line("coins-unknown-ded", { coinsurance: 0.2, shouldOwe: 20 }),
+      line("copay-unmet", { copay: 30, deductibleApplies: true, deductibleMet: false, deductibleMax: 2000, shouldOwe: 100 }),
+      line("copay-exempt", { copay: 30, deductibleApplies: false, shouldOwe: 30 }),
+      line("copay-unknown-ded", { copay: 30, shouldOwe: 30 }),
+      line("zero-share", { copay: 0, shouldOwe: 0 }),
+      line("zero-share-unmet", { copay: 0, deductibleApplies: true, deductibleMet: false, deductibleMax: 2000, shouldOwe: 100 }),
+      line("unpriced", { rateKnown: false }),
+      line("not-covered", { covered: false, shouldOwe: 100 }),
+    ],
+  });
+  const cell = (id: string) => d.rows.find((r) => r.id === id)?.planTermCell;
+  check("cell: coinsurance in deductible phase says what you pay NOW, then the rate", cell("coins-unmet") === "full amount until deductible met, then 10%", cell("coins-unmet"));
+  check("cell: coinsurance with deductible met is the bare term", cell("coins-met") === "20% coinsurance", cell("coins-met"));
+  check("cell: coinsurance explicitly exempt says no deductible", cell("coins-exempt") === "20% coinsurance — no deductible", cell("coins-exempt"));
+  check("cell: UNKNOWN deductibleApplies never asserts no-deductible", cell("coins-unknown-ded") === "20% coinsurance", cell("coins-unknown-ded"));
+  check("cell: copay in deductible phase says what you pay NOW, then the copay", cell("copay-unmet") === "full amount until deductible met, then $30.00 copay", cell("copay-unmet"));
+  check("cell: copay explicitly exempt says no deductible", cell("copay-exempt") === "$30.00 copay — no deductible", cell("copay-exempt"));
+  check("cell: copay with unknown deductible is the bare term", cell("copay-unknown-ded") === "$30.00 copay", cell("copay-unknown-ded"));
+  check("cell: explicit zero share reads no copay", cell("zero-share") === "no copay", cell("zero-share"));
+  check("cell: zero share in deductible phase still says what you pay NOW", cell("zero-share-unmet") === "full amount until deductible met, then no charge", cell("zero-share-unmet"));
+  check("cell: unpriced line stays silent (null)", cell("unpriced") === null, cell("unpriced"));
+  check("cell: not-covered line stays silent (null)", cell("not-covered") === null, cell("not-covered"));
+  check("cell composes beside planTerm — dedUnmet term unchanged", d.rows.find((r) => r.id === "coins-unmet")?.planTerm === "10% after deductible");
+}
+
+// ── S309 F17 (Andrew's design) — the overpay split: the refund row equals the
+//    insurer-claimable slice (what the insurer letter asks), the paid-above-
+//    charge slice is the PROVIDER's own row (what the provider letter asks),
+//    and "Charged to you" is the bill's charge — three surfaces, agreement by
+//    construction. Live case: paid $300 on a $239.71 charge, share $172.53. ──
+{
+  const d = buildSavingsDerivation({
+    prorated: true,
+    lines: [line("f17", { billed: 388.5, shouldOwe: 172.53, refund: 127.47, paid: 300, coinsurance: 0.1, deductibleApplies: true, deductibleMet: false })],
+    paidTotal: 300,
+    balanceTotal: 0,
+    refundComponent: 127.47,
+    forgivenessComponent: 0,
+    chargedTotal: 239.71,
+  });
+  const split = d.bill.paidSplit!;
+  check("F17 chargedToYou is the bill's charge, not paid+balance", d.bill.chargedToYou === 239.71, d.bill.chargedToYou);
+  check("F17 refund row = the insurer-claimable slice (capped at charge − share)", split.refund === 67.18, split);
+  check("F17 overpaid row = paid above the charge", split.overpaid === 60.29, split);
+  check("F17 three-term equation sums to the paid total", split.equation === "$172.53 + $67.18 + $60.29 = the $300.00 you paid ✓", split.equation);
+  check("F17 hero sub names the insurer slice — party-named (S310)", d.refundSub === "+$67.18 from your insurer", d.refundSub);
+  check("F17 hero sub names the provider slice (S310)", d.overpaidSub === "+$60.29 from your provider", d.overpaidSub);
+}
+// The no-overpay regression: chargedTotal supplied and equal to paid+balance →
+// overpaid 0, refund uncapped, the two-term equation — byte-identical shape.
+{
+  const d = buildSavingsDerivation({
+    ...base,
+    lines: [line("reg", { shouldOwe: 60, refund: 240, paid: 300 })],
+    paidTotal: 300,
+    balanceTotal: 0,
+    refundComponent: 240,
+    chargedTotal: 300,
+  });
+  const split = d.bill.paidSplit!;
+  check("F17 no-overpay: refund uncapped, overpaid 0, two-term equation", split.refund === 240 && split.overpaid === 0 && split.equation === "$60.00 + $240.00 = the $300.00 you paid ✓", split);
+  check("F17 no-overpay: overpaidSub null", d.overpaidSub === null);
 }
 
 const total = pass + fails.length;

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { Fragment, useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
 import type { BillState } from "@/lib/claims/derive-bill-state";
@@ -568,7 +568,10 @@ export function ClaimDetail({
   // Surface 3 (clarity redesign) — flagged-bill guided 4-step rail state:
   // the plan-vs-bill diff collapses behind "Show the math"; step 3's
   // "All services look right" / "Something looks wrong" verification pair.
-  const [showMath, setShowMath] = useState(false);
+  // S309 (Andrew) — the math is OPEN by default; it collapses when the user
+  // hides it or interacts with any step AFTER it (phone pack, rail steps) —
+  // "I made the call" means they've read the answer and moved on.
+  const [showMath, setShowMath] = useState(true);
   // S292 — "Confirmed" is SERVER truth (claims.metadata.servicesConfirmedAt),
   // DERIVED below once `claim` exists, the same persisted-state idiom
   // `assumptionsDone` / `assumptionsEngaged` already use further down this file.
@@ -595,6 +598,18 @@ export function ClaimDetail({
    */
   const [planCandidates, setPlanCandidates] = useState<DisputePlanChooserPlan[] | null>(null);
   const [repinOpen, setRepinOpen] = useState(false);
+  // S310 (F14a) — the claim-header provider-name editor (pencil beside the
+  // title). Writes the claim-scoped provider-contact route — the same single
+  // path the letter page uses — then refetches; every surface re-resolves.
+  // Saves are OPTIMISTIC (Andrew): the editor closes in the click's render and
+  // the page shows the value immediately via the overrides below; a failed
+  // write snaps back — override cleared, editor reopened with the error.
+  const [providerNameEdit, setProviderNameEdit] = useState<{
+    value: string;
+    error: boolean;
+  } | null>(null);
+  const [providerNameOptimistic, setProviderNameOptimistic] = useState<string | null>(null);
+  const [insurerNameOptimistic, setInsurerNameOptimistic] = useState<string | null>(null);
   // S293 (#1) — the ACA question block's "Not sure" dismissal, lifted from the
   // banner so the ONE pending set (pendingAssumptionFields → the step badge)
   // sees it: a dismissed block must stop counting, or the badge goes amber over
@@ -684,6 +699,10 @@ export function ClaimDetail({
   // persisted meta; the component emits on every persist).
   const [phoneFullOpen, setPhoneFullOpen] = useState(false);
   const [guidedPackLive, setGuidedPackLive] = useState<PhonePackState | null>(null);
+  // S309 (Andrew) — the skipped pack's Undo chip bumps this; GuidedPhoneSteps
+  // (mounted-but-hidden while collapsed) clears the skip through its OWN
+  // persist, keeping its optimistic map + emission + server coherent.
+  const [phoneUndoSkipSignal, setPhoneUndoSkipSignal] = useState(0);
 
 
   // Read localStorage once on mount per claim.
@@ -1090,6 +1109,17 @@ export function ClaimDetail({
     async (body: CostShareOverrideRequest, pendingKey: string): Promise<boolean> => {
       setCsOverridePending(pendingKey);
       setCsOverrideError(null);
+      // S309 (Andrew) — Done means FULLY collapsed. The reviewed:true write
+      // also rests the step-expand flag, so the step returns to its stub +
+      // "Show full step" instead of the phantom third state ("expanded step
+      // holding a collapsed card") whose toggle read backwards and cost a
+      // double-click. Mirror of the stub link, which pairs its reviewed:false
+      // write with setAssumpFullOpen(true). Optimistic on purpose: if the
+      // write fails, review stays un-done and the body stays visible
+      // regardless of this flag (assumpBodyVisible), so a false reset is inert.
+      if (body.field === "assumptions_reviewed" && body.reviewed === true) {
+        setAssumpFullOpen(false);
+      }
       try {
         const token = await getAuthToken();
         if (!token) return false;
@@ -1305,7 +1335,12 @@ export function ClaimDetail({
   }
 
   const claim = data.claim as Record<string, unknown>;
-  const providerName = ((claim.metadata as Record<string, unknown>)?.provider as Record<string, unknown>)?.name as string || "Unknown Provider";
+  // S310 — the optimistic override applies at this ONE derivation, so every
+  // consumer on the page (title, offers, footer) shows a just-saved name in
+  // the click's render; server truth replaces it on the refetch.
+  const providerName =
+    providerNameOptimistic ??
+    (((claim.metadata as Record<string, unknown>)?.provider as Record<string, unknown>)?.name as string || "Unknown Provider");
 
   // S292 — services-verification state. `svcConfirmed` is the persisted truth;
   // the in-flight target wins only until the write settles. Derived (not stored)
@@ -1479,8 +1514,26 @@ export function ClaimDetail({
       balanceTotal: data.recovery?.stillOutstanding ?? 0,
       refundComponent: data.recovery?.refundComponent ?? 0,
       forgivenessComponent: data.recovery?.forgivenessComponent ?? 0,
+      // S309 F17 — the bill's actual charge (effective patient responsibility,
+      // override-independent) so the derivation can split the refund at the
+      // charge line: insurer-claimable vs paid-above-charge (the provider's).
+      chargedTotal: data.effectiveTotals?.patientResponsibility,
     });
   })();
+
+  // S309 F17 — the paid-above-charge slice, shared by the provider letter
+  // track, its rail-offer reason, and the panel (ONE derivation — the same
+  // model field the split renders).
+  const overpaidToProvider = savingsDerivation?.bill.paidSplit?.overpaid ?? 0;
+
+  // S310 — the hero banner's party-named sub-spans (insurer slice · provider
+  // slice · balance slice), each already null under $1 in the derivation.
+  // Null when the flag is off → the legacy two-span markup renders instead.
+  const heroSubs = savingsDerivation
+    ? [savingsDerivation.refundSub, savingsDerivation.overpaidSub, savingsDerivation.forgivenessSub].filter(
+        (s): s is string => s != null,
+      )
+    : null;
 
   // Cost-Share v2 (W2) — flatten per-line assumptions with the line context the
   // §5 banner chips + W3 override calls need (lineId + service label/slug). Over
@@ -1588,8 +1641,10 @@ export function ClaimDetail({
   })();
   const pinnedPlanId = (claim.insurance_plan_id as string | null) ?? null;
   const pinnedPlan = planCandidates?.find((p) => p.insurancePlanId === pinnedPlanId) ?? null;
+  // S310 — insurer optimistic override applied at the label derivation too.
+  const pinnedInsurerName = insurerNameOptimistic ?? pinnedPlan?.insurerName ?? null;
   const planIdentityLabel = pinnedPlan
-    ? [pinnedPlan.planName, pinnedPlan.insurerName].filter(Boolean).join(" — ") || null
+    ? [pinnedPlan.planName, pinnedInsurerName].filter(Boolean).join(" — ") || null
     : null;
   // S291 — the pinned plan's own year vs the year the care happened. Both are
   // facts off real documents; disagreeing means the bill is being checked
@@ -1600,6 +1655,51 @@ export function ClaimDetail({
     pinnedPlan.planYear !== claimServiceYear
       ? pinnedPlan.planYear
       : null;
+
+  // S310 (F14a) — the two name-correction writes. Plain consts (no hooks):
+  // they close over pinnedPlan above and are handed to the header editor and
+  // the banner's pinned-plan row. Both are OPTIMISTIC with snapback (Andrew):
+  // the override shows the value in the click's render; the slow part (the
+  // refetch that carries server truth) happens behind it; a failed write
+  // clears the override and resurfaces the editor with the error.
+  const saveProviderName = (name: string): void => {
+    setProviderNameOptimistic(name);
+    void (async () => {
+      try {
+        const token = await getAuthToken();
+        const res = await fetch(`/api/claims/${claimId}/provider-contact`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ name }),
+        });
+        if (!res.ok) throw new Error(String(res.status));
+        await refetchClaim(); // server truth lands first…
+        setProviderNameOptimistic(null); // …then the override retires (no flicker)
+      } catch {
+        setProviderNameOptimistic(null);
+        setProviderNameEdit({ value: name, error: true });
+      }
+    })();
+  };
+  const saveInsurerName = async (name: string): Promise<boolean> => {
+    if (!pinnedPlan?.insurancePlanId) return false;
+    setInsurerNameOptimistic(name);
+    try {
+      const token = await getAuthToken();
+      const res = await fetch(`/api/plan/insurer-name`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ planId: pinnedPlan.insurancePlanId, insurerName: name }),
+      });
+      if (!res.ok) throw new Error(String(res.status));
+      await refetchClaim();
+      setInsurerNameOptimistic(null);
+      return true;
+    } catch {
+      setInsurerNameOptimistic(null);
+      return false;
+    }
+  };
 
   // The line the banner's verdict-specific CTAs act on (matching line, else first).
   const bannerTargetLineId = (() => {
@@ -1683,6 +1783,29 @@ export function ClaimDetail({
   // Green check once every assumption is answered; amber — number kept, because
   // it's skipped rather than finished — when answers are still outstanding but
   // the user has already confirmed the services below it.
+  // S310 F16 (Andrew's ruling) — estimate-borrowed rates surface in the
+  // assumptions card as confirmable rows. Same wire data the line table's
+  // Coverage badge renders from (coverageNeedsConfirmation, S154), same
+  // confirm write (handleConfirmCoverage), so the card row and the badge
+  // read + settle ONE row — flow by construction, no new derivations.
+  const estimateRateRows = primaryLineItems
+    .filter((li) => li.coverageNeedsConfirmation === true)
+    .map((li) => ({
+      lineId: li.id,
+      serviceLabel:
+        humanizeSlug(li.service_slug ?? "") || li.description || "this service",
+      siblingLabel: li.coverageSecondaryMatchedSlug
+        ? humanizeSlug(li.coverageSecondaryMatchedSlug) || null
+        : null,
+      rateText:
+        li.planCoverage?.copay != null
+          ? `$${fmtMoney(li.planCoverage.copay)} copay`
+          : li.planCoverage?.coinsurance != null
+            ? `${Math.round(normalizeCoinsurancePct(li.planCoverage.coinsurance) ?? 0)}% coinsurance`
+            : "a borrowed rate",
+      serviceSlug: li.service_slug ?? null,
+    }));
+
   const assumptionsPendingFields = railHasAssumptions
     ? pendingAssumptionFields(
         bannerAssumptions,
@@ -1713,6 +1836,9 @@ export function ClaimDetail({
         // S302 — same object the banner renders from, so the badge and the row
         // can never disagree about whether the question is outstanding.
         totalsSourceRow?.answered == null ? totalsSourceRow : null,
+        // S310 F16 — the estimate rows join the ONE pending set (amber ⟺
+        // counted; the badge and the card row read the same keys).
+        estimateRateRows,
       )
     : new Set<string>();
   const assumptionsPending = assumptionsPendingFields.size;
@@ -1826,7 +1952,13 @@ export function ClaimDetail({
   const insurerUnderpaid = primaryLineItems.some(
     (li) => (li.insurerDiscrepancy?.delta ?? 0) > 0,
   );
-  const letterTracks = deriveLetterTracks({ findingTypes, insurerUnderpaid });
+  const letterTracks = deriveLetterTracks({
+    findingTypes,
+    insurerUnderpaid,
+    // S309 F17 — paid above the charge raises the PROVIDER track the same way
+    // insurerUnderpaid raises the insurer one (engine math, not a finding).
+    providerOverpaid: overpaidToProvider >= 1,
+  });
   // Which parties already have a letter. Collector letters count as the
   // provider track (the same fold `guidedTrack` has always applied): a
   // debt-validation letter means that track is already in flight, and offering
@@ -1959,12 +2091,30 @@ export function ClaimDetail({
                     (x) => x.party === t.party,
                   ),
               ) ?? null;
+            // S309 F1-B (Andrew-approved) — an insurer-track offer raised by the
+            // cost-share ENGINE has no finding to speak for it; say the engine's
+            // own reason from the live totals instead of leaving the card mute.
+            // Provider-track engine-raised offers keep null (no approved copy).
+            const engineReason =
+              !reason && t.party === "insurer" && billTotals.potentialRecovery >= 1
+                ? {
+                    title: null,
+                    detail: `Your plan puts your share around $${fmtMoney(billTotals.shouldOwe)}, but this bill charges you $${fmtMoney(billTotals.shouldOwe + billTotals.potentialRecovery)} — the appeal asks for the $${fmtMoney(billTotals.potentialRecovery)} difference.`,
+                  }
+                : // S309 F17 — the overpayment-raised provider track speaks the
+                  // engine's reason too (the F1-B pattern, live numbers).
+                  !reason && t.party === "provider" && overpaidToProvider >= 1
+                  ? {
+                      title: null,
+                      detail: `You paid $${fmtMoney(overpaidToProvider)} more than this bill charged — this letter asks the provider to refund it.`,
+                    }
+                  : null;
             return {
               party: t.party,
               letterType: t.letterType,
               reason: reason
                 ? { title: reason.title, detail: reason.description ?? null }
-                : null,
+                : engineReason,
               declinedAt: guideStepsMeta[letterOfferSkipStepId(t.party)]?.skippedAt ?? null,
             };
           })
@@ -2179,9 +2329,68 @@ export function ClaimDetail({
           Bill from
         </div>
         <div className="flex items-center gap-2.5">
-          <h1 className="m-0 text-[28px] font-bold leading-tight tracking-[-0.02em] text-gray-900">
-            {providerName}
-          </h1>
+          {providerNameEdit ? (
+            /* S310 (F14a) — inline provider-name editor; Save writes the one
+               claim-scoped provider-contact path and refetches. */
+            <span className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+              <input
+                type="text"
+                value={providerNameEdit.value}
+                onChange={(e) => setProviderNameEdit((p) => (p ? { ...p, value: e.target.value } : p))}
+                aria-label="Provider name"
+                autoFocus
+                className="min-w-0 flex-1 rounded-lg border border-gray-300 px-3 py-2 text-[18px] font-semibold text-gray-900 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100"
+              />
+              <button
+                type="button"
+                disabled={providerNameEdit.value.trim().length === 0}
+                onClick={() => {
+                  const v = providerNameEdit.value.trim();
+                  if (!v) return;
+                  // Optimistic: close now; saveProviderName snaps back on failure.
+                  setProviderNameEdit(null);
+                  saveProviderName(v);
+                }}
+                className="rounded-lg bg-blue-600 px-3 py-1.5 text-[13px] font-semibold text-white transition-colors hover:bg-blue-700 disabled:opacity-60"
+              >
+                Save
+              </button>
+              <button
+                type="button"
+                onClick={() => setProviderNameEdit(null)}
+                className="text-[13px] font-medium text-gray-500 hover:text-gray-700"
+              >
+                Cancel
+              </button>
+              {providerNameEdit.error ? (
+                <span className="w-full text-[12px] text-red-600">Couldn&apos;t save — try again.</span>
+              ) : null}
+            </span>
+          ) : (
+            <>
+              <h1 className="m-0 text-[28px] font-bold leading-tight tracking-[-0.02em] text-gray-900">
+                {providerName}
+              </h1>
+              {/* S310 (F14a) — the rail-side provider-name edit Andrew asked
+                  for; same icon-button chrome as the view-bill control. */}
+              <button
+                type="button"
+                onClick={() =>
+                  setProviderNameEdit({
+                    value: providerName === "Unknown Provider" ? "" : providerName,
+                    error: false,
+                  })
+                }
+                className="grid h-9 w-9 place-items-center rounded-lg text-gray-400 transition-colors hover:bg-gray-100 hover:text-blue-600"
+                title="Edit provider name"
+                aria-label="Edit provider name"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+                </svg>
+              </button>
+            </>
+          )}
           {hasSourceDocument && (
             <button
               type="button"
@@ -2484,6 +2693,9 @@ export function ClaimDetail({
                 onConfirmDefaults={confirmAssumptionDefaults}
                 onOptimistic={(patch) => setAssumptionOptimistic((prev) => ({ ...prev, ...patch }))}
                 pendingFields={assumptionsPendingFields}
+                estimateRows={estimateRateRows}
+                onConfirmEstimate={handleConfirmCoverage}
+                confirmingEstimateId={confirmingCoverageId}
                 totalsSource={totalsSourceRow}
                 planIdentity={
                   planCandidates
@@ -2492,6 +2704,9 @@ export function ClaimDetail({
                         year: claimServiceYear,
                         planYearMismatch,
                         onChange: () => setRepinOpen(true),
+                        // S310 (F14a) — insurer-name fix on the pinned-plan row.
+                        insurerName: pinnedInsurerName,
+                        onSaveInsurerName: saveInsurerName,
                       }
                     : null
                 }
@@ -2517,7 +2732,18 @@ export function ClaimDetail({
                   else if (bannerTargetLineId) openCorrectionModal(bannerTargetLineId);
                 }}
                 statedServiceCosts={statedServiceCosts}
-                initiallyReviewed={!!(claim.metadata as Record<string, unknown> | null)?.assumptionsReviewedAt}
+                // S309 (Andrew's toggle report) — on the GUIDED rail this body
+                // only renders when review isn't done OR the user explicitly
+                // expanded the step ("Show full step"); mounting the card
+                // collapsed made both toggle states render the same
+                // "Update assumptions" box (an expandSignal bump can't help — a
+                // fresh mount initializes lastExpandSignal to the incoming value
+                // and swallows it). Guided ⇒ seed OPEN; the persisted collapse
+                // still shows as the collapsed STEP (assumpFullOpen defaults
+                // false), so 1.3.13 reload-persistence is untouched. The
+                // non-guided site below keeps the metadata seed — there the
+                // card's own collapse IS the persistence surface.
+                initiallyReviewed={guidedOn ? false : !!(claim.metadata as Record<string, unknown> | null)?.assumptionsReviewedAt}
                 expandSignal={assumpExpandSignal}
                 onUploadEob={() => router.push("/upload?type=eob")}
                 onBack={onBack}
@@ -2658,6 +2884,9 @@ export function ClaimDetail({
                 onConfirmDefaults={confirmAssumptionDefaults}
                 onOptimistic={(patch) => setAssumptionOptimistic((prev) => ({ ...prev, ...patch }))}
                 pendingFields={assumptionsPendingFields}
+                estimateRows={estimateRateRows}
+                onConfirmEstimate={handleConfirmCoverage}
+                confirmingEstimateId={confirmingCoverageId}
                 planIdentity={
                   planCandidates
                     ? {
@@ -2665,6 +2894,9 @@ export function ClaimDetail({
                         year: claimServiceYear,
                         planYearMismatch,
                         onChange: () => setRepinOpen(true),
+                        // S310 (F14a) — insurer-name fix on the pinned-plan row.
+                        insurerName: pinnedInsurerName,
+                        onSaveInsurerName: saveInsurerName,
                       }
                     : null
                 }
@@ -2854,6 +3086,11 @@ export function ClaimDetail({
           const patientPaid = item.recovery?.patientPaid ?? Number(item.patient_paid_amount ?? 0);
           const refundComponent = item.recovery?.refundComponent ?? Math.max(0, patientPaid - shouldOwe);
           const forgivenessComponent = item.recovery?.forgivenessComponent ?? Math.max(0, owedRecovery - refundComponent);
+          // S309 F2 — the PLAN-SAYS sub-line, from the SAME derivation the
+          // "What you could save" strip renders (one wording source; null when
+          // the savings flag is OFF or the line is unpriced/not-covered).
+          const planSaysCell =
+            savingsDerivation?.rows.find((r) => r.id === item.id)?.planTermCell ?? null;
           const rawInsurancePaid = item.insurance_paid || 0;
           const hasGap = billed > 0 && rawInsurancePaid === 0 && owed === 0;
           // Cost-Share v2 (S214) — when the engine ran (verdict present), the
@@ -2999,11 +3236,16 @@ export function ClaimDetail({
                   </div>
                   <div className="flex justify-between gap-3">
                     <dt className="text-gray-500 uppercase tracking-wider">You paid</dt>
-                    <dd className="tabular-nums text-gray-600">${paid.toLocaleString()}</dd>
+                    <dd className="tabular-nums text-gray-600">${fmtMoney(paid)}</dd>
                   </div>
                   <div className="flex justify-between gap-3">
                     <dt className="text-gray-500 uppercase tracking-wider">Plan says</dt>
-                    <dd className={`tabular-nums font-semibold ${shouldOwe === 0 ? "text-green-700" : "text-gray-900"}`}>${shouldOwe.toLocaleString()}</dd>
+                    <dd className="text-right">
+                      <div className={`tabular-nums font-semibold ${shouldOwe === 0 ? "text-green-700" : "text-gray-900"}`}>${fmtMoney(shouldOwe)}</div>
+                      {planSaysCell && (
+                        <div className="mt-0.5 text-[10px] leading-tight text-gray-400">{planSaysCell}</div>
+                      )}
+                    </dd>
                   </div>
                   {/* B4.2: "You owe" mobile row DROPPED per Open Q A lock. */}
                   {/* B4.2: Recovery + Forgiveness rows render only when value
@@ -3012,13 +3254,13 @@ export function ClaimDetail({
                   {refundComponent >= 1 && (
                     <div className="flex justify-between gap-3">
                       <dt className="uppercase tracking-wider text-green-700">Recovery</dt>
-                      <dd className="tabular-nums font-bold text-green-700">+${refundComponent.toLocaleString()}</dd>
+                      <dd className="tabular-nums font-bold text-green-700">+${fmtMoney(refundComponent)}</dd>
                     </div>
                   )}
                   {forgivenessComponent >= 1 && (
                     <div className="flex justify-between gap-3">
                       <dt className="uppercase tracking-wider text-green-700">Forgiveness</dt>
-                      <dd className="tabular-nums font-bold text-green-700">${forgivenessComponent.toLocaleString()}</dd>
+                      <dd className="tabular-nums font-bold text-green-700">${fmtMoney(forgivenessComponent)}</dd>
                     </div>
                   )}
                   <div className="flex justify-between items-center gap-3">
@@ -3192,14 +3434,23 @@ export function ClaimDetail({
                   )}
                 </div>
                 <div className="text-sm font-semibold text-gray-700 text-right tabular-nums whitespace-nowrap">
-                  ${paid.toLocaleString()}
+                  ${fmtMoney(paid)}
                 </div>
-                {/* Plan says — what your plan says you should owe. */}
+                {/* Plan says — what your plan says you should owe. S309 F2: the
+                    sub-line states the rate AND why it isn't applying, from the
+                    same derivation as the savings strip. */}
                 <div
-                  className={`text-sm font-bold text-right tabular-nums whitespace-nowrap ${shouldOwe === 0 ? "text-emerald-700" : "text-gray-900"}`}
-                  title={`Per your plan, you should owe $${shouldOwe.toLocaleString()} for this service.`}
+                  className="text-right"
+                  title={`Per your plan, you should owe $${fmtMoney(shouldOwe)} for this service.`}
                 >
-                  ${shouldOwe.toLocaleString()}
+                  <div className={`text-sm font-bold tabular-nums whitespace-nowrap ${shouldOwe === 0 ? "text-emerald-700" : "text-gray-900"}`}>
+                    ${fmtMoney(shouldOwe)}
+                  </div>
+                  {planSaysCell && (
+                    <div className="mt-0.5 text-[10px] leading-tight text-gray-400">
+                      {planSaysCell}
+                    </div>
+                  )}
                 </div>
                 {/* B4.2 (Open Q A lock): "You owe" column DROPPED — design
                     leans on "Plan says" to convey what the user should pay; a
@@ -3214,14 +3465,14 @@ export function ClaimDetail({
                     item.planCoverage == null
                       ? "We need plan coverage info to compute refund recoverable."
                       : refundComponent >= 1
-                        ? `Refund recoverable: $${refundComponent.toLocaleString()} — already paid out-of-pocket above your plan share.`
+                        ? `Refund recoverable: $${fmtMoney(refundComponent)} — already paid out-of-pocket above your plan share.`
                         : "No refund recoverable — patient hasn't paid above plan share."
                   }
                 >
                   {item.planCoverage == null ? (
                     <span className="text-gray-300">—</span>
                   ) : refundComponent >= 1 ? (
-                    <span className="font-bold text-emerald-700">+${refundComponent.toLocaleString()}</span>
+                    <span className="font-bold text-emerald-700">+${fmtMoney(refundComponent)}</span>
                   ) : (
                     <span className="text-gray-400">$0.00</span>
                   )}
@@ -3236,14 +3487,14 @@ export function ClaimDetail({
                     item.planCoverage == null
                       ? "We need plan coverage info to compute forgiveness due."
                       : forgivenessComponent >= 1
-                        ? `Forgiveness due: $${forgivenessComponent.toLocaleString()} — provider must write off the amount above plan-allowed.`
+                        ? `Forgiveness due: $${fmtMoney(forgivenessComponent)} — provider must write off the amount above plan-allowed.`
                         : "No forgiveness due — bill is within plan-allowed."
                   }
                 >
                   {item.planCoverage == null ? (
                     <span className="text-gray-300">—</span>
                   ) : forgivenessComponent >= 1 ? (
-                    <span className="font-bold text-emerald-700">${forgivenessComponent.toLocaleString()}</span>
+                    <span className="font-bold text-emerald-700">${fmtMoney(forgivenessComponent)}</span>
                   ) : (
                     <span className="text-gray-400">$0.00</span>
                   )}
@@ -3629,35 +3880,41 @@ export function ClaimDetail({
               </div>
               <div>
                 <div className="text-sm font-semibold text-gray-900">Recoverable from this bill</div>
-                {(billTotals.refundComponent >= 1 || billTotals.forgivenessComponent >= 1) && (
-                  <div className="mt-1 flex flex-wrap items-center gap-2 text-[12.5px] text-gray-700">
-                    {billTotals.refundComponent >= 1 && (
-                      <span>
-                        {/* S307 flag — tense fix: nothing has been refunded yet. */}
-                        {savingsDerivation ? (
-                          <strong className="font-bold tabular-nums text-emerald-700">{savingsDerivation.refundSub}</strong>
-                        ) : (
-                          <>
-                            <strong className="font-bold tabular-nums text-emerald-700">+${fmtMoney(billTotals.refundComponent)}</strong> refunded to you
-                          </>
-                        )}
-                      </span>
-                    )}
-                    {billTotals.refundComponent >= 1 && billTotals.forgivenessComponent >= 1 && (
-                      <span className="h-[3px] w-[3px] rounded-full bg-gray-400" aria-hidden />
-                    )}
-                    {billTotals.forgivenessComponent >= 1 && (
-                      <span>
-                        {savingsDerivation ? (
-                          <strong className="font-bold tabular-nums text-emerald-700">{savingsDerivation.forgivenessSub}</strong>
-                        ) : (
-                          <>
-                            <strong className="font-bold tabular-nums text-emerald-700">${fmtMoney(billTotals.forgivenessComponent)}</strong> forgiven by provider
-                          </>
-                        )}
-                      </span>
-                    )}
-                  </div>
+                {heroSubs ? (
+                  /* S310 — party-named subs decomposing the recovery total
+                     (Andrew's approved copy); the derivation already nulls any
+                     slice under $1, so every rendered span carries real money. */
+                  heroSubs.length > 0 && (
+                    <div className="mt-1 flex flex-wrap items-center gap-2 text-[12.5px] text-gray-700">
+                      {heroSubs.map((s, i) => (
+                        <Fragment key={s}>
+                          {i > 0 && <span className="h-[3px] w-[3px] rounded-full bg-gray-400" aria-hidden />}
+                          <span>
+                            <strong className="font-bold tabular-nums text-emerald-700">{s}</strong>
+                          </span>
+                        </Fragment>
+                      ))}
+                    </div>
+                  )
+                ) : (
+                  (billTotals.refundComponent >= 1 || billTotals.forgivenessComponent >= 1) && (
+                    <div className="mt-1 flex flex-wrap items-center gap-2 text-[12.5px] text-gray-700">
+                      {billTotals.refundComponent >= 1 && (
+                        <span>
+                          {/* S307 flag-off legacy spans (tense predates the derivation). */}
+                          <strong className="font-bold tabular-nums text-emerald-700">+${fmtMoney(billTotals.refundComponent)}</strong> refunded to you
+                        </span>
+                      )}
+                      {billTotals.refundComponent >= 1 && billTotals.forgivenessComponent >= 1 && (
+                        <span className="h-[3px] w-[3px] rounded-full bg-gray-400" aria-hidden />
+                      )}
+                      {billTotals.forgivenessComponent >= 1 && (
+                        <span>
+                          <strong className="font-bold tabular-nums text-emerald-700">${fmtMoney(billTotals.forgivenessComponent)}</strong> forgiven by provider
+                        </span>
+                      )}
+                    </div>
+                  )
                 )}
               </div>
             </div>
@@ -3871,22 +4128,24 @@ export function ClaimDetail({
                       </div>
                       <div className="flex justify-between gap-3 text-xs">
                         <span className="font-semibold text-emerald-700">
-                          Refund
+                          Refund from your insurer
                           <span className="mt-0.5 block max-w-[220px] text-[11px] font-normal leading-snug text-gray-500">
                             Money you already paid that your plan says you didn&apos;t owe.
                           </span>
                         </span>
                         <strong className="font-bold tabular-nums text-emerald-700">+${fmtMoney(savingsDerivation.bill.paidSplit.refund)}</strong>
                       </div>
-                      {savingsDerivation.bill.paidSplit.forgivenessZero && (
+                      {/* S309 F17 (Andrew-approved copy) — the paid-above-charge
+                          slice: the PROVIDER's refund, its own letter track. */}
+                      {savingsDerivation.bill.paidSplit.overpaid >= 1 && (
                         <div className="flex justify-between gap-3 text-xs">
                           <span className="font-semibold text-emerald-700">
-                            Provider must forgive
+                            Overpaid to provider
                             <span className="mt-0.5 block max-w-[220px] text-[11px] font-normal leading-snug text-gray-500">
-                              Money still on your balance that your plan says you don&apos;t owe.
+                              Money you paid above what this bill charged — the provider owes it back.
                             </span>
                           </span>
-                          <strong className="font-semibold tabular-nums text-gray-400">$0.00</strong>
+                          <strong className="font-bold tabular-nums text-emerald-700">+${fmtMoney(savingsDerivation.bill.paidSplit.overpaid)}</strong>
                         </div>
                       )}
                     </div>
@@ -3905,17 +4164,6 @@ export function ClaimDetail({
                         <span>Legitimately owed under your plan</span>
                         <strong className="font-semibold tabular-nums text-gray-900">${fmtMoney(savingsDerivation.bill.balanceSplit.legit)}</strong>
                       </div>
-                      {savingsDerivation.bill.balanceSplit.refundZero && (
-                        <div className="flex justify-between gap-3 text-xs">
-                          <span className="font-semibold text-emerald-700">
-                            Refund
-                            <span className="mt-0.5 block max-w-[220px] text-[11px] font-normal leading-snug text-gray-500">
-                              Money you already paid that your plan says you didn&apos;t owe.
-                            </span>
-                          </span>
-                          <strong className="font-semibold tabular-nums text-gray-400">$0.00</strong>
-                        </div>
-                      )}
                       <div className="flex justify-between gap-3 text-xs">
                         <span className="font-semibold text-emerald-700">
                           Provider must forgive
@@ -4049,7 +4297,8 @@ export function ClaimDetail({
           <>
             <RailStep
               n={railExtends ? "4" : "4a"}
-              done={guidedPack.concluded}
+              done={guidedPack.concluded && guidedPack.outcome !== "skip"}
+              skipped={guidedPack.outcome === "skip"}
               title={GUIDE_CHROME.packATitle}
               sub={GUIDE_CHROME.packAMeta}
               right={
@@ -4063,16 +4312,42 @@ export function ClaimDetail({
                         {PHONE_OUTCOME.resolvedChipPrefix} · {guidedOutcomeDateLabel}
                       </span>
                     )}
-                    {guidedPack.outcome === "no" && guidedPack.done > 0 && (
+                    {/* Concluded-by-answer now GUARANTEES done === total (the
+                        S309 round-2 rule), so the count chip is always the calm
+                        emerald one. */}
+                    {guidedPack.outcome === "no" && (
                       <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11.5px] font-semibold text-emerald-700 ring-1 ring-inset ring-emerald-200">
                         {GUIDE_CHROME.doneMeta(guidedPack.done, guidedPack.total)}
                       </span>
+                    )}
+                    {/* S309 (Andrew) — a skipped pack collapses with the
+                        skipped chrome; the single way back in is one full-size
+                        "Undo Skip" button (ShowFullStepButton's own classes,
+                        so the header buttons match). */}
+                    {guidedPack.outcome === "skip" && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setPhoneUndoSkipSignal((n) => n + 1);
+                        }}
+                        className="inline-flex items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-4 py-[9px] text-[13px] font-semibold text-gray-700 transition-colors hover:bg-gray-50"
+                      >
+                        {GUIDE_CHROME.undoSkipLabel}
+                      </button>
                     )}
                     <ShowFullStepButton
                       open={phoneFullOpen}
                       onToggle={() => setPhoneFullOpen((v) => !v)}
                     />
                   </div>
+                ) : guidedPack.outcome != null && guidedPack.done < guidedPack.total ? (
+                  // S309 round 2 (Andrew) — answered but a step still missing:
+                  // the pack stays OPEN and the amber chip NAMES the gap (the
+                  // S303 fold vocabulary), right beside the lit 4b.
+                  <span className="inline-flex items-center gap-1 self-start rounded-full bg-amber-50 px-2.5 py-0.5 text-[11.5px] font-semibold text-amber-800 ring-1 ring-inset ring-amber-200">
+                    {GUIDE_CHROME.doneMeta(guidedPack.done, guidedPack.total)} · {CASE_RAIL.foldOpenSteps(guidedPack.total - guidedPack.done)}
+                  </span>
                 ) : undefined
               }
             >
@@ -4086,12 +4361,16 @@ export function ClaimDetail({
                   initialSteps={guideStepsMeta}
                   getAuthToken={getAuthToken}
                   onItemizedRequest={requestItemizedLetter}
+                  undoSkipSignal={phoneUndoSkipSignal}
                   onStateChange={(s) => {
                     // Collapse ONLY on the not-concluded → concluded TRANSITION;
                     // collapsing on every emit while concluded slammed the panel
                     // shut on any in-panel click (the un-check bug).
                     if (s.concluded && !guidedPack.concluded) setPhoneFullOpen(false);
                     setGuidedPackLive(s);
+                    // S309 (Andrew) — interacting with the phone step means the
+                    // math above has been read; collapse it.
+                    setShowMath(false);
                   }}
                 />
               </div>
@@ -4174,6 +4453,7 @@ export function ClaimDetail({
             </div>
           )}
           <CaseRail
+            onStepInteraction={() => setShowMath(false)}
             // S303 — composed ONCE above, alongside the fold that reads it.
             groups={railComposed.groups}
             claimId={claimId}

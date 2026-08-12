@@ -25,7 +25,7 @@
  */
 "use client";
 
-import { Fragment, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { Row } from "@/components/shared/InputRow";
 import {
   ImportantBadge,
@@ -38,6 +38,11 @@ import {
   AddedFold,
 } from "@/components/shared/needs-format";
 import { PatientIdentityChoices } from "@/components/disputes/PatientIdentityChoices";
+import {
+  validateUsAddress,
+  composeUsAddress,
+  type UsAddressErrors,
+} from "@/lib/address/validate-us-address";
 import {
   ServiceAttestationFlow,
   type AttestationLine,
@@ -182,6 +187,24 @@ export interface CaseNeedsPanelProps {
     patientName: string | null;
     providerName: string | null;
     serviceDate: string | null;
+    /**
+     * S310 (F14a) — present only when THIS letter prints the insurer (the page
+     * gates by recipient kind), so the fact — and its fix row — appears exactly
+     * when the name is in the letter. Undefined → no insurer fact.
+     */
+    insurerName?: string | null;
+    /**
+     * S310 (sender block) — the user's mailing address (profiles row), printed
+     * above every letter's dateline when complete. Null → the letter renders
+     * no sender block and the wrong-mode row offers Add.
+     */
+    userAddress?: {
+      line1: string;
+      line2: string | null;
+      city: string;
+      state: string;
+      zip: string;
+    } | null;
   } | null;
   /** every billed line — the attestation picker's candidates (same shape the
    *  ServiceAttestationFlow always consumed). */
@@ -207,6 +230,32 @@ export interface CaseNeedsPanelProps {
   onResolvePatient: (choice: "me" | "dependent" | "wrong", correctedName?: string) => void;
   onEditLetter: () => void;
   onReviewAttestation: () => void;
+  /**
+   * S310 (F14a) — name corrections from the claim-details block's
+   * "Something's wrong" mode. Provider name renders whenever the handler is
+   * present (every letter prints the provider); the insurer row additionally
+   * requires claimFacts.insurerName (page-gated to insurer-recipient letters).
+   * Both write their single upstream source (claims.metadata.provider /
+   * the plan row), so every surface + the live draft follow on the reconcile.
+   */
+  onFixProviderName?: (name: string) => Promise<unknown>;
+  onFixInsurerName?: (name: string) => Promise<unknown>;
+  /**
+   * S310 (sender block) — saves the user's mailing address through the page's
+   * existing /api/profile write; letters rebuild with the sender block.
+   */
+  onFixUserAddress?: (addr: {
+    line1: string;
+    line2: string | null;
+    city: string;
+    state: string;
+    zip: string;
+  }) => Promise<unknown>;
+  /**
+   * S310 — "These look right" also vouches the printed names (flywheel
+   * corroboration stamps; fire-and-forget on the page side).
+   */
+  onVouchNames?: () => void | Promise<unknown>;
   onAddProviderAddress: () => void;
   onAddInsurerAddress: () => void;
   onUploadEob: () => void;
@@ -433,6 +482,10 @@ function DateEditor({ initial, prompt, onSaved }: { initial: string | null; prom
       <div className="flex flex-wrap items-center justify-end gap-2">
         <input
           type="date"
+          // S309 F15 — the floor pairs with the route's MIN_ANCHOR_DATE: a
+          // typed 3-digit year ("0203") is past-dated and slipped both the
+          // format regex and the future-date guard.
+          min="2000-01-01"
           max={todayIso()}
           value={value}
           onChange={(e) => setValue(e.target.value)}
@@ -491,6 +544,7 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
     onAddPlanDetails, onConfirmParsedCosts, onRejectParsedCost, onResolvePatient, onEditLetter,
     onReviewAttestation,
     claimFacts, attestationLines, attestedLineItemIds, accountName, attestingAsName, onAttest,
+    onFixProviderName, onFixInsurerName, onFixUserAddress, onVouchNames,
     onAddProviderAddress, onAddInsurerAddress, onUploadEob, onSaveAmountPaid,
     onChangePlan, onSaveDeadlineDate,
     letterRequirementsOn = false,
@@ -498,11 +552,60 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
   } = props;
 
   const [openEditor, setOpenEditor] = useState<EditorKey | null>(null);
+  // S311 (Andrew, §A round-2) — editing an ANSWERED row moves it out of the
+  // Added fold to the open list above; without following it, the row looks
+  // like it vanished from under the click. Follow the re-homed editor with a
+  // smooth centered scroll (the S293 #11 treatment), scoped to THIS panel
+  // instance so two mounted panels can never scroll each other.
+  const sectionRef = useRef<HTMLElement | null>(null);
+  const prevEditorRef = useRef<EditorKey | null>(null);
+  useEffect(() => {
+    if (openEditor && prevEditorRef.current !== openEditor) {
+      // One macrotask after the commit (not requestAnimationFrame — rAF never
+      // fires in background tabs): the fold row vanishing and the editor
+      // appearing reflow in the same commit, and the browser's scroll
+      // anchoring counter-adjusts the viewport right after any scroll made
+      // during it. Waiting one tick lets layout + anchoring settle, then the
+      // instant jump lands and nothing fights it (the section also opts out
+      // of anchoring below).
+      const key = openEditor;
+      const t = setTimeout(() => {
+        sectionRef.current
+          ?.querySelector(`[data-needs-editor-row="${key}"]`)
+          ?.scrollIntoView({ behavior: "auto", block: "center" });
+      }, 60);
+      return () => clearTimeout(t);
+    }
+    prevEditorRef.current = openEditor;
+  }, [openEditor]);
   const [showAdded, setShowAdded] = useState(false);
   const [confirmAllStatus, setConfirmAllStatus] = useState<"idle" | "saving" | "error">("idle");
   // S293 (#5) — the one-block's "Something's wrong" expansion (per-item edits +
   // the didn't-receive attestation flow).
   const [detailsWrongMode, setDetailsWrongMode] = useState(false);
+  // S310 (F14a) — the open name editor in wrong-mode (provider / insurer),
+  // mirroring the per-service Edit rows: value + Edit → input + Save/Cancel.
+  // Save is OPTIMISTIC (Andrew): the editor closes in the click's render (the
+  // page's optimistic override shows the value at once); a rejected save
+  // reopens it with the attempted value + error — the snapback.
+  const [nameEdit, setNameEdit] = useState<{
+    field: "provider" | "insurer";
+    value: string;
+    error: boolean;
+  } | null>(null);
+  // S310 (sender block) — the wrong-mode mailing-address editor (5 fields,
+  // the SHARED US-address validation the provider/insurer forms use). Local
+  // validation keeps the form open; a valid save closes optimistically and
+  // snaps back open on failure, same as the name rows.
+  const [addrEdit, setAddrEdit] = useState<{
+    line1: string;
+    line2: string;
+    city: string;
+    state: string;
+    zip: string;
+    errors: UsAddressErrors;
+    error: boolean;
+  } | null>(null);
   // S294 — the shared three-choice patient-identity form, expanded below its row.
   const [nameChoicesOpen, setNameChoicesOpen] = useState(false);
   const close = () => setOpenEditor(null);
@@ -688,8 +791,241 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
     const factsLine = [
       claimFacts.patientName ? `Patient: ${claimFacts.patientName}` : null,
       claimFacts.providerName ? `Provider: ${claimFacts.providerName}` : null,
+      // S310 — present only when this letter prints the insurer (page-gated).
+      claimFacts.insurerName ? `Insurer: ${claimFacts.insurerName}` : null,
       claimFacts.serviceDate ? `Service date: ${prettyDate(claimFacts.serviceDate)}` : null,
+      // S310 (sender block) — the address the letters print above the dateline.
+      claimFacts.userAddress
+        ? `Your address: ${composeUsAddress({
+            addressLine1: claimFacts.userAddress.line1,
+            addressLine2: claimFacts.userAddress.line2 ?? "",
+            city: claimFacts.userAddress.city,
+            state: claimFacts.userAddress.state,
+            postalCode: claimFacts.userAddress.zip,
+          })}`
+        : null,
     ].filter(Boolean).join(" · ");
+    // S310 (F14a, Andrew's ruling) — the names the letter prints are part of
+    // confirming the claim details: "These look right" vouches them, and
+    // "Something's wrong" offers the fix. Row style mirrors the per-service
+    // edit rows; the save awaits the parent's write + reconcile, so the value
+    // shown is always server truth.
+    const nameFixRow = (
+      field: "provider" | "insurer",
+      label: string,
+      value: string | null,
+      onFix: (name: string) => Promise<unknown>,
+    ) => {
+      const editing = nameEdit?.field === field;
+      return (
+        <li key={field} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[13px]">
+          <span className="min-w-0 text-gray-700">
+            {label}
+            {value ? (
+              <>
+                {" · "}
+                <span className="font-medium text-gray-900">{value}</span>
+              </>
+            ) : null}
+          </span>
+          {editing && nameEdit ? (
+            <span className="flex w-full flex-wrap items-center gap-2">
+              <input
+                type="text"
+                value={nameEdit.value}
+                onChange={(e) => setNameEdit((p) => (p ? { ...p, value: e.target.value } : p))}
+                aria-label={label}
+                autoFocus
+                className="min-w-0 flex-1 rounded-lg border border-gray-300 px-2.5 py-1.5 text-[13px] text-gray-900 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100"
+              />
+              <button
+                type="button"
+                disabled={nameEdit.value.trim().length === 0}
+                onClick={() => {
+                  const v = nameEdit.value.trim();
+                  if (!v) return;
+                  // Optimistic: close now; snap back open on rejection.
+                  setNameEdit(null);
+                  void Promise.resolve(onFix(v)).catch(() => {
+                    setNameEdit({ field, value: v, error: true });
+                  });
+                }}
+                className="rounded-lg bg-blue-600 px-3 py-1.5 text-[13px] font-semibold text-white transition-colors hover:bg-blue-700 disabled:opacity-60"
+              >
+                Save
+              </button>
+              <button
+                type="button"
+                onClick={() => setNameEdit(null)}
+                className="text-[13px] font-medium text-gray-500 hover:text-gray-700"
+              >
+                Cancel
+              </button>
+              {nameEdit.error ? (
+                <span className="w-full text-[12px] text-red-600">Couldn&apos;t save — try again.</span>
+              ) : null}
+            </span>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setNameEdit({ field, value: value ?? "", error: false })}
+              className="text-[13px] font-medium text-blue-600 hover:text-blue-700"
+            >
+              Edit
+            </button>
+          )}
+        </li>
+      );
+    };
+    // S310 (sender block) — validate locally (shared US-address rules); a valid
+    // save closes optimistically and snaps back open on rejection.
+    const saveAddr = () => {
+      if (!addrEdit || !onFixUserAddress) return;
+      const fields = {
+        addressLine1: addrEdit.line1.trim(),
+        addressLine2: addrEdit.line2.trim() || undefined,
+        city: addrEdit.city.trim(),
+        state: addrEdit.state.trim().toUpperCase(),
+        postalCode: addrEdit.zip.trim(),
+      };
+      const errs = validateUsAddress(fields);
+      if (Object.keys(errs).length > 0) {
+        setAddrEdit((p) => (p ? { ...p, errors: errs } : p));
+        return;
+      }
+      const addr = {
+        line1: fields.addressLine1,
+        line2: addrEdit.line2.trim() || null,
+        city: fields.city,
+        state: fields.state,
+        zip: fields.postalCode,
+      };
+      setAddrEdit(null);
+      void Promise.resolve(onFixUserAddress(addr)).catch(() => {
+        setAddrEdit({
+          line1: addr.line1,
+          line2: addr.line2 ?? "",
+          city: addr.city,
+          state: addr.state,
+          zip: addr.zip,
+          errors: {},
+          error: true,
+        });
+      });
+    };
+    const addrRow = () => {
+      const a = claimFacts.userAddress ?? null;
+      const inputCls =
+        "rounded-lg border border-gray-300 px-2.5 py-1.5 text-[13px] text-gray-900 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100";
+      const errCls =
+        "rounded-lg border border-red-400 px-2.5 py-1.5 text-[13px] text-gray-900 focus:outline-none focus:ring-2 focus:ring-red-100";
+      return (
+        <li key="user-address" className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[13px]">
+          <span className="min-w-0 text-gray-700">
+            Your mailing address
+            {a ? (
+              <>
+                {" · "}
+                <span className="font-medium text-gray-900">
+                  {composeUsAddress({
+                    addressLine1: a.line1,
+                    addressLine2: a.line2 ?? "",
+                    city: a.city,
+                    state: a.state,
+                    postalCode: a.zip,
+                  })}
+                </span>
+              </>
+            ) : null}
+          </span>
+          {addrEdit ? (
+            <span className="flex w-full flex-col gap-2">
+              <input
+                type="text"
+                value={addrEdit.line1}
+                onChange={(e) => setAddrEdit((p) => (p ? { ...p, line1: e.target.value } : p))}
+                aria-label="Street address"
+                placeholder="Street address"
+                autoFocus
+                className={`w-full ${addrEdit.errors.addressLine1 ? errCls : inputCls}`}
+              />
+              <input
+                type="text"
+                value={addrEdit.line2}
+                onChange={(e) => setAddrEdit((p) => (p ? { ...p, line2: e.target.value } : p))}
+                aria-label="Suite / unit"
+                placeholder="Suite / unit (optional)"
+                className={`w-full ${inputCls}`}
+              />
+              <span className="flex w-full gap-2">
+                <input
+                  type="text"
+                  value={addrEdit.city}
+                  onChange={(e) => setAddrEdit((p) => (p ? { ...p, city: e.target.value } : p))}
+                  aria-label="City"
+                  placeholder="City"
+                  className={`min-w-0 flex-1 ${addrEdit.errors.city ? errCls : inputCls}`}
+                />
+                <input
+                  type="text"
+                  value={addrEdit.state}
+                  onChange={(e) => setAddrEdit((p) => (p ? { ...p, state: e.target.value } : p))}
+                  aria-label="State"
+                  placeholder="ST"
+                  maxLength={2}
+                  className={`w-14 ${addrEdit.errors.state ? errCls : inputCls}`}
+                />
+                <input
+                  type="text"
+                  value={addrEdit.zip}
+                  onChange={(e) => setAddrEdit((p) => (p ? { ...p, zip: e.target.value } : p))}
+                  aria-label="ZIP code"
+                  placeholder="ZIP"
+                  className={`w-24 ${addrEdit.errors.postalCode ? errCls : inputCls}`}
+                />
+              </span>
+              <span className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={saveAddr}
+                  className="rounded-lg bg-blue-600 px-3 py-1.5 text-[13px] font-semibold text-white transition-colors hover:bg-blue-700"
+                >
+                  Save
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAddrEdit(null)}
+                  className="text-[13px] font-medium text-gray-500 hover:text-gray-700"
+                >
+                  Cancel
+                </button>
+                {addrEdit.error ? (
+                  <span className="text-[12px] text-red-600">Couldn&apos;t save — try again.</span>
+                ) : null}
+              </span>
+            </span>
+          ) : (
+            <button
+              type="button"
+              onClick={() =>
+                setAddrEdit({
+                  line1: a?.line1 ?? "",
+                  line2: a?.line2 ?? "",
+                  city: a?.city ?? "",
+                  state: a?.state ?? "",
+                  zip: a?.zip ?? "",
+                  errors: {},
+                  error: false,
+                })
+              }
+              className="text-[13px] font-medium text-blue-600 hover:text-blue-700"
+            >
+              {a ? "Edit" : "Add"}
+            </button>
+          )}
+        </li>
+      );
+    };
     const svcValue = (svc: PlanCostService): string =>
       svc.copay != null ? `${money(svc.copay)} copay` : `${svc.coinsurancePercent}% coinsurance`;
     const confirmDetails = () => {
@@ -707,9 +1043,12 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
               }),
             );
           }
+          // S310 — "These look right" also vouches the printed names.
+          if (onVouchNames) ops.push(onVouchNames());
           await Promise.all(ops);
           setConfirmAllStatus("idle");
           setDetailsWrongMode(false);
+          setNameEdit(null);
         } catch {
           setConfirmAllStatus("error");
         }
@@ -755,6 +1094,25 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
           below={
             <div className="space-y-2.5">
               {factsLine ? <p className="text-[13px] text-gray-700">{factsLine}</p> : null}
+              {/* S310 — wrong-mode name fixes (provider always; insurer only
+                  when the letter prints it — claimFacts.insurerName gated by
+                  the page to insurer-recipient letters). */}
+              {detailsWrongMode &&
+              (onFixProviderName ||
+                (onFixInsurerName && claimFacts.insurerName !== undefined) ||
+                onFixUserAddress) ? (
+                <ul className="space-y-1.5 border-l-2 border-gray-100 pl-2.5">
+                  {onFixProviderName
+                    ? nameFixRow("provider", "Provider name", claimFacts.providerName, onFixProviderName)
+                    : null}
+                  {onFixInsurerName && claimFacts.insurerName !== undefined
+                    ? nameFixRow("insurer", "Insurer name", claimFacts.insurerName ?? null, onFixInsurerName)
+                    : null}
+                  {/* S310 (sender block) — the mailing address the letters
+                      print; Add state when the profile has none. */}
+                  {onFixUserAddress ? addrRow() : null}
+                </ul>
+              ) : null}
               <ul className="space-y-1.5">
                 {planServices.map((svc) => (
                   <li
@@ -1259,6 +1617,11 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
 
   return (
     <section
+      ref={sectionRef}
+      // overflow-anchor:none — the browser's scroll anchoring counter-scrolls
+      // when the Added fold loses a row mid-commit, negating the follow-the-
+      // editor jump above; the panel opts out so the jump sticks.
+      style={{ overflowAnchor: "none" }}
       className={
         embedded
           ? "bg-transparent"
@@ -1298,7 +1661,9 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
         ) : null}
 
         {openDescs.map((d) => (
-          <Fragment key={d.key}>{d.node}</Fragment>
+          <div key={d.key} data-needs-editor-row={d.editorKey ?? undefined}>
+            {d.node}
+          </div>
         ))}
 
         <AddedFold count={doneDescs.length} open={showAdded} onToggle={() => setShowAdded((v) => !v)}>

@@ -349,6 +349,10 @@ export async function GET(
   // §18.10.D — which user-fixable inputs (deductible/oop/network) would strengthen the
   // letter, surfaced so the page can show the "confirm to strengthen + rebuild" prompt.
   let strengthenLetter: { weakened: boolean; fields: Array<"deductible" | "oop" | "network"> } | null = null;
+  // S312 (F2-S312.1) — noRemainingLetterDemand over the fold, from whichever branch
+  // ran (regenerate or plain load). Sent letters never set it (both branches are
+  // draft-scoped), so the banner is drafts-only by construction.
+  let demandEmpty = false;
   try {
     if (dispute.claim_id) {
       // S74.5 D16 — compute current evidence fingerprint + drift decision
@@ -371,6 +375,7 @@ export async function GET(
           {
             sentAt: (dispute.sent_at as string | null) ?? null,
             metadata: (dispute.metadata as Record<string, unknown> | null) ?? null,
+            insurancePlanId: (dispute.insurance_plan_id as string | null) ?? null,
           },
         );
         if (fpInput) {
@@ -564,6 +569,9 @@ export async function GET(
             weakened: rerendered.recovery.weakened,
             fields: rerendered.recovery.strengthenableFields,
           };
+          // S312 — the demand signal was computed INSIDE rerender from the SAME
+          // fold this regenerate just rendered (and floated into amount_disputed).
+          demandEmpty = rerendered.recovery.noRemainingDemand;
         }
         if (regeneratedLetterContent) {
           console.log("[disputes/[disputeId]] regenerated letter body", {
@@ -610,6 +618,15 @@ export async function GET(
               metadata: {
                 ...baseMetadataForRegen,
                 ...(letterVersionHistory ? { letterVersionHistory } : {}),
+                // S312 (F2-S312.1) — stamp the fold's zero-demand verdict beside the
+                // amount float (same write, same fold), so ROW readers — the case
+                // projector → the rail — share the fact without re-deriving letter
+                // money. Written only under dispute_draft_live_rebuild_v1: the
+                // stamp's existence carries the flag (PROD OFF ⇒ no stamps ⇒ every
+                // surface silent).
+                ...(liveRebuildOn && rerendered?.recovery && dispute.sent_at == null
+                  ? { noRemainingDemand: rerendered.recovery.noRemainingDemand }
+                  : {}),
                 planContextFingerprint: fingerprint,
                 planContextUpdatedAt: new Date().toISOString(),
                 // Block C2 item 4 — record which statutory backbone produced this
@@ -640,7 +657,7 @@ export async function GET(
         // the strengthen signal so the prompt shows whenever the CURRENT letter omits a precise
         // dollar. Unsent only (a sent letter is frozen → no rebuild). Mirrors generate's signal.
         const { loadDisputeGroundBasis } = await import("@/lib/disputes/dispute-ground-basis");
-        const { resolveLetterRecovery } = await import("@/lib/disputes/dispute-grounds");
+        const { resolveLetterRecovery, noRemainingLetterDemand } = await import("@/lib/disputes/dispute-grounds");
         const rec = resolveLetterRecovery(
           evidence,
           await loadDisputeGroundBasis(supabase, user.id, [dispute.claim_id as string]),
@@ -649,6 +666,32 @@ export async function GET(
         strengthenLetter = rec.weakened
           ? { weakened: rec.weakened, fields: rec.strengthenableFields }
           : null;
+        // S312 — same signal on the plain-view path (no drift → no regenerate),
+        // so the banner shows on every view of a zero-demand draft, not only
+        // the view that happened to rebuild it.
+        demandEmpty = noRemainingLetterDemand(rec);
+        // S312 — reconcile the ROW stamp (the rail's row-truth) when the live
+        // computation disagrees with it — the same self-heal-on-view family as
+        // the amount float, for drafts whose last rebuild predates the stamp.
+        // liveRebuildOn is set only when the live apparatus applies, so a VOID
+        // row (the frozen-corpse invariant) can never take this write; sent
+        // letters never reach this branch. updated_at deliberately untouched:
+        // this caches a derived fact, it is not a content change.
+        if (liveRebuildOn && sentAt == null) {
+          const stampMeta = (dispute.metadata as Record<string, unknown> | null) ?? {};
+          if ((stampMeta.noRemainingDemand === true) !== demandEmpty) {
+            const { error: stampErr } = await userScoped(supabase, user.id)
+              .table("dispute_outcomes")
+              .update({ metadata: { ...stampMeta, noRemainingDemand: demandEmpty } })
+              .eq("id", dispute.id);
+            if (stampErr) {
+              console.error(
+                "[disputes/[disputeId]] zero-demand stamp reconcile failed (non-fatal):",
+                stampErr,
+              );
+            }
+          }
+        }
       }
     }
   } catch (err) {
@@ -769,17 +812,40 @@ export async function GET(
     ? ((dispute.metadata as Record<string, unknown>).letterVersionHistory as unknown[]).length
     : 0;
 
+  // S312 (F2-S312.1, Andrew's ruling) — "this letter may no longer be needed":
+  // a live, never-sent draft whose own demand fell to $0 (noRemainingLetterDemand
+  // over the same fold the asks and amount_disputed render from). Folded to ONE
+  // boolean server-side so the client renders dumbly: the
+  // dispute_draft_live_rebuild_v1 gate (this is the "a draft is a live document"
+  // family; OFF in PROD until the flip) and the user's standing "Keep letter"
+  // answer (metadata.zeroDemandKeptAt — durable by design; if dollars return the
+  // demand condition is false anyway, so no clearing machinery exists).
+  const zeroDemandKept = Boolean(
+    (((dispute.metadata as Record<string, unknown> | null) ?? {}) as Record<string, unknown>)
+      .zeroDemandKeptAt,
+  );
+  const noRemainingDemand =
+    liveRebuildOn && liveApparatus && sentAt == null && demandEmpty && !zeroDemandKept;
+
   return NextResponse.json({
     id: dispute.id,
     // §18.10.D — non-null only when the deductible-aware letter omitted a precise dollar;
     // `fields` tells the page which cost-share inputs to prompt for (then Rebuild).
     strengthenLetter,
+    // S312 (F2-S312.1) — drives the letter page's "may no longer be needed"
+    // banner (Dismiss / Keep). Always present; true only for live zero-demand
+    // drafts under dispute_draft_live_rebuild_v1.
+    noRemainingDemand,
     disputeType: dispute.dispute_type,
     // W4 — persistent-letter signals, present ONLY when recovery_cost_share_v2 is ON (OFF =
     // byte-identical response). The client shows the stale banner + Refresh CTA off `isStale`.
     ...(costShareV2 ? { isStale, letterVersionCount } : {}),
     letterType: resolvedLetterType,
     status: dispute.status,
+    // S312 (F2-S311.6) — the cancelled band's "cancelled on {date}". A void
+    // row's updated_at is stable (the S311 guards froze every writer), so the
+    // last write IS the cancellation stamp.
+    updatedAt: (dispute.updated_at as string | null) ?? null,
     // Zone-3 (S266) — the persisted nested outcome; the page re-derives suggestNextStep
     // from it on load so the stage-action bar's escalate CTA survives a page refresh.
     outcomeDetail:
@@ -860,6 +926,13 @@ export async function GET(
           // hint only — never drives letter citations (those flow through
           // boundCanonicalPlan below).
           archiveCanonicalPlan: planContext.archiveCanonicalPlan,
+          // S311 (tree 13.3) — the sender-block address. S310 added it to
+          // PlanContext but never named it in this explicit pick, so the
+          // letter printed the address while the claim-details row showed
+          // "Add" on every fresh load (the S310 build test passed only via
+          // the editor's own optimistic value). The row and the letter now
+          // read the same resolver output.
+          userAddress: planContext.userAddress,
         }
       : null,
     // S111 D2 — top-level boundCanonicalPlan for VerifStrip rendering. Holds

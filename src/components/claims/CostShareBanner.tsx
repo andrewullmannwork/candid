@@ -124,6 +124,14 @@ interface CostShareBannerProps {
      */
     planYearMismatch: number | null;
     onChange: () => void;
+    /**
+     * S310 (F14a) — the pinned plan's insurer name + its correction write
+     * (ClaimDetail's saveInsurerName → /api/plan/insurer-name → refetch).
+     * Present → the row's description offers "Fix insurer name" with an
+     * inline editor. Resolves to true when the save landed.
+     */
+    insurerName?: string | null;
+    onSaveInsurerName?: (name: string) => Promise<boolean>;
   } | null;
   /**
    * The user has tried to finish this step (any override persisted, or the
@@ -157,6 +165,24 @@ interface CostShareBannerProps {
     deductibleApplies: boolean | null;
     costProvenance: "plan_document" | "user" | "card" | "unknown";
   }> | null;
+  /**
+   * S310 F16 (Andrew's ruling) — lines whose rate is an ESTIMATE borrowed from
+   * a category sibling (S153/S154, `coverageNeedsConfirmation`). Each renders
+   * a confirmable row: "Looks right" fires the SAME S154 confirm-coverage
+   * write the line table's Coverage badge uses, "Edit" opens the existing
+   * rate modal — one row, two surfaces, flow by construction.
+   */
+  estimateRows?: Array<{
+    lineId: string;
+    serviceLabel: string;
+    siblingLabel: string | null;
+    rateText: string;
+    serviceSlug: string | null;
+  }> | null;
+  /** S310 F16 — the S154 confirm (ClaimDetail's handleConfirmCoverage). */
+  onConfirmEstimate?: (lineId: string) => void | Promise<void>;
+  /** S310 F16 — the in-flight confirm's line id (ClaimDetail's pending state). */
+  confirmingEstimateId?: string | null;
   /** S308 — the persisted reviewed/collapsed state (claims.metadata.assumptionsReviewedAt). */
   initiallyReviewed?: boolean;
   /** S308 — bumps when the collapsed rail step's "Update assumptions" link is
@@ -273,6 +299,7 @@ export const DONE_WRITABLE_FIELDS: ReadonlySet<string> = new Set(
 export function pendingAssumptionFields(
   assumptions: BannerAssumption[],
   overrides: CostShareOverrides | null,
+  // (trailing optional params below; S310 F16 adds `estimateRows` at the end)
   /**
    * S292 — the plan-identity row's state, so its amber comes from THIS set like
    * every other row's. It used to be flagged by its own independent condition
@@ -310,6 +337,13 @@ export function pendingAssumptionFields(
    * re-maps every existing caller's arguments.
    */
   totalsSource?: unknown,
+  /**
+   * S310 F16 — estimate-borrowed rates awaiting the S154 confirm. One key per
+   * visible row (the caller passes only needing-confirmation lines, so the
+   * amber ⟺ counted ⟺ on-screen invariant holds by construction). APPENDED,
+   * same rule as totalsSource.
+   */
+  estimateRows?: Array<{ lineId: string }> | null,
 ): Set<string> {
   const has = (field: string) => assumptions.some((a) => a.field === field);
   const pending = new Set<string>();
@@ -399,6 +433,8 @@ export function pendingAssumptionFields(
       pending.add(`service_cost:${a.serviceSlug ?? a.serviceLabel}`);
     }
   }
+  // S310 F16 — one key per estimate row on screen.
+  for (const er of estimateRows ?? []) pending.add(`estimate:${er.lineId}`);
   return clearUnactionable(pending);
 }
 
@@ -505,6 +541,9 @@ export function CostShareBanner({
   onShouldBeCovered,
   onAddPlanDetails,
   statedServiceCosts,
+  estimateRows,
+  onConfirmEstimate,
+  confirmingEstimateId,
   initiallyReviewed,
   expandSignal,
   onUploadEob,
@@ -517,6 +556,14 @@ export function CostShareBanner({
   // S293 (#1) — controlled when the parent supplies the pair (so the badge's
   // pending set sees the dismissal); internal otherwise.
   const [acaDismissedLocal, setAcaDismissedLocal] = useState(false);
+  // S310 (F14a) — the pinned-plan row's inline insurer-name editor. Save is
+  // OPTIMISTIC (Andrew): the editor closes in the click's render (ClaimDetail
+  // shows the value instantly via its optimistic override); a failed write
+  // reopens it with the attempted value + error — the snapback.
+  const [insurerNameEdit, setInsurerNameEdit] = useState<{
+    value: string;
+    error: boolean;
+  } | null>(null);
   const acaDismissed = acaDismissedProp ?? acaDismissedLocal;
   const setAcaDismissed = (v: boolean) => {
     onAcaDismissedChange?.(v);
@@ -803,11 +850,12 @@ export function CostShareBanner({
       ((oopExists && !oopResolved) ? 1 : 0) +
       pendingServiceCostChips.length +
       (showAca ? 1 : 0);
-  const rawSectionHasRows = !!totalsSource || !!planIdentity || showNetwork || showDeductible || showOop || hasServiceCostGap || statedCosts.length > 0 || showAca;
+  const estimates = estimateRows ?? [];
+  const rawSectionHasRows = !!totalsSource || !!planIdentity || showNetwork || showDeductible || showOop || hasServiceCostGap || statedCosts.length > 0 || estimates.length > 0 || showAca;
   // Section is OPEN unless the user dismissed it via "Done"; when closed but
   // assumptions exist, "Update assumptions" brings it back.
   const sectionOpen = !dismissed && rawSectionHasRows;
-  const anyAssumptions = networkExists || deductibleExists || oopExists || hasServiceCostGap || !!acaA || statedCosts.length > 0;
+  const anyAssumptions = networkExists || deductibleExists || oopExists || hasServiceCostGap || !!acaA || statedCosts.length > 0 || estimates.length > 0;
   const showUpdateLink = !sectionOpen && anyAssumptions;
   const effectivePending = sectionOpen ? pendingCount : 0;
   const isClean = verdict === "correct" || verdict === "confident";
@@ -946,7 +994,70 @@ export function CostShareBanner({
                   ? `We don't have a plan on file for${planIdentity.year ? ` ${planIdentity.year}` : " when this care happened"}. Pick the plan you were on so we can check this bill properly.`
                   : planIdentity.planYearMismatch != null
                     ? `This bill is from ${planIdentity.year}, but we checked it against your ${planIdentity.planYearMismatch} plan. Coverage changes year to year — add your ${planIdentity.year} plan for an accurate check.`
-                    : `We checked this bill against ${planIdentity.label}. Change it if you were on a different plan${planIdentity.year ? ` in ${planIdentity.year}` : ""}.`}
+                    : (
+                      <>
+                        {`We checked this bill against ${planIdentity.label}. Change it if you were on a different plan${planIdentity.year ? ` in ${planIdentity.year}` : ""}.`}
+                        {/* S310 (F14a) — fix the insurer's NAME (a spelling/
+                            identity correction on the plan row) as distinct
+                            from Change (a different plan). */}
+                        {planIdentity.insurerName && planIdentity.onSaveInsurerName ? (
+                          insurerNameEdit ? (
+                            <span className="mt-1.5 flex flex-wrap items-center gap-2">
+                              <input
+                                type="text"
+                                value={insurerNameEdit.value}
+                                onChange={(e) => setInsurerNameEdit((p) => (p ? { ...p, value: e.target.value } : p))}
+                                aria-label="Insurer name"
+                                autoFocus
+                                className="min-w-0 flex-1 rounded-lg border border-gray-300 px-2.5 py-1.5 text-[13px] text-gray-900 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100"
+                              />
+                              <button
+                                type="button"
+                                disabled={insurerNameEdit.value.trim().length === 0}
+                                onClick={() => {
+                                  const v = insurerNameEdit.value.trim();
+                                  if (!v) return;
+                                  // Optimistic: close now; snap back open on failure.
+                                  setInsurerNameEdit(null);
+                                  void planIdentity.onSaveInsurerName!(v).then((ok) => {
+                                    if (!ok) setInsurerNameEdit({ value: v, error: true });
+                                  });
+                                }}
+                                className="rounded-lg bg-blue-600 px-3 py-1.5 text-[13px] font-semibold text-white transition-colors hover:bg-blue-700 disabled:opacity-60"
+                              >
+                                Save
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setInsurerNameEdit(null)}
+                                className="text-[13px] font-medium text-gray-500 hover:text-gray-700"
+                              >
+                                Cancel
+                              </button>
+                              {insurerNameEdit.error ? (
+                                <span className="w-full text-[12px] text-red-600">Couldn&apos;t save — try again.</span>
+                              ) : null}
+                            </span>
+                          ) : (
+                            <>
+                              {" "}
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setInsurerNameEdit({
+                                    value: planIdentity.insurerName ?? "",
+                                    error: false,
+                                  })
+                                }
+                                className="font-medium text-blue-600 hover:text-blue-700"
+                              >
+                                Fix insurer name
+                              </button>
+                            </>
+                          )
+                        ) : null}
+                      </>
+                    )}
               </Row>
   ) : null;
 
@@ -1108,6 +1219,47 @@ export function CostShareBanner({
         ),
       });
     }
+  }
+
+  // S310 F16 (Andrew's ruling) — estimate-borrowed rates are confirmable here
+  // too. Same wire row the line table's Coverage badge renders from, same S154
+  // confirm write; confirming either surface settles both on the refetch.
+  for (const er of estimates) {
+    const confirming = confirmingEstimateId === er.lineId;
+    descs.push({
+      key: `estimate:${er.lineId}`,
+      done: false,
+      node: (
+              <Row
+                flagged={flagRow(`estimate:${er.lineId}`)}
+                icon={DocIcon}
+                label={`Estimated rate — ${er.serviceLabel}`}
+                control={
+                  <span className="inline-flex flex-none items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={confirming || !onConfirmEstimate}
+                      onClick={() => void onConfirmEstimate?.(er.lineId)}
+                      className="whitespace-nowrap rounded-lg bg-blue-600 px-3 py-1.5 text-[13px] font-semibold text-white transition-colors hover:bg-blue-700 disabled:opacity-60"
+                    >
+                      {confirming ? "Saving…" : "Looks right"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onAddPlanDetails({ lineId: er.lineId, serviceSlug: er.serviceSlug })}
+                      className="text-[13px] font-medium text-blue-600 hover:text-blue-700"
+                    >
+                      Edit
+                    </button>
+                  </span>
+                }
+              >
+                {er.siblingLabel
+                  ? `Your plan doesn't list ${er.serviceLabel.toLowerCase()} directly, so we're using its ${er.siblingLabel} rate: ${er.rateText}. Confirm it or set the real rate.`
+                  : `We're using an estimated rate for ${er.serviceLabel.toLowerCase()}: ${er.rateText}. Confirm it or set the real rate.`}
+              </Row>
+      ),
+    });
   }
 
   if (showAca) {

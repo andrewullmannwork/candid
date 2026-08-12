@@ -90,12 +90,14 @@ export interface RailLetterOffer {
   party: "insurer" | "provider";
   letterType: DisputeLetterType;
   /**
-   * Why this letter is owed, in the finding's OWN words — the same title and
-   * description the claim-level issues list shows. Null when the track rests on
-   * the cost-share engine's `insurerDiscrepancy` rather than on a finding
-   * (plan math, which is not a finding and never will be).
+   * Why this letter is owed. Finding-raised tracks carry the finding's OWN
+   * words — the same title and description the claim-level issues list shows.
+   * S309 F1-B: an insurer track raised by the cost-share ENGINE carries the
+   * engine's reason instead (title null — plan math has no finding headline,
+   * only the sentence built from the live totals). Null only when neither
+   * exists (e.g. an engine-raised provider track, which has no approved copy).
    */
-  reason: { title: string; detail: string | null } | null;
+  reason: { title: string | null; detail: string | null } | null;
   /** The user's stored decline (`skippedAt`), else null. */
   declinedAt: string | null;
 }
@@ -267,6 +269,14 @@ export type RailStepModel =
       title: string;
       disputeId: string;
       openLetterLabel: string;
+      /**
+       * S312 (F2-S312.1) — the draft's demand fell to $0 (row-truth via the
+       * projection; see ProjectedLetterStep.noRemainingDemand). The rail
+       * renders the Dismiss/Keep banner INLINE on this step instead of the
+       * bare send CTA (Andrew: avoid the extra click); the letter page shows
+       * the same banner from the same strings (CASE_RAIL.zeroDemand*).
+       */
+      zeroDemand: boolean;
     }
   /**
    * S301 — a collections guard-rail step, relocated onto the rail.
@@ -789,6 +799,9 @@ function buildLetterSteps(
       // The DRAFT variant names the act; the sent one below stays a plain
       // "Open this letter" because there is nothing left to send.
       openLetterLabel: CASE_RAIL.ctaOpenLetterToSend,
+      // S312 (F2-S312.1) — straight from the projection (row-truth); the rail
+      // swaps the send CTA for the Dismiss/Keep banner when the demand died.
+      zeroDemand: l.noRemainingDemand,
     });
   } else {
     steps.push({

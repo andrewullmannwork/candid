@@ -20,6 +20,7 @@
 
 import { useState } from "react";
 import {
+  COLLECTIONS_CHROME,
   GUIDE_CHROME,
   PHONE_OUTCOME,
   PREP_CHIPS,
@@ -64,12 +65,29 @@ export function derivePhonePackState(
   const o = stepsState[PHONE_OUTCOME.id];
   const outcome =
     o?.note === "yes" || o?.note === "no" || o?.note === "skip" ? o.note : null;
+  // S309 (Andrew) — the ANSWER's derivation carries its premise. A yes/no
+  // outcome only exists because ≥1 call was attested (anyCallMade renders the
+  // question), so with every call un-checked the stored answer derives as
+  // null: 4a re-opens, 4b deactivates, and the adverse-outcome machinery
+  // stops steering the rail from a ghost. SKIP is exempt — its premise is the
+  // ABSENCE of calls (the escape hatch records it at any completion state by
+  // design). The stored note is never touched (S297: user records persist);
+  // re-attesting a call resurrects the answer.
+  const premiseHeld = outcome === "skip" || done > 0;
+  // S309 round 2 (Andrew) — CONCLUSION is stricter than the answer: the pack
+  // collapses only when EVERY call step is done AND the outcome is answered,
+  // or when the user explicitly skips (which collapses with the skipped
+  // chrome, not the green check). An answered-but-incomplete pack stays OPEN
+  // — the strongest possible "a step is still missing" signal; the parent
+  // names the gap with the amber open-steps chip.
   return {
     done,
     total,
-    outcome,
-    outcomeAt: o?.checkedAt ?? null,
-    concluded: outcome != null,
+    outcome: premiseHeld ? outcome : null,
+    outcomeAt: premiseHeld ? (o?.checkedAt ?? null) : null,
+    concluded:
+      outcome === "skip" ||
+      (total > 0 && done === total && (outcome === "yes" || outcome === "no")),
   };
 }
 
@@ -156,6 +174,7 @@ export function GuidedPhoneSteps({
   getAuthToken,
   onItemizedRequest,
   onStateChange,
+  undoSkipSignal,
 }: {
   claimId: string;
   ctx: GuideFillContext;
@@ -168,6 +187,11 @@ export function GuidedPhoneSteps({
   /** Emits the derived pack state after every persist (optimistic, server
    *  adopt, snap-back) so the parent's rail chrome tracks live. */
   onStateChange?: (state: PhonePackState) => void;
+  /** S309 (Andrew) — bump → this component un-skips the outcome through its
+   *  OWN persist (optimistic map + emission + server stay coherent; an
+   *  external write couldn't reset the parent's stale live emission). The
+   *  expandSignal pattern, applied to an action. */
+  undoSkipSignal?: number;
 }) {
   const [local, setLocal] = useState<Record<string, GuideStepState>>({});
   const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
@@ -238,6 +262,15 @@ export function GuidedPhoneSteps({
       emit({ ...eff, [stepId]: prev });
     }
   };
+
+  // S309 (Andrew) — undo-skip rides the render-derived signal pattern (the
+  // banner's expandSignal precedent): the parent's Undo chip bumps the signal;
+  // this mounted-but-hidden component clears the skip through its own persist.
+  const [lastUndoSkipSignal, setLastUndoSkipSignal] = useState(undoSkipSignal ?? 0);
+  if (undoSkipSignal != null && undoSkipSignal !== lastUndoSkipSignal) {
+    setLastUndoSkipSignal(undoSkipSignal);
+    void persist(PHONE_OUTCOME.id, { checked: false, note: "" });
+  }
 
   // Prep row — presence-derived from the context, never fetched (§5.2).
   // On-file values stay green chips; everything absent folds into ONE quiet
@@ -502,6 +535,20 @@ export function GuidedPhoneSteps({
           )}
         </div>
       ) : null}
+      {/* S309 (Andrew, supersedes the earlier no-skip ruling) — the escape
+          hatch is ALWAYS reachable: with the stricter conclusion rule (all
+          calls + answer), a caller who won't finish the pack needs a door out
+          at every stage. Skip records the existing outcome enum through the
+          same persist; the pack collapses with the skipped chrome. */}
+      <div>
+        <button
+          type="button"
+          onClick={() => void persist(PHONE_OUTCOME.id, { checked: true, note: "skip" })}
+          className="font-medium text-gray-500 underline underline-offset-2 hover:text-gray-700"
+        >
+          {COLLECTIONS_CHROME.skipLabel}
+        </button>
+      </div>
     </div>
   );
 }

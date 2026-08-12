@@ -24,6 +24,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { userScoped } from "@/lib/security/user-scoped";
+import { driftMachineryApplies } from "@/lib/disputes/evidence-fingerprint";
 import { evaluateDeadline, readDeadlineConfig } from "@/lib/disputes/deadline-engine";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 
@@ -37,24 +38,9 @@ async function getAuthUser(req: NextRequest) {
   }
 }
 
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-
-/**
- * A deadline anchor is either null (clear) or a "YYYY-MM-DD" that is on or before
- * today. Future dates are rejected — both anchors record something that already
- * happened (a denial received, a collector's first contact). String comparison is
- * valid for YYYY-MM-DD ordering.
- */
-function validateAnchor(
-  value: unknown,
-  todayIso: string,
-): { ok: true; value: string | null } | { ok: false } {
-  if (value === null) return { ok: true, value: null };
-  if (typeof value !== "string" || !DATE_RE.test(value)) return { ok: false };
-  const t = Date.parse(`${value}T00:00:00Z`);
-  if (Number.isNaN(t) || value > todayIso) return { ok: false };
-  return { ok: true, value };
-}
+// S309 F15 — the anchor validator is SHARED with the escalate route (a second
+// writer of the same fields discovered unguarded): src/lib/disputes/deadline-anchors.ts.
+import { validateAnchor } from "@/lib/disputes/deadline-anchors";
 
 /** Resolve the letter type from a dispute row (metadata.letterType wins; else map dispute_type).
  *  Mirrors resolveLetterTypeFromDispute in the GET + redraft routes (kept local per that pattern). */
@@ -144,11 +130,25 @@ export async function POST(
 
   const { data: dispute, error: fetchErr } = await userScoped(supabase, user.id)
     .table("dispute_outcomes")
-    .select("id, metadata, dispute_type, filed_date, governing_deadline_date")
+    .select("id, metadata, dispute_type, filed_date, governing_deadline_date, status, sent_at")
     .eq("id", disputeId)
     .single();
   if (fetchErr || !dispute) {
     return NextResponse.json({ error: "Dispute not found" }, { status: 404 });
+  }
+
+  // S311 (tree §2.1) — a VOID letter is a read-only exhibit (S308's rule;
+  // this route was reachable from a cancelled letter's page and its write
+  // would have moved the frozen row's updated_at). Sent letters stay
+  // writable — their metadata is the knowledge layer follow-ups read.
+  // One rule, stated once: driftMachineryApplies === false ⇔ void.
+  if (
+    !driftMachineryApplies(
+      (dispute.status as string | null) ?? null,
+      dispute.sent_at ? new Date(dispute.sent_at as string) : null,
+    )
+  ) {
+    return NextResponse.json({ error: "letter_void" }, { status: 409 });
   }
 
   // Lost-update-safe: re-read metadata and spread-merge only the provided keys

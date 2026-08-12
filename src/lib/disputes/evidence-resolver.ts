@@ -28,10 +28,13 @@ import type { ClaimLevelFindingMeta, NetworkTier } from "@/lib/billing/types";
 import {
   resolveEffectiveClaimTotals,
   readUserTotalsSource,
+  readUserPatientPaidOverride,
+  applyUserPatientPaidOverride,
   type EffectiveClaimTotals,
 } from "@/lib/claims/effective-totals";
 import { resolveCoverageForLine, type CoverageDecision } from "@/lib/claims/coverage-decision";
 import { coerceNetworkTier } from "@/lib/claims/cost-share-loader";
+import { resolveStillOutstanding } from "@/lib/claims/recovery-math";
 import {
   classifyDisputeType,
   deriveCiteGradeTier,
@@ -854,6 +857,24 @@ export async function resolveEvidence(
   const byClaim = new Map<string, ClaimEvidence>();
   for (const c of claimRows) {
     const claimLineItems = lineItemsByClaimId.get(c.id) ?? [];
+    // S309 (Andrew's live catch: the letter's refund didn't follow his
+    // amount-paid change) — the THIRD effective-totals site adopts the SAME
+    // Z1.1d overlay the claim routes and the dispute basis already apply:
+    // claims.metadata.userPatientPaid onto the header + prorated per-line,
+    // BEFORE resolveEffectiveClaimTotals — so the letter's classifier,
+    // recovery pools, and per-line citations all see the user's paid truth
+    // the moment it changes. In-memory, like the other two sites; no-op when
+    // the override is unset → byte-identical.
+    {
+      const ov = readUserPatientPaidOverride(c.metadata);
+      if (ov != null) {
+        applyUserPatientPaidOverride(
+          c as { total_patient_paid?: number | null },
+          claimLineItems as Array<{ billed_amount?: number | null; patient_paid_amount?: number | null }>,
+          ov,
+        );
+      }
+    }
     byClaim.set(c.id, {
       claimId: c.id,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -931,6 +952,9 @@ export async function resolveEvidence(
   let totalBilled = 0;
 
   for (const li of filteredLineItems) {
+    // S309 F12b — the claim's money context feeds the classifier's derived
+    // actual-cost (shared proration when raw per-line money is null).
+    const claimEvidence = byClaim.get(li.claim_id);
     const evidence = buildLineItemEvidence(
       li,
       coverageByServiceSlug,
@@ -942,10 +966,12 @@ export async function resolveEvidence(
       peerCodesBySlug,
       lineItemCanonicalMap,
       attestedLineItemIds.has(li.id),
+      claimEvidence
+        ? { totalBilled: claimEvidence.totalBilled, effectiveTotals: claimEvidence.effectiveTotals }
+        : undefined,
     );
     totalBilled += evidence.billedAmount;
     totalDiscrepancy += evidence.discrepancyAmount ?? 0;
-    const claimEvidence = byClaim.get(li.claim_id);
     if (claimEvidence) claimEvidence.lineItemEvidence.push(evidence);
   }
 
@@ -2156,15 +2182,40 @@ function buildLineItemEvidence(
    * amount becomes the money weight (the whole charge is disputed).
    */
   attested: boolean,
+  /**
+   * S309 F12b — the claim's money context (header totals + the S140 effective
+   * totals) so the derived actualPatientCost can fall through to the SHARED
+   * per-line proration when every raw column is null (single-adjudication
+   * bills). Optional: absent → the pre-F12b null behavior.
+   */
+  claimMoneyCtx?: { totalBilled: number; effectiveTotals: EffectiveClaimTotals },
 ): LineItemEvidence {
   const billed = Number(li.billed_amount ?? 0);
   const insurancePaid = li.insurance_paid != null ? Number(li.insurance_paid) : null;
   const patientOwes = li.patient_owes != null ? Number(li.patient_owes) : null;
   const patientPaid = li.patient_paid_amount != null ? Number(li.patient_paid_amount) : null;
+  // S309 F12b — the CLASSIFIER must see the same effective per-line money the
+  // recovery prices with. On single-adjudication provider bills every raw
+  // per-line column is null BY DESIGN (S304 — the header states adjudication
+  // once), so actualPatientCost derived null → discrepancyAmount null → the
+  // line never classified cost_share_misapplication → the letter rendered the
+  // COVERAGE ask (no dollars) while the panel asserted the recovery — the
+  // live half of the F12 gap (the fresh-bill letter Andrew drove). The raw
+  // fields above stay raw (citations quote the document); only this DERIVED
+  // analytic falls through to the shared proration, and only when the raw
+  // chain is null → populated bills are byte-identical.
   const actualPatientCost = patientOwes != null
     ? patientOwes
     : insurancePaid != null
     ? Math.max(0, billed - insurancePaid)
+    : claimMoneyCtx
+    ? resolveStillOutstanding({
+        lineBilled: billed,
+        lineStillOutstanding: null,
+        linePatientOwes: null,
+        claimTotalBilled: claimMoneyCtx.totalBilled,
+        claimStillOutstanding: claimMoneyCtx.effectiveTotals.patientResponsibility,
+      })
     : null;
 
   // Resolve slug from the line item, or fall back to billing_code_mappings

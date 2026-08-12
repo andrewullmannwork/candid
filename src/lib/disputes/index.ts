@@ -8,7 +8,7 @@ import type {
   FindingType,
 } from "../billing/types";
 import { letterRecipientKind } from "./letter-type";
-import { LETTER_TEMPLATES } from "./templates";
+import { LETTER_TEMPLATES, buildSenderBlock } from "./templates";
 import type { PlanBenefitEvidence } from "./templates";
 import { RECITAL_IN_OPENING } from "./prior-contact";
 import type { PlanContext } from "./plan-context";
@@ -109,6 +109,8 @@ export interface GenerateDisputeLetterOptions {
    * Absent/empty → omitted, byte-identical letter.
    */
   priorContactRecital?: string;
+  /** S310 — the attested billing-office hold call's instant (see TemplateParams). */
+  holdCallAt?: string | null;
 }
 
 export function generateDisputeLetter(
@@ -129,7 +131,7 @@ export function generateDisputeLetter(
     ? { planEvidence: optionsOrPlanEvidence }
     : (optionsOrPlanEvidence ?? {});
   const { planEvidence, planContext, evidence, gateUnverified, enforceDataTrustGate, disputeGroundsOn, disputeGroundBasis, noPlanCoverageRequestOn,
-    certifiedMail, appealExhausted, collector, debtWithinWindow, priorContactRecital } =
+    certifiedMail, appealExhausted, collector, debtWithinWindow, priorContactRecital, holdCallAt } =
     options;
 
   // Resolve the letter type up front (was below, before the template lookup) so the recovery fold
@@ -187,6 +189,7 @@ export function generateDisputeLetter(
     v3DesignOn: enforceDataTrustGate ?? false,
     disputeGroundsOn: disputeGroundsOn ?? false,
     letterRecovery,
+    holdCallAt,
     recovery,
     noPlanCoverageRequestOn: noPlanCoverageRequestOn ?? false,
     // S300 — ONE placement decision (below) governs both branches, so a letter
@@ -205,6 +208,14 @@ export function generateDisputeLetter(
   // rerenderDisputeLetter — keep the two in lockstep.
   if (!recitalInOpening && priorContactRecital) {
     body = body.replace("\n\nSincerely,", `\n\n${priorContactRecital}\n\nSincerely,`);
+  }
+
+  // S310 (Andrew) — the sender block above the dateline, from the SAME
+  // patientName the template printed/signed with. Fail-soft: no complete
+  // address → untouched body. Mirrored in rerenderDisputeLetter — lockstep.
+  const senderBlock = buildSenderBlock(bill.patient.name, planContext?.userAddress);
+  if (senderBlock) {
+    body = `${senderBlock}\n\n${body}`;
   }
 
   // Recipient: insurance appeals use insurer + appeals address when available;

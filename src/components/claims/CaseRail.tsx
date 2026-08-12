@@ -486,6 +486,7 @@ export function CaseRail({
   onMarkSent,
   onSaveFirstContactDate,
   onRefetch,
+  onStepInteraction,
 }: {
   /**
    * S303 — the rail arrives COMPOSED. ClaimDetail composes once (composeRail)
@@ -530,6 +531,11 @@ export function CaseRail({
   onSaveFirstContactDate: (disputeId: string, date: string | null) => Promise<void>;
   /** Refetch the claim projection after a collections step writes. */
   onRefetch: () => Promise<void>;
+  /** S309 (Andrew) — fired on ANY rail-step write (attest/skip/undo, offers,
+   *  regulator doors, collections). ClaimDetail collapses the savings math on
+   *  it: interacting with a later step means the answer has been read. One
+   *  hook at the one write funnel (runClaimStep), not per-step wiring. */
+  onStepInteraction?: () => void;
 }) {
   const router = useRouter();
   const [openSteps, setOpenSteps] = useState<Record<string, boolean>>({});
@@ -566,9 +572,56 @@ export function CaseRail({
    */
   const [refiling, setRefiling] = useState<Record<string, boolean>>({});
 
+  // S312 (F2-S312.1) — Dismiss/Keep busy + inline error, keyed by disputeId
+  // (the S300 lesson: a write that fails must show a symptom).
+  const [zeroDemandBusy, setZeroDemandBusy] = useState<Record<string, boolean>>({});
+  const [zeroDemandError, setZeroDemandError] = useState<Record<string, boolean>>({});
+  // S312 (Andrew: optimistic with snapback) — the click's render settles the
+  // UI: "dismissed" hides the letter's whole group, "kept" returns the plain
+  // send CTA. The POST runs behind it; failure clears the override (the banner
+  // REAPPEARS carrying the inline error — the snapback IS the symptom). The
+  // override holds through the success refetch (no flicker) and is cleared
+  // once the projection agrees. The rail's standing S301 idiom.
+  const [zeroDemandDone, setZeroDemandDone] = useState<
+    Record<string, "dismissed" | "kept" | undefined>
+  >({});
+
   if (groups.length === 0) return null;
 
   const goToLetter = (disputeId: string) => router.push(`/disputes?dispute=${disputeId}`);
+
+  // S312 (F2-S312.1) — the rail's Dismiss/Keep, wired to the SAME
+  // /api/disputes/[id]/dismiss route the letter page uses (one writer). On
+  // success the projection refetch reconciles: a dismissed letter leaves
+  // the rail (cancelled ⇒ stage "none"), a kept one drops the banner (the
+  // stamp's Keep answer suppresses it).
+  const runZeroDemand = async (disputeId: string, action: "dismiss" | "keep") => {
+    if (zeroDemandBusy[disputeId]) return;
+    setZeroDemandBusy((m) => ({ ...m, [disputeId]: true }));
+    setZeroDemandError((m) => ({ ...m, [disputeId]: false }));
+    setZeroDemandDone((m) => ({ ...m, [disputeId]: action === "dismiss" ? "dismissed" : "kept" }));
+    try {
+      const token = await getAuthToken();
+      if (!token) throw new Error("no auth token");
+      const res = await fetch(`/api/disputes/${disputeId}/dismiss`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ action, reason: "zero_demand" }),
+      });
+      if (!res.ok) throw new Error(`dismiss ${res.status}`);
+      onStepInteraction?.();
+      await onRefetch();
+      // The projection now agrees (letter gone / banner suppressed) — the
+      // override has nothing left to say.
+      setZeroDemandDone((m) => ({ ...m, [disputeId]: undefined }));
+    } catch {
+      // Snapback: the banner returns, wearing the failure.
+      setZeroDemandDone((m) => ({ ...m, [disputeId]: undefined }));
+      setZeroDemandError((m) => ({ ...m, [disputeId]: true }));
+    } finally {
+      setZeroDemandBusy((m) => ({ ...m, [disputeId]: false }));
+    }
+  };
 
   // The rail's ONE write (ruling 6, capture-only): a case event on the record.
   // Fail-quiet UX: on a non-OK response the button simply re-enables — the
@@ -662,6 +715,7 @@ export function CaseRail({
     next: "open" | "done" | "skipped",
     body: { checked?: boolean; skipped?: boolean; note?: string; disputeId?: string },
   ): Promise<void> => {
+    onStepInteraction?.();
     setGuideBusy((m) => ({ ...m, [stepId]: true }));
     setGuideError((m) => ({ ...m, [stepId]: false }));
     try {
@@ -1155,11 +1209,17 @@ export function CaseRail({
                 skipped={declined}
               >
                 <div className={`rounded-xl border border-gray-200 px-4 py-3.5 ${declined ? "bg-gray-50" : "bg-white"}`}>
+                  {/* S309 F1 (Andrew) — action FIRST, reason to its right, for
+                      every letter offer: the button is the step's point; the
+                      reason (finding's words, or the engine's own sentence —
+                      F1-B) reads as its justification beside it. */}
                   <div className="flex flex-wrap items-center justify-between gap-3">
+                    {!declined && (
+                      <div className="flex flex-shrink-0 items-center gap-2">
+                        {renderOfferAction(o.letterType)}
+                      </div>
+                    )}
                     <div className="min-w-[14rem] flex-1">
-                      {/* The finding's OWN words — the reason this letter is
-                          owed. Absent on an insurer track raised by the
-                          cost-share engine, which is plan math, not a finding. */}
                       {o.reasonTitle && (
                         <div className={`text-[14px] font-bold ${declined ? "text-gray-400" : "text-gray-900"}`}>
                           {o.reasonTitle}
@@ -1171,11 +1231,6 @@ export function CaseRail({
                         </div>
                       )}
                     </div>
-                    {!declined && (
-                      <div className="flex flex-shrink-0 items-center gap-2">
-                        {renderOfferAction(o.letterType)}
-                      </div>
-                    )}
                   </div>
                 </div>
                 <div className="mt-2.5 flex flex-wrap items-center gap-2 text-[11.5px] text-gray-400">
@@ -1212,6 +1267,57 @@ export function CaseRail({
             );
           }
           case "send-draft":
+            // S312 (F2-S312.1, Andrew) — a $0-demand draft's send step IS the
+            // banner: Dismiss/Keep act right here (no extra click through the
+            // letter page), wired to the SAME /dismiss route the letter page
+            // uses. "Open the letter" stays as the quiet read-before-deciding
+            // path. Same strings as the letter page (CASE_RAIL.zeroDemand*).
+            // Optimistic: a clicked "Keep" renders the plain CTA in the click's
+            // render (the override; a failed POST snaps the banner back).
+            if (s.zeroDemand && zeroDemandDone[s.disputeId] !== "kept") {
+              return (
+                <RailStep key={s.key} dataLetter={letterId} n={s.badge} title={s.title} last={last}>
+                  <div className="rounded-xl border border-sky-200 bg-sky-50 px-4 py-3.5">
+                    <p className="text-[13px] font-semibold text-sky-900">
+                      {CASE_RAIL.zeroDemandTitle}
+                    </p>
+                    <p className="mt-1 text-xs leading-relaxed text-sky-900">
+                      {CASE_RAIL.zeroDemandBody}
+                    </p>
+                    <div className="mt-2.5 flex flex-wrap items-center gap-2.5">
+                      <button
+                        type="button"
+                        disabled={zeroDemandBusy[s.disputeId] ?? false}
+                        onClick={() => void runZeroDemand(s.disputeId, "dismiss")}
+                        className="rounded-lg bg-slate-800 px-3.5 py-1.5 text-[13px] font-semibold text-white shadow-sm transition-colors hover:bg-slate-900 disabled:opacity-50"
+                      >
+                        {CASE_RAIL.zeroDemandDismiss}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={zeroDemandBusy[s.disputeId] ?? false}
+                        onClick={() => void runZeroDemand(s.disputeId, "keep")}
+                        className="rounded-lg border border-sky-300 bg-white px-3.5 py-1.5 text-[13px] font-semibold text-sky-800 transition-colors hover:bg-sky-100 disabled:opacity-50"
+                      >
+                        {CASE_RAIL.zeroDemandKeep}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => goToLetter(s.disputeId)}
+                        className="text-xs font-medium text-sky-700 underline underline-offset-2 hover:text-sky-900"
+                      >
+                        {CASE_RAIL.ctaOpenLetter}
+                      </button>
+                      {(zeroDemandError[s.disputeId] ?? false) && (
+                        <span className="text-xs text-red-600">
+                          {CASE_RAIL.zeroDemandSaveFailed}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </RailStep>
+              );
+            }
             return (
               <RailStep key={s.key} dataLetter={letterId} n={s.badge} title={s.title} last={last}>
                 <div className="rounded-xl border border-gray-200 bg-white px-4 py-3.5">
@@ -1258,7 +1364,11 @@ export function CaseRail({
 
   return (
     <>
-      {groups.map((g) => (
+      {/* S312 optimistic — a just-dismissed letter's whole group leaves the rail
+          in the click's render; the refetch (or a snapback) reconciles after. */}
+      {groups
+        .filter((g) => !(g.disputeId && zeroDemandDone[g.disputeId] === "dismissed"))
+        .map((g) => (
         // S306 (Andrew) — breathing room at every group boundary: the previous
         // letter's last card ("Your next move", "Waiting on…") was flush
         // against the next letter's band. First group keeps its position.

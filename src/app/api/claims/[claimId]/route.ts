@@ -800,6 +800,14 @@ export async function GET(
   // single-load unification.
   let enrichedDisputes: Array<Record<string, unknown>> = disputes ?? [];
   if (costShareV2 && enrichedDisputes.length > 0) {
+    // S311 — under UX-2 a live draft is NEVER stale: it rebuilds itself on
+    // view (that is the flag's whole model), so the card's "May need update"
+    // chip on an unsent draft was both meaningless and, since S306,
+    // permanently ON — this route hashes evidence-only (no dispute param)
+    // while every draft's stored fingerprint is compose-inclusive, so the
+    // two shapes can never match. Sent letters keep the honest evidence-only
+    // compare (matching shapes: mark-as-sent stamps evidence-only).
+    const liveRebuildOn = await isFeatureEnabled("dispute_draft_live_rebuild_v1");
     let currentFp: string | null = null;
     try {
       const fpInput = await loadFingerprintInputForClaim(supabase, claimId, user.id);
@@ -821,11 +829,14 @@ export async function GET(
       const chargeCount = new Set(
         [d.claim_line_item_id, ...extraIds].filter(Boolean) as string[],
       ).size;
-      const isStale = isDisputeStale({
-        currentFingerprint: currentFp,
-        storedFingerprint: (d.evidence_fingerprint as string | null) ?? null,
-        sentAt: (d.sent_at as string | null) ?? null,
-      });
+      const isStale =
+        liveRebuildOn && (d.sent_at as string | null) == null
+          ? false
+          : isDisputeStale({
+              currentFingerprint: currentFp,
+              storedFingerprint: (d.evidence_fingerprint as string | null) ?? null,
+              sentAt: (d.sent_at as string | null) ?? null,
+            });
       // Drop the helper-only fields (fingerprint / sent_at / metadata / line id)
       // from the response — the raw fingerprint never reaches the client.
       return {
@@ -879,7 +890,12 @@ export async function GET(
       .table("claims")
       .select("id, date_of_service, status, total_billed, metadata")
       .eq("claim_group_id", claim.claim_group_id)
-      .neq("id", claimId);
+      .neq("id", claimId)
+      // S311 — mirror the list's own filter: soft-deleted (retired-duplicate)
+      // claims are not "other bills from this visit"; without this, both
+      // retired Ballard twins rendered as live related bills (ghost rows,
+      // one of them ghosting since 8/5).
+      .is("deleted_at", null);
     relatedClaims = (grouped || []).map((g) => {
       const meta = (g.metadata as Record<string, unknown>) || {};
       const provider = (meta.provider as Record<string, unknown> | undefined) || {};

@@ -4,7 +4,7 @@
 import type { AuditFinding, ParsedBill, DisputeLetterType } from "../billing/types";
 import type { PlanContext, ProviderContact, AppealsAddress } from "./plan-context";
 import type { DisputeEvidence, LineItemEvidence } from "./evidence-resolver";
-import { groundFindingsForEvidence, type GroundFinding, type LineRecovery, type LetterRecoveryResult } from "./dispute-grounds";
+import { groundFindingsForEvidence, OVERPAYMENT_BENCHMARK_SOURCE, type GroundFinding, type LineRecovery, type LetterRecoveryResult } from "./dispute-grounds";
 import { DISPUTE_GROUND_CATALOG, type RequestBucket } from "./dispute-ground-catalog";
 
 /**
@@ -20,6 +20,8 @@ const MEDICARE_BENCHMARK_FINDING_TYPES: ReadonlySet<string> = new Set(
 );
 import { buildObligationContext, renderObligationClauses } from "./obligation-render";
 import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
+import { plainDate, easternDate } from "@/lib/format/dates";
+import { RECIPIENT_DEPARTMENT_LINE } from "./letter-type";
 import { adjudicationBand } from "@/lib/care/interface";
 
 interface LetterTemplate {
@@ -103,6 +105,13 @@ interface TemplateParams {
    * patientName when absent.
    */
   attestingName?: string;
+  /**
+   * S310 (Andrew) — the attested billing-office hold call's instant, when one
+   * exists (same callLog entry the recital renders). buildRequestSection
+   * upgrades the standing collections-hold ask to a written confirmation of
+   * that call. Absent → the standing ask, byte-identical.
+   */
+  holdCallAt?: string | null;
   /**
    * §18 incr-4 (dispute_grounds_v1) — the per-line DEDUCTIBLE-AWARE recovery dollars
    * (resolveLetterRecovery, keyed by lineItemId). When present, buildRequestSection
@@ -212,7 +221,7 @@ function buildProviderRecipientBlock(
   providerContact: ProviderContact | null | undefined,
   bill: ParsedBill | undefined,
 ): string {
-  const lines: string[] = [providerName, "Compliance Department"];
+  const lines: string[] = [providerName, RECIPIENT_DEPARTMENT_LINE.provider];
   const address = providerContact?.address ?? bill?.provider?.address ?? null;
   if (address) {
     lines.push(address);
@@ -225,7 +234,7 @@ function buildInsurerRecipientBlock(
   insurerName: string,
   planContext: PlanContext | null | undefined,
 ): string {
-  const lines: string[] = [insurerName, "Appeals Department"];
+  const lines: string[] = [insurerName, RECIPIENT_DEPARTMENT_LINE.insurer];
   const appealsAddress = planContext?.insurer?.appealsAddress;
   if (appealsAddress) {
     lines.push(formatAppealsAddressBlock(appealsAddress));
@@ -278,6 +287,31 @@ function resolveStateCitation(state: string | null | undefined, lever: string): 
 /** Patient + reference block. Surfaces Provider NPI when it's known —
  *  preferring planContext.providerContact, falling back to bill.provider.npi
  *  for audit-only flows. */
+/**
+ * S310 (Andrew) — the letter's SENDER block: the user's name + mailing address
+ * above the dateline (standard business-letter position), so "send your
+ * response to the address above" is finally truthful. Rendered at the TWO
+ * compose exits (index.ts generateDisputeLetter + rerender.ts
+ * rerenderDisputeLetter), never per-template; fail-soft — an absent or
+ * incomplete address renders nothing and the letter is byte-identical.
+ */
+export function buildSenderBlock(
+  name: string | null | undefined,
+  addr:
+    | { line1: string; line2: string | null; city: string; state: string; zip: string }
+    | null
+    | undefined,
+): string | null {
+  if (!addr) return null;
+  const lines = [
+    ...(name && name.trim() ? [name.trim()] : []),
+    addr.line1,
+    ...(addr.line2 ? [addr.line2] : []),
+    `${addr.city}, ${addr.state} ${addr.zip}`,
+  ];
+  return lines.join("\n");
+}
+
 function buildPatientReferenceBlock(
   patientName: string,
   memberId: string | undefined,
@@ -584,8 +618,16 @@ export function buildRequestSection(params: {
   // `dispute.metadata.finAssistOptIn` opt-in); defaults false → byte-identical. See
   // TemplateParams.finAssistContext.
   finAssistContext?: boolean;
+  /** S310 (Andrew) — the attested billing-office hold call's instant, when one
+   *  exists (the same callLog entry the recital renders). Upgrades the
+   *  standing collections-hold ask to a written confirmation of that call. */
+  holdCallAt?: string | null;
+  /** S312 — the Phase 4-E trust gate, threaded so the fold's number agreement counts
+   *  citations with the SAME trust test the evidence renders them with
+   *  (providerPlanAskLine). Default false = RenderEvidenceOpts' own default. */
+  gateUnverified?: boolean;
 }): string {
-  const { evidence, planContext, recipient, letterRecovery, recovery, noPlanCoverageRequestOn, demandsEnabled, finAssistContext } = params;
+  const { evidence, planContext, recipient, letterRecovery, recovery, noPlanCoverageRequestOn, demandsEnabled, finAssistContext, holdCallAt, gateUnverified } = params;
   if (!evidence) return "";
   const allLines = evidence.claims.flatMap((c) => c.lineItemEvidence);
   if (allLines.length === 0) return "";
@@ -658,6 +700,12 @@ export function buildRequestSection(params: {
   // Item A — set when the no-plan coverage hold (below) already requested a collections hold, so
   // the standing collections-hold doesn't render twice.
   let collectionsHoldRequested = false;
+  // S310 (Andrew-approved fold) — when both the cost-share correction ask and
+  // the coverage-track correction ask would render on a provider letter, they
+  // fold into ONE sentence (the write-off clause carried along). These track
+  // the cost-share ask so the coverage section can replace it in place.
+  let costShareAskIndex: number | null = null;
+  let costShareWriteOffClause = "";
 
   // 1) service_not_rendered (attested) — strongest; leads.
   if (b.attested.length > 0) {
@@ -667,8 +715,18 @@ export function buildRequestSection(params: {
     // R3 step 5.3 — drop precise dollars for clamp-bound claims (the ask still renders, sans amounts).
     const dollarLines = b.attested.filter((li) => !lineIsClampBound(li));
     const billed = sumOf(dollarLines, (li) => li.billedAmount);
-    const refund = sumOf(dollarLines, (li) => li.patientPaid);
-    const forgive = sumOf(dollarLines, (li) => li.patientOwes);
+    // S309 F12/C (Andrew) — refund/forgive dollars come from the SAME engine
+    // recovery the cost-share ask adopted in §18 incr-4: ONE money basis for
+    // the whole letter. This branch was the last raw reader — it quoted the
+    // raw line's $500 while the recovery priced the header-consistent $300
+    // (multi-charge L5). The billed figure stays the raw charge quote.
+    // Absent map (flag OFF / legacy) → the raw sums, byte-identical.
+    const refund = letterRecovery
+      ? sumAssertable(b.attested, letterRecovery, "refund")
+      : sumOf(dollarLines, (li) => li.patientPaid);
+    const forgive = letterRecovery
+      ? sumAssertable(b.attested, letterRecovery, "writeOff")
+      : sumOf(dollarLines, (li) => li.patientOwes);
     const insPaid = isInsurer ? sumOf(dollarLines, (li) => li.insurancePaid) : 0;
     const clauses: string[] = [];
     if (isInsurer) {
@@ -714,8 +772,19 @@ export function buildRequestSection(params: {
       ? `reprocess the affected ${many ? "charges" : "charge"} applying the cost-sharing my plan specifies (cited above)`
       : `correct my bill to the cost-sharing my plan specifies (cited above)`;
     const remedy: string[] = [];
-    if (refund > 0) remedy.push(`refund the ${formatCurrency(refund)} I overpaid`);
-    if (writeOff > 0) remedy.push(`write off the ${formatCurrency(writeOff)} billed above my correct responsibility`);
+    // S310 F18 (Andrew) — each letter claims only ITS party's money, mirroring
+    // the panel rows: the cost-share refund is the INSURER letter's demand
+    // (the fix is reprocessing), the write-off the provider/collector
+    // letter's (the balance is theirs to stop billing). Same rule as
+    // resolveLetterRecovery's recipient-scoped totals, so the sentence, the
+    // headline amount, and the panel agree by construction.
+    if (isInsurer && refund > 0) remedy.push(`refund the ${formatCurrency(refund)} I overpaid`);
+    if (!isInsurer && writeOff > 0) remedy.push(`write off the ${formatCurrency(writeOff)} billed above my correct responsibility`);
+    costShareAskIndex = asks.length;
+    costShareWriteOffClause =
+      !isInsurer && writeOff > 0
+        ? `, and write off the ${formatCurrency(writeOff)} billed above my correct responsibility`
+        : "";
     asks.push(`${capFirst(verb)}${remedy.length ? `, and ${joinClauses(remedy)}` : ""}.`);
   }
 
@@ -743,6 +812,20 @@ export function buildRequestSection(params: {
           `Until my insurer issues its coverage determination, place any collection activity on this balance on hold and do not report it to a credit bureau. Once the insurer determines how the claim should have been processed, rebill me for only the patient cost-share its determination establishes.`,
         );
         collectionsHoldRequested = true; // dedup: the standing collections-hold (Item A) won't double up
+      } else if (costShareAskIndex != null) {
+        // S310 (Andrew-approved fold) — the two "correct my bill" asks were
+        // near-duplicates when both fired; ONE sentence replaces the
+        // cost-share ask in place, keeping its write-off clause.
+        // S312 — number agreement from the CITED-line count: the SAME predicate the
+        // provider bill view renders citations with (providerPlanAskLine), over the
+        // fold's own buckets — so "(cited above)" refers to exactly the lines the
+        // evidence cites, singular when there is one. A bare-planBenefit rider in
+        // b.coverage (nothing wrong on the line) no longer pluralizes the sentence.
+        const citedCount = [...b.costShare, ...b.coverage].filter((li) =>
+          providerPlanAskLine(li, gateUnverified ?? false),
+        ).length;
+        asks[costShareAskIndex] =
+          `Correct my bill to reflect only the cost-sharing my plan specifies for ${citedCount === 1 ? "this service" : "these services"} (cited above), as determined by my insurer${costShareWriteOffClause}.`;
       } else {
         asks.push(
           `Correct my bill to reflect only my cost-sharing under my plan's coverage of ${b.coverage.length > 1 ? "these services" : "this service"}, as determined by my insurer.`,
@@ -915,11 +998,17 @@ export function buildRequestSection(params: {
     // asserting otherwise hands the provider a one-line rebuttal.
     const live = claimRecoveries.filter((c) => !clampBound.has(c.claimId));
     const IDENTITY_SOURCE = "claim_header_identity";
+    // S309 F17 — a THIRD basis: the user PAID above what the bill charged
+    // (the derived overpayment tier). Exactly the extension the S304 composed
+    // design anticipated: a new route adds ONE statement; the remedy line is
+    // reused as-is (refund > 0 → "Refund the … difference or provide a
+    // corrected statement …").
     const byBasis = [
-      { isIdentity: true, group: live.filter((c) => c.benchmarkSource === IDENTITY_SOURCE) },
-      { isIdentity: false, group: live.filter((c) => c.benchmarkSource !== IDENTITY_SOURCE) },
+      { kind: "identity" as const, group: live.filter((c) => c.benchmarkSource === IDENTITY_SOURCE) },
+      { kind: "overpayment" as const, group: live.filter((c) => c.benchmarkSource === OVERPAYMENT_BENCHMARK_SOURCE) },
+      { kind: "other" as const, group: live.filter((c) => c.benchmarkSource !== IDENTITY_SOURCE && c.benchmarkSource !== OVERPAYMENT_BENCHMARK_SOURCE) },
     ];
-    for (const { isIdentity, group } of byBasis) {
+    for (const { kind, group } of byBasis) {
       if (group.length === 0) continue;
       const refund = group.reduce((sum, c) => sum + c.refund, 0);
       const writeOff = group.reduce((sum, c) => sum + c.writeOff, 0);
@@ -931,9 +1020,11 @@ export function buildRequestSection(params: {
       // later cannot go silently unmentioned.
       const gap = group.find((c) => c.arithmeticGap)?.arithmeticGap;
       const statement =
-        isIdentity && gap
+        kind === "identity" && gap
           ? `This bill's charges, adjustments and payments do not add up to the amount I was billed: the total charge of ${formatCurrency(gap.billed)} less ${gap.reductions.join(" and ")} leaves ${formatCurrency(gap.leftOver)}, but I was billed ${formatCurrency(gap.billedToPatient)}.`
-          : `The bill total exceeds the sum of the listed charges.`;
+          : kind === "overpayment"
+            ? `My payments on this bill exceed the amount it charged me.`
+            : `The bill total exceeds the sum of the listed charges.`;
 
       // Remedy — refund when the money is already out of pocket, forgiveness
       // when it is still charged. Mixed claims lead with the refund.
@@ -986,8 +1077,14 @@ export function buildRequestSection(params: {
   // no redundant second hold. (When the no-plan hold pre-empted this one, collections are already
   // held by it and no false FA reference exists → FA-awareness stays scoped to this hold.)
   if (!isInsurer && !collectionsHoldRequested && allLines.some((li) => (li.patientOwes ?? 0) > 0)) {
+    // S310 (Andrew-approved) — when the user already requested the hold by
+    // phone (the attested billing-office call this letter also recites), the
+    // ask upgrades to a written confirmation of THAT request; otherwise the
+    // standing launch clause asks for the hold fresh.
     asks.push(
-      `I dispute these charges. While this dispute is unresolved${faActive ? " and my financial-assistance request is under review" : ""}, place any collection activity for this balance on hold and do not report it to a credit bureau. If it has already been reported, report it as disputed.`,
+      holdCallAt
+        ? `Please confirm in writing the hold I requested by phone on ${easternDate(holdCallAt)}.`
+        : `I dispute these charges. While this dispute is unresolved${faActive ? " and my financial-assistance request is under review" : ""}, place any collection activity for this balance on hold and do not report it to a credit bureau. If it has already been reported, report it as disputed.`,
     );
   }
 
@@ -1059,6 +1156,55 @@ interface RenderEvidenceOpts {
   attestingName?: string;
   v3DesignOn?: boolean;
   disputeGroundsOn?: boolean;
+  /**
+   * S312 (Andrew's §0 ruling, 3rd raise) — "a PROVIDER letter argues from the bill's own
+   * arithmetic; an INSURER letter argues from the plan's terms." When recipient === "provider"
+   * AND disputeGroundsOn, the evidence section becomes the bill view: every line renders as a
+   * charge line, plan citations render ONLY where a correction ask needs one
+   * (providerPlanAskLine — the SAME predicate the fold's number agreement counts), the disputed
+   * line leads with the bill's own charge, and the per-claim sums block renders from the SAME
+   * recipient-scoped recovery fold the relief reads. Absent/insurer → byte-identical.
+   */
+  recipient?: "insurer" | "provider" | "collector";
+  /** S312 — the fold result backing the sums block (the F17 overpayment row + clampBound).
+   *  Same object buildRequestSection argues from — the sums can never disagree with the asks. */
+  recovery?: LetterRecoveryResult;
+}
+
+/**
+ * Phase 4 Task 4-E trust test, extracted (S312) so the evidence renderer and the fold's
+ * number agreement read ONE definition. 3-case logic per Q-DR-4E-2 LOCK — see the call
+ * site comment in renderLineItemEvidence.
+ */
+function planBenefitTrustedFor(li: LineItemEvidence, gateUnverified: boolean): boolean {
+  return !!(
+    li.planBenefit &&
+    (!gateUnverified ||
+      li.planBenefit.sbcExcerptVerified ||
+      (li.planBenefit.covered === true &&
+        (li.planBenefit.copay !== null || li.planBenefit.coinsurance !== null)))
+  );
+}
+
+/**
+ * S312 — the ONE "does this line's plan citation back a correction ask?" predicate.
+ * On the provider bill view a line renders its plan-term content ONLY when this is true
+ * (otherwise it is a plain charge line), and buildRequestSection's fold sentence counts
+ * the SAME set for its "this service"/"these services" number agreement — one derivation,
+ * so the citations the relief references are exactly the citations the evidence renders.
+ * Mirrors buildRequestSection's ask buckets: a real cost-share discrepancy, a documented
+ * coverage contradiction, or a balance-billing line. A bare planBenefit with nothing wrong
+ * (the b.coverage rider) carries NO ask — its citation was the insurer-side noise Andrew's
+ * §0 ruling removed. Attested lines lead with the attestation instead (existing rule).
+ */
+function providerPlanAskLine(li: LineItemEvidence, gateUnverified: boolean): boolean {
+  if (li.serviceNotRenderedAttested) return false;
+  if (!planBenefitTrustedFor(li, gateUnverified)) return false;
+  return (
+    (li.disputeType === "cost_share_misapplication" && (li.discrepancyAmount ?? 0) > 0) ||
+    li.disputeType === "coverage_contradiction" ||
+    li.disputeType === "balance_billing"
+  );
 }
 
 function renderEvidenceBlock(
@@ -1095,6 +1241,9 @@ function renderEvidenceBlock(
   // clauses is impossible by construction. CI: dispute-grounds/no-placeholder.ts.
   const bodyLines: string[] = [];
   let itemNumber = 1;
+  // S312 — the provider bill view (see RenderEvidenceOpts.recipient). Gated on the SAME
+  // flag as the grounds-sourced finding block so the OFF path stays byte-identical.
+  const providerBillView = opts.recipient === "provider" && (opts.disputeGroundsOn ?? false);
 
   for (const claim of evidence.claims) {
     const claimBlocks: string[] = [];
@@ -1114,6 +1263,33 @@ function renderEvidenceBlock(
       bodyLines.push(header, "");
     }
     bodyLines.push(...claimBlocks);
+
+    // S312 — the sums block ("what they add up to", Andrew's §0 ruling): the bill view
+    // closes each claim's charge list with the bill's own arithmetic. Charged/payments are
+    // the claim's effective totals — the SAME fields the fold's clamp pools read (paidCap /
+    // respHeader), with the Z1.1d user-paid overlay already applied — and the Overpaid line
+    // is the fold's own F17 overpayment row (recovery.claimRecoveries, clampBound-filtered
+    // exactly as the relief filters it), so the sums can never disagree with the asks.
+    // Fail-soft: no real totals (hand-built fixture evidence) → no block.
+    if (providerBillView) {
+      const charged = claim.effectiveTotals.patientResponsibility;
+      const paid = claim.effectiveTotals.patientPaid;
+      if (Number.isFinite(charged) && Number.isFinite(paid) && (charged > 0 || paid > 0)) {
+        const clampBound = new Set(opts.recovery?.clampBoundClaimIds ?? []);
+        const overpaidRow = (opts.recovery?.claimRecoveries ?? []).find(
+          (c) =>
+            c.claimId === claim.claimId &&
+            c.benchmarkSource === OVERPAYMENT_BENCHMARK_SOURCE &&
+            !clampBound.has(c.claimId),
+        );
+        bodyLines.push(
+          `Charged to me on this bill: ${formatCurrency(charged)}`,
+          `My payments toward this bill: ${formatCurrency(paid)}`,
+        );
+        if (overpaidRow) bodyLines.push(`Overpaid: ${formatCurrency(overpaidRow.refund)}`);
+        bodyLines.push("");
+      }
+    }
   }
 
   // Zero rendered clauses across every claim → omit the whole section (header
@@ -1153,6 +1329,11 @@ function renderLineItemEvidence(
 ): string {
   // R3 step 5.4 (1c) — defaults copied verbatim from the former positional params → byte-identical.
   const { gateUnverified = false, attestingName = "", v3DesignOn = false, disputeGroundsOn = false } = opts;
+  // S312 — the provider bill view (Andrew's §0 ruling): plan-term content renders only
+  // where a correction ask needs it; every line renders as a charge line regardless.
+  // Same activation as renderEvidenceBlock's sums block (recipient=provider + grounds ON).
+  const providerBillView = opts.recipient === "provider" && disputeGroundsOn;
+  const planAskLine = providerBillView && providerPlanAskLine(li, gateUnverified);
   // Bare minimum to render: a code OR a billed amount. Skip phantom items.
   if (!li.billingCode && li.billedAmount === 0 && !li.patientOwes) return "";
 
@@ -1199,18 +1380,16 @@ function renderLineItemEvidence(
   //   - Case 3 (no cite-grade AND no certainty of coverage): drop the planBenefit bullets entirely
   //   - Discrepancy bullet (derived from planBenefit math) gated on the same trust level
   // When gateUnverified === false (legacy / flag OFF), all bullets render unconditionally.
-  const planBenefitTrusted = !!(
-    li.planBenefit &&
-    (!gateUnverified ||
-      li.planBenefit.sbcExcerptVerified ||
-      (li.planBenefit.covered === true &&
-        (li.planBenefit.copay !== null || li.planBenefit.coinsurance !== null)))
-  );
+  const planBenefitTrusted = planBenefitTrustedFor(li, gateUnverified);
 
   // Block C2 item 3 — on an attested (service-not-rendered) line the plan
   // cost-share citation is SECONDARY: suppress it here so the attestation leads.
   // It returns only as an explicit "in the alternative" fallback below.
-  if (li.planBenefit && planBenefitTrusted && !li.serviceNotRenderedAttested) {
+  // S312 — provider bill view: the citation renders ONLY where a correction ask
+  // needs it (providerPlanAskLine); a line with nothing wrong is a plain charge
+  // line (Andrew's §0: plan citations on no-ask lines were insurer-side logic
+  // on a provider envelope). Insurer letters: unchanged (providerBillView false).
+  if (li.planBenefit && planBenefitTrusted && !li.serviceNotRenderedAttested && (!providerBillView || planAskLine)) {
     // S109 PR #2 (Chunk A) — bullet prefix varies by sourcedFrom per the
     // lawyer-pass decision tree §3a, so the letter discloses honestly which
     // plan data backs the citation (user's exact-year plan vs current-plan-
@@ -1279,9 +1458,6 @@ function renderLineItemEvidence(
     // buildExactMatchPlanBenefit) carries citation:"" — rendering "Source: ."
     // would be a dangling fragment in a mailed letter. Omit the suffix entirely
     // when there is no citation string; the bullet's plan statement stands alone.
-    bullets.push(
-      `   - ${prefix}.${li.planBenefit.citation ? ` Source: ${li.planBenefit.citation}.` : ""}`,
-    );
     // Verbatim plan excerpt (Case 1 only): render only when cite-grade verified
     // OR gating is off entirely (legacy behavior). Plain-text "Plan language:"
     // label — NOT Markdown. The letter body renders as plain text everywhere it
@@ -1300,6 +1476,8 @@ function renderLineItemEvidence(
     // Degenerate case (negation leads the excerpt → nothing quotable) falls
     // back to omitting the line. Universal negation patterns; parser-side
     // excerpt hygiene tracked separately (S297 cross-workstream note).
+    // (S312 — computed BEFORE the bullet push so the provider bill view can
+    // fold the excerpt into the fused lead bullet; gating logic unchanged.)
     let quotableExcerpt = li.planBenefit.sbcExcerpt?.trim() ?? "";
     if (li.planBenefit.covered === true && quotableExcerpt) {
       const negation = /\bnot\s+covered\b|\bno\s+coverage\b|\bexcluded\b|\bexclusion\b/i.exec(
@@ -1310,8 +1488,39 @@ function renderLineItemEvidence(
         quotableExcerpt = prefix.length >= 8 ? `${prefix} …` : "";
       }
     }
-    if (quotableExcerpt && (!gateUnverified || li.planBenefit.sbcExcerptVerified)) {
-      bullets.push(`     Plan language: "${quotableExcerpt}"`);
+    const excerptRenderable = !!quotableExcerpt && (!gateUnverified || li.planBenefit.sbcExcerptVerified);
+
+    // S312 — the disputed-line lead (§1 approved bytes): where the old "Expected patient
+    // cost per plan / Actual patient responsibility / Discrepancy" bullet fired on a
+    // provider letter, the line now LEADS with the bill's own charge and folds the plan
+    // basis + Source + Plan language into ONE bullet. The "Discrepancy: $X" sentence —
+    // the insurer's reprocessing money on a provider envelope — is gone; the letter's own
+    // relief already claims the right money (F18's recipient-scoped fold).
+    const fusedLead =
+      providerBillView &&
+      li.expectedPatientCost != null &&
+      li.actualPatientCost != null &&
+      (li.discrepancyAmount ?? 0) > 0;
+    if (fusedLead) {
+      // user_exact (the sourcedFrom switch's default) takes §1's approved sentence; the
+      // two proxy families keep their existing disclosure sentences verbatim (Pattern 1
+      // #2 — never cite a year we don't have as if it's that year), the lead prepended.
+      const planBasis =
+        li.planBenefit.sourcedFrom === "canonical_archive" || li.planBenefit.sourcedFrom === "user_fallback"
+          ? prefix
+          : zeroCopay
+            ? "My plan covers it with no copay, as determined by my insurer"
+            : `My plan specifies ${costDescriptor} for it, as determined by my insurer`;
+      bullets.push(
+        `   - This bill charges me ${formatCurrency(li.actualPatientCost!)} for this service. ${planBasis}.${li.planBenefit.citation ? ` Source: ${li.planBenefit.citation}.` : ""}${excerptRenderable ? ` Plan language: "${quotableExcerpt}"` : ""}`,
+      );
+    } else {
+      bullets.push(
+        `   - ${prefix}.${li.planBenefit.citation ? ` Source: ${li.planBenefit.citation}.` : ""}`,
+      );
+      if (excerptRenderable) {
+        bullets.push(`     Plan language: "${quotableExcerpt}"`);
+      }
     }
   }
 
@@ -1348,13 +1557,18 @@ function renderLineItemEvidence(
 
   if (li.expectedPatientCost != null && li.actualPatientCost != null && planBenefitTrusted && !li.serviceNotRenderedAttested) {
     const overage = li.discrepancyAmount ?? 0;
-    if (overage > 0) {
+    // S312 — provider bill view: this bullet's job is done by the fused lead above (ask
+    // lines) or deliberately absent (plain charge lines). "Expected/Actual/Discrepancy"
+    // was the insurer's arithmetic on a provider envelope. Insurer letters: unchanged.
+    if (overage > 0 && !providerBillView) {
       bullets.push(
         `   - Expected patient cost per plan: ${formatCurrency(li.expectedPatientCost)}. Actual patient responsibility: ${formatCurrency(li.actualPatientCost)}. Discrepancy: ${formatCurrency(overage)}.`,
       );
     }
   } else if (li.discrepancyReason && planBenefitTrusted && !li.serviceNotRenderedAttested) {
-    bullets.push(`   - ${li.discrepancyReason}`);
+    // S312 — provider bill view: the reason explains a plan-term problem, so it renders
+    // only beside a citation that backs an ask (plain charge lines carry no plan prose).
+    if (!providerBillView || planAskLine) bullets.push(`   - ${li.discrepancyReason}`);
   } else if (!li.planBenefit && li.patientOwes != null && li.patientOwes > 0 && !li.serviceNotRenderedAttested) {
     // No plan match — at minimum explain the request crisply.
     bullets.push(
@@ -1473,21 +1687,21 @@ function renderLineItemEvidence(
     }
   }
 
+  // S312 — provider bill view: a line with no rendered clauses is still a CHARGE on the
+  // bill. The section is the bill's own charge list ("THIS BILL'S CHARGES AND MY
+  // PAYMENTS"), so the headline renders alone — the §1 "plain charge line". Every other
+  // track keeps the fail-closed omission (a bare line would be noise under an argument
+  // header like "Supporting detail").
+  if (providerBillView) return [headline, ...bullets].join("\n");
   return bullets.length > 0 ? [headline, ...bullets].join("\n") : "";
 }
 
 export function formatDate(iso: string): string {
-  // S109 PR #2 (Chunk A fix) — render with timeZone: 'UTC' so ISO dates like
-  // "2023-04-25" don't shift to "April 24, 2023" in PT timezone (Date()
-  // parses ISO as UTC midnight; toLocaleDateString without timeZone converts
-  // back to local timezone, dropping a day for any zone west of UTC).
-  const d = new Date(iso);
-  return d.toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-    timeZone: "UTC",
-  });
+  // S109 PR #2 (Chunk A fix) — DATE-ONLY values render UTC-pinned so ISO dates
+  // like "2023-04-25" never shift a day. S309 F13: centralized in
+  // src/lib/format/dates.ts; INSTANTS (datelines, call/sent timestamps) go
+  // through `easternDate` instead — Andrew's one-clock ruling.
+  return plainDate(iso);
 }
 
 function formatCurrency(amount: number): string {
@@ -1524,6 +1738,7 @@ const overchargeTemplate: LetterTemplate = {
     disputeGroundsOn,
     attestingName,
     letterRecovery,
+    holdCallAt,
     recovery,
     noPlanCoverageRequestOn,
     finAssistContext,
@@ -1580,11 +1795,14 @@ const overchargeTemplate: LetterTemplate = {
       0
     );
 
+    // S312 (Andrew's §0 ruling) — under the grounds flag the provider evidence section IS
+    // the bill's own arithmetic: the header names it, every line renders as a charge line,
+    // and the sums block closes it. OFF → the legacy header + rendering, byte-identical.
     const evidenceBlock = renderEvidenceBlock(
       evidence,
       planContext,
-      "Supporting evidence for each charge",
-      { gateUnverified: gateUnverified ?? false, attestingName: attestingName ?? patientName, v3DesignOn: v3DesignOn ?? false, disputeGroundsOn: disputeGroundsOn ?? false },
+      (disputeGroundsOn ?? false) ? "This bill's charges and my payments" : "Supporting evidence for each charge",
+      { gateUnverified: gateUnverified ?? false, attestingName: attestingName ?? patientName, v3DesignOn: v3DesignOn ?? false, disputeGroundsOn: disputeGroundsOn ?? false, recipient: "provider", recovery },
     );
 
     const recipientBlock = buildProviderRecipientBlock(providerName, planContext?.providerContact, bill);
@@ -1593,7 +1811,7 @@ const overchargeTemplate: LetterTemplate = {
     // Block C2 item 4 — v3 replaces the fixed "I am requesting 1/2/3" list with
     // the conditional request tree (provider voice). OFF → byte-identical.
     const requestBlock = (v3DesignOn ?? false)
-      ? buildRequestSection({ evidence, planContext, recipient: "provider", letterRecovery, recovery, noPlanCoverageRequestOn, finAssistContext, demandsEnabled: disputeGroundsOn ?? false })
+      ? buildRequestSection({ evidence, planContext, recipient: "provider", letterRecovery, recovery, noPlanCoverageRequestOn, finAssistContext, demandsEnabled: disputeGroundsOn ?? false, holdCallAt, gateUnverified: gateUnverified ?? false })
       : `I am requesting the following:
 
 1. A detailed, itemized bill showing all charges, procedure codes (CPT/HCPCS), and quantities.
@@ -1602,7 +1820,7 @@ const overchargeTemplate: LetterTemplate = {
 
 Under the No Surprises Act and applicable state consumer protection laws, I am entitled to a clear and accurate bill. I request a written response within 30 days of receipt of this letter.`;
 
-    return `${formatDate(new Date().toISOString())}
+    return `${easternDate(new Date())}
 
 ${recipientBlock}
 
@@ -1665,7 +1883,7 @@ const itemizedRequestTemplate: LetterTemplate = {
   body: ({ patientName, providerName, serviceDate, accountNumber, planContext, bill }) => {
     const recipientBlock = buildProviderRecipientBlock(providerName, planContext?.providerContact, bill);
     const patientRefBlock = buildPatientReferenceBlock(patientName, undefined, planContext?.providerContact, bill);
-    return `${formatDate(new Date().toISOString())}
+    return `${easternDate(new Date())}
 
 ${recipientBlock}
 
@@ -1825,10 +2043,10 @@ const insuranceAppealTemplate: LetterTemplate = {
       ? ` The specific relief I am requesting is set out below, following the supporting detail.`
       : ` I am requesting a full review of this denial, including:\n\n1. The specific reason for denial, including the applicable plan provision or exclusion\n2. The clinical criteria used to determine medical necessity\n3. Instructions for requesting an external review if this internal appeal is denied`;
     const reliefSection = v3
-      ? buildRequestSection({ evidence, planContext, recipient: "insurer", letterRecovery, recovery, noPlanCoverageRequestOn, demandsEnabled: disputeGroundsOn ?? false })
+      ? buildRequestSection({ evidence, planContext, recipient: "insurer", letterRecovery, recovery, noPlanCoverageRequestOn, demandsEnabled: disputeGroundsOn ?? false, gateUnverified: gateUnverified ?? false })
       : `${closingArgument ? `${closingArgument}\n\n` : ""}${escalationParagraph}`;
 
-    return `${formatDate(new Date().toISOString())}
+    return `${easternDate(new Date())}
 
 ${recipientBlock}
 
@@ -1875,6 +2093,7 @@ const balanceBillingTemplate: LetterTemplate = {
     disputeGroundsOn,
     attestingName,
     letterRecovery,
+    holdCallAt,
     recovery,
     noPlanCoverageRequestOn,
     finAssistContext,
@@ -1883,7 +2102,9 @@ const balanceBillingTemplate: LetterTemplate = {
       evidence,
       planContext,
       "Why these charges appear inconsistent with my plan's cost-sharing terms",
-      { gateUnverified: gateUnverified ?? false, attestingName: attestingName ?? patientName, v3DesignOn: v3DesignOn ?? false, disputeGroundsOn: disputeGroundsOn ?? false },
+      // S312 — provider bill view (see the overcharge template): charge-line rendering +
+      // ask-gated citations + the sums block. Title unchanged (bb argues its own wrong).
+      { gateUnverified: gateUnverified ?? false, attestingName: attestingName ?? patientName, v3DesignOn: v3DesignOn ?? false, disputeGroundsOn: disputeGroundsOn ?? false, recipient: "provider", recovery },
     );
     // S295 — the only unevidenced assertion left outside insurance_appeal. This
     // recital claimed the user had REVIEWED AN EOB and that an insurance payment
@@ -1917,7 +2138,7 @@ const balanceBillingTemplate: LetterTemplate = {
     // Block C2 item 4 — v3 replaces the fixed "I am requesting 1/2/3" list with
     // the conditional request tree (provider voice). OFF → byte-identical.
     const requestBlock = (v3DesignOn ?? false)
-      ? buildRequestSection({ evidence, planContext, recipient: "provider", letterRecovery, recovery, noPlanCoverageRequestOn, finAssistContext, demandsEnabled: disputeGroundsOn ?? false })
+      ? buildRequestSection({ evidence, planContext, recipient: "provider", letterRecovery, recovery, noPlanCoverageRequestOn, finAssistContext, demandsEnabled: disputeGroundsOn ?? false, holdCallAt, gateUnverified: gateUnverified ?? false })
       : `I am requesting:
 
 1. An immediate review of these charges
@@ -1926,7 +2147,7 @@ const balanceBillingTemplate: LetterTemplate = {
 
 Please respond within 30 days. If I do not receive a satisfactory resolution, I intend to file complaints with my state insurance commissioner and the federal No Surprises Help Desk.`;
 
-    return `${formatDate(new Date().toISOString())}
+    return `${easternDate(new Date())}
 
 ${recipientBlock}
 
@@ -1986,6 +2207,7 @@ const duplicateChargeTemplate: LetterTemplate = {
     disputeGroundsOn,
     v3DesignOn,
     letterRecovery,
+    holdCallAt,
     recovery,
     noPlanCoverageRequestOn,
     finAssistContext,
@@ -1997,7 +2219,8 @@ const duplicateChargeTemplate: LetterTemplate = {
       "Line items flagged as duplicates",
       // duplicate-letter body fn has no attestingName/v3DesignOn in scope → omitted (defaults "" /
       // false, exactly as the prior positional call relied on). R3 step 5.4 (1c).
-      { gateUnverified: gateUnverified ?? false, disputeGroundsOn: disputeGroundsOn ?? false },
+      // S312 — provider bill view (see the overcharge template). Title unchanged.
+      { gateUnverified: gateUnverified ?? false, disputeGroundsOn: disputeGroundsOn ?? false, recipient: "provider", recovery },
     );
     // §18 incr-3 — finding block from EVIDENCE when ON (rerender-safe); OFF → byte-identical.
     const effectiveFindings: Array<AuditFinding | GroundFinding> =
@@ -2025,7 +2248,7 @@ const duplicateChargeTemplate: LetterTemplate = {
     // path / the evidence:null fixture variant) fall to the legacy list — duplicate has no separate
     // closing line, so an empty relief would read abruptly (unlike overcharge, which has one).
     const requestBlock = ((v3DesignOn ?? false) && evidence)
-      ? buildRequestSection({ evidence, planContext, recipient: "provider", letterRecovery, recovery, noPlanCoverageRequestOn, finAssistContext, demandsEnabled: disputeGroundsOn ?? false })
+      ? buildRequestSection({ evidence, planContext, recipient: "provider", letterRecovery, recovery, noPlanCoverageRequestOn, finAssistContext, demandsEnabled: disputeGroundsOn ?? false, holdCallAt, gateUnverified: gateUnverified ?? false })
       : `I am requesting:
 
 1. A detailed review of each charge listed above
@@ -2034,7 +2257,7 @@ const duplicateChargeTemplate: LetterTemplate = {
 
 Please provide a written response within 30 days of receipt of this letter.`;
 
-    return `${formatDate(new Date().toISOString())}
+    return `${easternDate(new Date())}
 
 ${recipientBlock}
 
@@ -2073,7 +2296,7 @@ const negotiationTemplate: LetterTemplate = {
   subject: (provider) => `Self-Pay Rate Negotiation — ${provider}`,
   body: ({ patientName, providerName, serviceDate, planContext, bill }) => {
     const recipientBlock = buildProviderRecipientBlock(providerName, planContext?.providerContact, bill);
-    return `${formatDate(new Date().toISOString())}
+    return `${easternDate(new Date())}
 
 ${recipientBlock}
 
@@ -2117,7 +2340,7 @@ const finalNoticeTemplate: LetterTemplate = {
       ? `my state's consumer-protection authority (the ${state} Attorney General's office)`
       : "my state's consumer-protection authority";
     const stateCitation = renderGated(resolveStateCitation(state, "medical_debt"), (c) => ` ${c}`);
-    return `${formatDate(new Date().toISOString())}
+    return `${easternDate(new Date())}
 
 ${recipientBlock}
 
@@ -2148,7 +2371,7 @@ const externalReviewTemplate: LetterTemplate = {
     const insurerName = planContext?.insurer?.name ?? "My Health Plan";
     const recipientBlock = buildInsurerRecipientBlock(insurerName, planContext);
     const denialLine = renderGated(appealExhausted?.denialDate, (d) => ` on ${formatDate(d)}`);
-    return `${formatDate(new Date().toISOString())}
+    return `${easternDate(new Date())}
 
 ${recipientBlock}
 
@@ -2191,7 +2414,7 @@ const debtValidationTemplate: LetterTemplate = {
       ? `\n\nUntil you provide the requested validation, please cease collection activity on this account.`
       : "";
     const stateCitation = renderGated(resolveStateCitation(state, "credit_furnishing"), (c) => ` ${c}`);
-    return `${formatDate(new Date().toISOString())}
+    return `${easternDate(new Date())}
 
 ${recipientBlock}
 

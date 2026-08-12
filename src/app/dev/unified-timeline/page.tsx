@@ -139,6 +139,7 @@ function UnifiedTimelinePreview() {
     onDownload: noop,
     onMarkSent: noop,
     markingSent: false,
+    markSentError: null,
     onAddProviderAddress: noop,
     onAddInsurerAddress: noop,
     onReportOutcome: noop,

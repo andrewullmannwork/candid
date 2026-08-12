@@ -14,6 +14,8 @@
  * via /api/claims/[claimId] relatedClaims SELECT (added in same commit).
  */
 
+import { plainDateShort } from "@/lib/format/dates";
+
 interface PeerBill {
   id: string;
   date_of_service: string;
@@ -60,7 +62,9 @@ export function BundleSuggestion({
                   {peer.provider_name ?? "Provider details unavailable"}
                 </div>
                 <div className="mt-0.5 truncate text-[12px] text-gray-500">
-                  {peer.date_of_service ? new Date(peer.date_of_service).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "Date unknown"}
+                  {/* S311 — DoS is a DATE-ONLY value (F13's rule): the local-
+                      timezone parse this replaced rendered Apr 25 as "Apr 24". */}
+                  {peer.date_of_service ? plainDateShort(peer.date_of_service) : "Date unknown"}
                 </div>
               </div>
               <div className="shrink-0 text-right">

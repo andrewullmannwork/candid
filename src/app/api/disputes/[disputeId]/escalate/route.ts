@@ -22,7 +22,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { userScoped } from "@/lib/security/user-scoped";
+import { driftMachineryApplies } from "@/lib/disputes/evidence-fingerprint";
 import { resolvePlanContext, type InsurerAddressOverride } from "@/lib/disputes/plan-context";
+import { validateAnchor } from "@/lib/disputes/deadline-anchors";
 import { resolveEvidence } from "@/lib/disputes/evidence-resolver";
 import { rerenderDisputeLetter } from "@/lib/disputes/rerender";
 import { persistDisputeLetter } from "@/lib/disputes/persist";
@@ -86,6 +88,31 @@ export async function POST(
     denialNoticeDate?: string | null;
   };
 
+  // S309 F15 — this route is a SECOND writer of the deadline anchors the
+  // letters recite; it stored them unvalidated (the deadline-inputs route
+  // always validated). One shared validator now guards every write path.
+  {
+    const todayIso = new Date().toISOString().slice(0, 10);
+    if (denialNoticeDate !== undefined && !validateAnchor(denialNoticeDate, todayIso).ok) {
+      return NextResponse.json(
+        { error: "denialNoticeDate must be YYYY-MM-DD on or before today, or null" },
+        { status: 400 },
+      );
+    }
+    if (collectorFirstContactDate !== undefined && !validateAnchor(collectorFirstContactDate, todayIso).ok) {
+      return NextResponse.json(
+        { error: "collectorFirstContactDate must be YYYY-MM-DD on or before today, or null" },
+        { status: 400 },
+      );
+    }
+    if (appealExhausted?.denialDate != null && !validateAnchor(appealExhausted.denialDate, todayIso).ok) {
+      return NextResponse.json(
+        { error: "appealExhausted.denialDate must be YYYY-MM-DD on or before today, or null" },
+        { status: 400 },
+      );
+    }
+  }
+
   // Ownership — load the SOURCE dispute (must belong to the caller).
   const { data: dispute, error } = await userScoped(supabase, user.id)
     .table("dispute_outcomes")
@@ -94,6 +121,20 @@ export async function POST(
     .single();
   if (error || !dispute) {
     return NextResponse.json({ error: "Dispute not found" }, { status: 404 });
+  }
+
+  // S311 (tree §2.1) — a VOID letter is a read-only exhibit (S308's rule;
+  // this route was reachable from a cancelled letter's page and its write
+  // would have moved the frozen row's updated_at). Sent letters stay
+  // writable — their metadata is the knowledge layer follow-ups read.
+  // One rule, stated once: driftMachineryApplies === false ⇔ void.
+  if (
+    !driftMachineryApplies(
+      (dispute.status as string | null) ?? null,
+      dispute.sent_at ? new Date(dispute.sent_at as string) : null,
+    )
+  ) {
+    return NextResponse.json({ error: "letter_void" }, { status: 409 });
   }
   if (!dispute.claim_id) {
     return NextResponse.json({ error: "Dispute has no linked claim" }, { status: 400 });
@@ -359,6 +400,10 @@ export async function POST(
       const fpInput = await loadFingerprintInputForClaim(supabase, dispute.claim_id, user.id, {
         sentAt: null,
         metadata: null,
+        // S311 — the escalated letter inherits the parent's pin; if persist
+        // pinned differently the first view self-heals (one regenerate),
+        // same as the metadata:null birth pattern above.
+        insurancePlanId: (dispute.insurance_plan_id as string | null) ?? null,
       });
       if (fpInput) {
         await userScoped(supabase, user.id)

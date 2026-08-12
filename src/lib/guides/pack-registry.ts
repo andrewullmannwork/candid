@@ -165,7 +165,10 @@ export const PACK_A_INSURER_STEPS: GuideStep[] = [
   },
   {
     id: "packA:ins-ask-hold",
-    title: "Call the billing office — ask for a hold",
+    // S310 (Andrew-approved) — "the billing office" inside the INSURER pack read
+    // as the insurer's; it is the provider's (the hold protects against their
+    // collections while the insurer re-reviews).
+    title: "Call the provider's billing office — ask for a hold",
     copy: "Keeps the bill out of collections while your insurer re-reviews.",
     script: billingHoldScript,
     control: "checkbox",
@@ -347,6 +350,8 @@ export const GUIDE_CHROME = {
   expandLabel: "Show full step",
   collapseLabel: "Hide full step",
   doneMeta: (done: number, total: number) => `${done} of ${total} done`,
+  // S309 (Andrew, verbatim) — the skipped pack's single way back in.
+  undoSkipLabel: "Undo Skip",
   haveReady: "Have ready:",
 } as const;
 
@@ -952,6 +957,16 @@ export const CASE_RAIL = {
    */
   ctaOpenLetterToSend: "Open the letter to send it",
   quietUndoResult: "Undo this result",
+
+  // S312 (F2-S312.1, Andrew-approved copy) — the "no remaining demand" banner.
+  // ONE home for the strings: the letter page AND the rail's send step render
+  // these same four, so the two surfaces can never phrase the state differently.
+  zeroDemandTitle: "This letter may no longer be needed.",
+  zeroDemandBody:
+    "Your latest numbers took the dollar demand out of this letter — it no longer asks the recipient to refund or remove anything. You can dismiss it, or keep it if you still want a corrected, itemized bill on record.",
+  zeroDemandDismiss: "Dismiss letter",
+  zeroDemandKeep: "Keep letter",
+  zeroDemandSaveFailed: "Couldn't save — try again.",
 
   // Reminder foot — dated waits only; hidden once the deadline passes.
   remindFoot: (dateLabel: string): string =>

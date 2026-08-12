@@ -84,6 +84,9 @@ interface ProfileDashboardProps {
   onUpdateInsurance: () => void;
   /** S288: About-you edits route into the onboarding flow (?mode=about). */
   onEditAbout?: () => void;
+  /** S311 (Andrew's ruling) — address edits open a MODAL on the profile page,
+   *  never the whole About setup; the section-level Edit keeps owning the rest. */
+  onEditAddress?: () => void;
   /** Called when user clicks "Re-scan card" from member-id inline edit or banner. */
   onRescanCard: () => void;
   /** Save handler for member_id inline edit. Resolves on success; throws on failure. */
@@ -96,12 +99,16 @@ function KV({
   verified,
   emptyLabel,
   emptyAction,
+  action,
 }: {
   label: string;
   value: string;
   verified?: boolean;
   emptyLabel?: React.ReactNode;
   emptyAction?: React.ReactNode;
+  /** S311 — optional row-level action rendered beside a NON-empty value
+   *  (emptyAction covers the empty case); the address row's Edit → modal. */
+  action?: React.ReactNode;
 }) {
   const isEmpty = !value || value.trim().length === 0;
   return (
@@ -118,6 +125,7 @@ function KV({
       ) : (
         <div className="mt-1 flex items-center gap-1.5">
           <span className="text-sm font-medium text-gray-900">{value}</span>
+          {action}
           {verified && (
             <svg
               width="14"
@@ -224,6 +232,7 @@ export function ProfileDashboard({
   needsCardRescan,
   onUpdateInsurance,
   onEditAbout,
+  onEditAddress,
   onRescanCard,
   onSaveMemberId,
 }: ProfileDashboardProps) {
@@ -482,7 +491,32 @@ export function ProfileDashboard({
         <div className="grid grid-cols-2 gap-x-6 gap-y-4">
           <KV label="Date of birth" value={profile.date_of_birth} />
           <KV label="Sex" value={formatSex(profile.sex)} />
-          <KV label="Address" value={addressLine} />
+          <KV
+            label="Address"
+            value={addressLine}
+            action={
+              onEditAddress ? (
+                <button
+                  type="button"
+                  onClick={onEditAddress}
+                  className="text-[12.5px] font-semibold text-blue-600 hover:text-blue-700 hover:underline"
+                >
+                  Edit
+                </button>
+              ) : undefined
+            }
+            emptyAction={
+              onEditAddress ? (
+                <button
+                  type="button"
+                  onClick={onEditAddress}
+                  className="text-[12.5px] font-semibold text-blue-600 hover:text-blue-700 hover:underline"
+                >
+                  Add
+                </button>
+              ) : undefined
+            }
+          />
           <KV label="City / Zip" value={cityZip} />
           <KV label="County" value={profile.county_name} />
         </div>

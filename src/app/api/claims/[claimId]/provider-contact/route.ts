@@ -1,19 +1,29 @@
 /**
- * POST /api/disputes/[disputeId]/provider-contact — S74 Pillar 1
+ * POST /api/claims/[claimId]/provider-contact — S74 Pillar 1, claim-scoped
+ * since S310.
  *
- * Updates the provider mailing contact on the dispute's linked claim. The bill
+ * Updates the provider mailing contact (and name) on the claim. The bill
  * parser fills `claims.metadata.provider` with `{ name, address, npi }` when
- * those fields appear on the EOB, but legacy claims (or sparsely-parsed bills)
- * often have no address — and without an address the printed dispute letter
- * has no recipient line. This endpoint lets the user fill it in.
+ * those fields appear on the bill, but legacy claims (or sparsely-parsed
+ * bills) often have no address — and without an address the printed dispute
+ * letter has no recipient line. This endpoint lets the user fill it in, and
+ * (S310 / F14a) correct the parsed provider NAME the letters print.
  *
- * Writes shape: `claims.metadata.provider` merged with the new fields. The
- * dispute letter recipient block + DisputeRecipientCard re-resolve from the
- * same path (resolvePlanContext → extractProviderContact), so the next /disputes
- * GET reflects the update automatically.
+ * S310 — moved here from /api/disputes/[disputeId]/provider-contact (deleted;
+ * its only work was hopping dispute → claim before this same merge, which
+ * kept the claim page from using it at all). Every reader resolves from the
+ * same path (claims.metadata.provider → resolvePlanContext /
+ * extractProviderContact / evidence resolver), so the next GET on any surface
+ * reflects the update automatically; a name change drifts the letter
+ * fingerprint and live drafts rebuild themselves.
  *
- * Auth: Firebase bearer token. Verifies the user owns the dispute → linked
- * claim before any mutation.
+ * Flywheel (S310): the first user name-change stashes the parser's original
+ * as `parsedName` (parser said X, user said Y — an alias-pair precision
+ * signal), and `nameConfirmedAt` records that a user vouched for the printed
+ * name (set by both the claim-details confirm and any explicit correction).
+ *
+ * Auth: Firebase bearer token. Verifies the user owns the claim before any
+ * mutation.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -43,6 +53,12 @@ interface ProviderContactInput {
    * claims.metadata.provider so it's reused across disputes for the same claim.
    */
   confirm?: boolean;
+  /**
+   * S310 — name-vouch action ("These look right" on the claim-details block).
+   * Stamps `nameConfirmedAt` without requiring field values and without
+   * touching the address-confirm stamp or provenance source.
+   */
+  confirmName?: boolean;
 }
 
 async function getAuthUser(req: NextRequest) {
@@ -64,14 +80,14 @@ function sanitize(value: unknown, max = 500): string | undefined {
 
 export async function POST(
   req: NextRequest,
-  { params }: { params: Promise<{ disputeId: string }> },
+  { params }: { params: Promise<{ claimId: string }> },
 ) {
   const decoded = await getAuthUser(req);
   if (!decoded) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { disputeId } = await params;
+  const { claimId } = await params;
   const supabase = createServerClient();
 
   const { data: user } = await supabase
@@ -89,6 +105,7 @@ export async function POST(
   }
 
   const isConfirmOnly = body.confirm === true;
+  const isNameConfirm = body.confirmName === true;
 
   const af = body.addressFields ?? {};
   const next = {
@@ -110,36 +127,15 @@ export async function POST(
   };
 
   const anyAddressField = Object.values(next.addressFields).some(Boolean);
+  const hasFieldValues =
+    !!next.name || !!next.address || !!next.phone || !!next.npi || anyAddressField;
 
-  // Confirm-only carries no new values; every other call must provide at least
-  // one field so the user can incrementally fill in whatever's on the bill.
-  if (
-    !isConfirmOnly &&
-    !next.name &&
-    !next.address &&
-    !next.phone &&
-    !next.npi &&
-    !anyAddressField
-  ) {
+  // Confirm-only / name-confirm carry no new values; every other call must
+  // provide at least one field so the user can incrementally fill in whatever's
+  // on the bill.
+  if (!isConfirmOnly && !isNameConfirm && !hasFieldValues) {
     return NextResponse.json(
       { error: "Provide at least one provider field (name, address, phone, or npi)." },
-      { status: 400 },
-    );
-  }
-
-  // Ownership: dispute must belong to user, AND we need the linked claim id to
-  // mutate the claim's metadata.
-  const { data: dispute } = await userScoped(supabase, user.id)
-    .table("dispute_outcomes")
-    .select("id, user_id, claim_id")
-    .eq("id", disputeId)
-    .single();
-  if (!dispute || dispute.user_id !== user.id) {
-    return NextResponse.json({ error: "Dispute not found" }, { status: 404 });
-  }
-  if (!dispute.claim_id) {
-    return NextResponse.json(
-      { error: "Dispute has no linked claim" },
       { status: 400 },
     );
   }
@@ -147,7 +143,7 @@ export async function POST(
   const { data: claim } = await userScoped(supabase, user.id)
     .table("claims")
     .select("id, metadata")
-    .eq("id", dispute.claim_id)
+    .eq("id", claimId)
     .single();
   if (!claim) {
     return NextResponse.json({ error: "Claim not found" }, { status: 404 });
@@ -159,15 +155,29 @@ export async function POST(
 
   const nowIso = new Date().toISOString();
 
-  // Merge — keep any fields the user didn't touch this round. Confirm-only calls
-  // carry no field values: they leave name/address/etc untouched and only stamp
-  // confirmedAt (the user is attesting the already-extracted address is right).
+  // S310 flywheel — the FIRST user name-change preserves the parser's original
+  // beside the correction. Only when the incumbent name was parse-sourced (a
+  // second user edit must not overwrite the stash with the first edit's value).
+  const stashParsedName =
+    next.name !== undefined &&
+    existingProvider.parsedName === undefined &&
+    typeof existingProvider.name === "string" &&
+    existingProvider.name.trim().length > 0 &&
+    existingProvider.source !== "user_correction" &&
+    existingProvider.name !== next.name;
+
+  // Merge — keep any fields the user didn't touch this round. Confirm-only and
+  // name-confirm calls carry no field values: they leave name/address/etc
+  // untouched (source preserved); a real save marks user_correction and
+  // supersedes a prior address confirm. `nameConfirmedAt` stamps whenever the
+  // user vouches for the name — explicitly (confirmName) or by correcting it.
   const mergedProvider: Record<string, unknown> = {
     ...existingProvider,
     ...(next.name !== undefined ? { name: next.name } : {}),
     ...(next.address !== undefined ? { address: next.address } : {}),
     ...(next.phone !== undefined ? { phone: next.phone } : {}),
     ...(next.npi !== undefined ? { npi: next.npi } : {}),
+    ...(stashParsedName ? { parsedName: existingProvider.name } : {}),
     // Block C2 — persist structured address parts when provided (only on a real
     // save; confirm-only doesn't carry them).
     ...(anyAddressField
@@ -196,13 +206,18 @@ export async function POST(
         }
       : {}),
     // A fresh save (new values) supersedes a prior confirm — clear confirmedAt
-    // unless this IS the confirm action.
-    confirmedAt: isConfirmOnly ? nowIso : null,
-    // Preserve doc_extraction source on confirm-only (the address wasn't
-    // user-typed); a real save marks it user_correction.
-    source: isConfirmOnly
-      ? (existingProvider.source ?? "doc_extraction")
-      : "user_correction",
+    // unless this IS the confirm action (name-confirm leaves it untouched).
+    confirmedAt: isConfirmOnly
+      ? nowIso
+      : hasFieldValues
+        ? null
+        : (existingProvider.confirmedAt ?? null),
+    ...(isNameConfirm || next.name !== undefined ? { nameConfirmedAt: nowIso } : {}),
+    // Preserve doc_extraction source on confirm flows (nothing was user-typed);
+    // a real save marks it user_correction.
+    source: hasFieldValues
+      ? "user_correction"
+      : (existingProvider.source ?? "doc_extraction"),
     updated_at: nowIso,
   };
 
@@ -227,6 +242,7 @@ export async function POST(
       phone: mergedProvider.phone ?? null,
       npi: mergedProvider.npi ?? null,
       confirmedAt: mergedProvider.confirmedAt ?? null,
+      nameConfirmedAt: mergedProvider.nameConfirmedAt ?? null,
       source: mergedProvider.source ?? "user_correction",
     },
   });

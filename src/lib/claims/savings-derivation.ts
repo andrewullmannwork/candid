@@ -79,6 +79,14 @@ export interface DerivationRow {
   label: string;
   /** Plan-card term cell ("20% after deductible", "no copay", "unpriced"). */
   planTerm: string;
+  /**
+   * S309 F2 — the line-items table's PLAN-SAYS sub-line ("10% after
+   * deductible · not met", "$30.00 copay — no deductible"). Null on
+   * unpriced/not-covered lines (the table stays quiet there). Composed beside
+   * `planTerm` in planAnswerFor so the panel and the table share ONE wording
+   * derivation.
+   */
+  planTermCell: string | null;
   /** Plan-card amount cell, pre-formatted ("$422.57", "$0.00", "$0–$422.57" for unpriced). */
   planAmountText: string;
   /** True → the term renders red and the amount is a range, never a sum term. */
@@ -102,15 +110,19 @@ export interface BillCardModel {
   /** The bill's total demand on the user (= paid + open balance). */
   chargedToYou: number;
   /**
-   * "Where your $X went" — renders when paid ≥ $1 AND refund ≥ $1.
-   * `forgivenessZero` = show the $0.00 forgiveness companion row (only when the
-   * balance split is absent, so the single split tells the whole story).
+   * "Where your $X went" — renders when paid ≥ $1 AND refund ≥ $1. A money row
+   * renders only while its amount is ≥ $1 (S310, Andrew's ruling: the S307
+   * zero-companion rule — force-showing the absent split's $0.00 row — is
+   * removed; nothing about the amounts themselves changed).
    */
   paidSplit: {
     divider: string;
     yours: number;
     refund: number;
-    forgivenessZero: boolean;
+    /** S309 F17 — the slice paid ABOVE what the bill charged: the PROVIDER's
+     *  refund (its own letter track), never the insurer-claimable refund.
+     *  0 when the user paid at or under the charge. */
+    overpaid: number;
     equation: string;
   } | null;
   /** "Where the $X balance stands" — renders when balance ≥ $1 AND forgiveness ≥ $1. */
@@ -118,7 +130,6 @@ export interface BillCardModel {
     divider: string;
     legit: number;
     forgiveness: number;
-    refundZero: boolean;
     equation: string;
   } | null;
 }
@@ -141,12 +152,14 @@ export interface SavingsDerivation {
   bill: BillCardModel;
   /** Present only when amounts are header-prorated. */
   spreadSentence: string | null;
-  /** Banner sub-spans (tense fix): null when the component is < $1. */
+  /** Banner sub-spans, party-named (S310): null while the slice is < $1. */
   refundSub: string | null;
+  /** S310 — the provider-owed slice's banner span ("+$X from your provider"). */
+  overpaidSub: string | null;
   forgivenessSub: string | null;
 }
 
-function planAnswerFor(line: DerivationLineInput): { term: string; amountText: string; detail: string } {
+function planAnswerFor(line: DerivationLineInput): { term: string; amountText: string; detail: string; cell: string | null } {
   const src = line.sourceLabel ? ` Source: ${line.sourceLabel}.` : "";
   const owe = `$${fmtMoney(line.shouldOwe)}`;
   if (!line.rateKnown) {
@@ -155,6 +168,7 @@ function planAnswerFor(line: DerivationLineInput): { term: string; amountText: s
       term: "unpriced",
       amountText: `$0–$${cap}`,
       detail: `We don't know your rate for this service, so we assume the maximum until you confirm: up to $${cap}.`,
+      cell: null,
     };
   }
   if (line.covered === false) {
@@ -162,6 +176,7 @@ function planAnswerFor(line: DerivationLineInput): { term: string; amountText: s
       term: "not covered",
       amountText: owe,
       detail: `Your plan says: not covered — this line is yours to pay.${src}`,
+      cell: null,
     };
   }
   // Deductible-aware wording (approved S307 round 2). Only explicit met-state
@@ -169,6 +184,14 @@ function planAnswerFor(line: DerivationLineInput): { term: string; amountText: s
   const dedUnmet = line.deductibleApplies === true && line.deductibleMet === false;
   const dedMet = line.deductibleApplies === true && line.deductibleMet === true;
   const dedDollar = line.deductibleMax != null ? ` your $${fmtMoney(line.deductibleMax)} deductible` : " your deductible";
+  // S309 F2 (V4, Andrew's phrasing) — `cell`: the table's PLAN-SAYS sub-line.
+  // Same facts, ONE derivation with the panel row so the two surfaces can
+  // never disagree. Deductible-phase lines lead with what you pay NOW
+  // ("full amount until deductible met, then …"), met lines state the bare
+  // rate. Deliberately silent (null) on unpriced/not-covered lines, and never
+  // asserts "no deductible" when deductibleApplies is UNKNOWN — that suffix
+  // only renders on an explicit false.
+  const dedExempt = line.deductibleApplies === false;
   if (line.copay != null && line.copay > 0) {
     const c = fmtMoney(line.copay);
     if (dedUnmet) {
@@ -176,12 +199,14 @@ function planAnswerFor(line: DerivationLineInput): { term: string; amountText: s
         term: `$${c} copay after deductible`,
         amountText: owe,
         detail: `Your plan says: covered — a $${c} copay after${dedDollar}. It isn't met, so up to $${fmtMoney(line.shouldOwe)} is yours to pay.${src}`,
+        cell: `full amount until deductible met, then $${c} copay`,
       };
     }
     return {
       term: `$${c} copay`,
       amountText: owe,
       detail: `Your plan says: covered with a $${c} copay.${dedMet ? " Your deductible is met." : ""}${src}`,
+      cell: dedExempt ? `$${c} copay — no deductible` : `$${c} copay`,
     };
   }
   if (line.coinsurance != null && line.coinsurance > 0) {
@@ -191,19 +216,24 @@ function planAnswerFor(line: DerivationLineInput): { term: string; amountText: s
         term: `${pct}% after deductible`,
         amountText: owe,
         detail: `Your plan says: covered — ${pct}% after${dedDollar}. It isn't met, so up to $${fmtMoney(line.shouldOwe)} is yours to pay.${src}`,
+        cell: `full amount until deductible met, then ${pct}%`,
       };
     }
     return {
       term: `${pct}% coinsurance`,
       amountText: owe,
       detail: `Your plan says: covered — you pay ${pct}% of the allowed amount.${dedMet ? " Your deductible is met." : ""}${src}`,
+      cell: dedExempt ? `${pct}% coinsurance — no deductible` : `${pct}% coinsurance`,
     };
   }
-  // Explicit $0 (copay 0, or coinsurance 0): the approved visit wording.
+  // Explicit $0 (copay 0, or coinsurance 0): the approved visit wording. In
+  // the deductible phase ("no charge after deductible" plans) the cell still
+  // leads with what you pay NOW.
   return {
     term: "no copay",
     amountText: owe,
     detail: `Your plan says: covered, no copay — you owe $0.${src}`,
+    cell: dedUnmet ? "full amount until deductible met, then no charge" : "no copay",
   };
 }
 
@@ -219,13 +249,22 @@ export function buildSavingsDerivation(args: {
   balanceTotal: number;
   refundComponent: number;
   forgivenessComponent: number;
+  /**
+   * S309 F17 — what the bill actually CHARGED the patient (effective patient
+   * responsibility, override-independent). Splits the refund into the
+   * insurer-claimable slice (capped at charge − share) and the paid-above-
+   * charge slice the PROVIDER owes back. Optional with the honest fallback
+   * paid + balance — the charge identity for every non-overpaid bill —
+   * so untouched callers are byte-identical.
+   */
+  chargedTotal?: number;
 }): SavingsDerivation {
   const charged = args.lines.filter((l) => l.billed > 0);
   const priced = charged.filter((l) => l.rateKnown);
   const pricedShouldOwe = round2(priced.reduce((s, l) => s + l.shouldOwe, 0));
 
   const rows: DerivationRow[] = charged.map((l) => {
-    const { term, amountText, detail } = planAnswerFor(l);
+    const { term, amountText, detail, cell } = planAnswerFor(l);
     // A line the user paid speaks in refunds; an unpaid line in balance relief.
     const paidLabel: DerivationRow["paidLabel"] =
       l.paid < 1 && l.stillBilled >= 1 ? "Still billed" : "You paid";
@@ -243,6 +282,7 @@ export function buildSavingsDerivation(args: {
       id: l.id,
       label: l.label,
       planTerm: term,
+      planTermCell: cell,
       planAmountText: amountText,
       unpriced: !l.rateKnown,
       planDetail: detail,
@@ -263,26 +303,40 @@ export function buildSavingsDerivation(args: {
 
   const allPriced = priced.length === charged.length && charged.length > 0;
 
-  // The bill-card state model (v7 mock rules). Refund lives in the paid split,
-  // forgiveness in the balance split; a single split carries its companion's
-  // $0.00 row so it tells the whole story alone; recovery < $1 → no splits at
-  // all (there is no recovery story, and the card keeps today's headline).
+  // The bill-card state model (v7 mock rules, S310 amendment). Refund lives in
+  // the paid split, forgiveness in the balance split; a money row renders only
+  // while its amount is ≥ $1 (Andrew removed the S307 zero-companion rule);
+  // recovery < $1 → no splits at all (there is no recovery story, and the card
+  // keeps today's headline).
   const recovery = args.refundComponent + args.forgivenessComponent;
   const recoveryHeadline = recovery >= 1;
+  // S309 F17 (Andrew's design) — paid-above-charge is the PROVIDER's refund,
+  // not the insurer-claimable one: split the refund at the charge line so the
+  // panel's refund row equals what the insurer letter claims and the overpaid
+  // row equals what the provider letter claims — three surfaces, two
+  // derivations, agreement by construction. chargedTotal falls back to
+  // paid + balance (the charge identity when nobody overpaid) → byte-identical
+  // for untouched callers.
+  const chargedTotal = args.chargedTotal ?? round2(args.paidTotal + args.balanceTotal);
+  const overpaidToProvider = round2(Math.max(0, args.paidTotal - chargedTotal));
+  const refundCapped = round2(Math.max(0, args.refundComponent - overpaidToProvider));
   const paidSplitOn = recoveryHeadline && args.paidTotal >= 1 && args.refundComponent >= 1;
   const balanceSplitOn = recoveryHeadline && args.balanceTotal >= 1 && args.forgivenessComponent >= 1;
   const yours = round2(args.paidTotal - args.refundComponent);
   const legit = round2(args.balanceTotal - args.forgivenessComponent);
   const bill: BillCardModel = {
     recoveryHeadline,
-    chargedToYou: round2(args.paidTotal + args.balanceTotal),
+    chargedToYou: chargedTotal,
     paidSplit: paidSplitOn
       ? {
           divider: `Where your $${fmtMoney(args.paidTotal)} went`,
           yours,
-          refund: args.refundComponent,
-          forgivenessZero: !balanceSplitOn,
-          equation: `$${fmtMoney(yours)} + $${fmtMoney(args.refundComponent)} = the $${fmtMoney(args.paidTotal)} you paid ✓`,
+          refund: refundCapped,
+          overpaid: overpaidToProvider,
+          equation:
+            overpaidToProvider >= 1
+              ? `$${fmtMoney(yours)} + $${fmtMoney(refundCapped)} + $${fmtMoney(overpaidToProvider)} = the $${fmtMoney(args.paidTotal)} you paid ✓`
+              : `$${fmtMoney(yours)} + $${fmtMoney(refundCapped)} = the $${fmtMoney(args.paidTotal)} you paid ✓`,
         }
       : null,
     balanceSplit: balanceSplitOn
@@ -290,7 +344,6 @@ export function buildSavingsDerivation(args: {
           divider: `Where the $${fmtMoney(args.balanceTotal)} balance stands`,
           legit,
           forgiveness: args.forgivenessComponent,
-          refundZero: !paidSplitOn,
           equation: `$${fmtMoney(legit)} + $${fmtMoney(args.forgivenessComponent)} = the $${fmtMoney(args.balanceTotal)} balance ✓`,
         }
       : null,
@@ -313,7 +366,13 @@ export function buildSavingsDerivation(args: {
     spreadSentence: args.prorated
       ? `Your bill reports payments only as one total, so we split $${fmtMoney(spreadTotal)} across the charged lines by their share of the bill.`
       : null,
-    refundSub: args.refundComponent >= 1 ? `+$${fmtMoney(args.refundComponent)} refund to request` : null,
+    // S310 (Andrew's approved copy) — the hero subs decompose the recovery
+    // total by party: the insurer-claimable slice (the appeal's number), the
+    // paid-above-charge slice (the provider letter's number), and the balance
+    // slice. Each renders only while ≥ $1.
+    refundSub: refundCapped >= 1 ? `+$${fmtMoney(refundCapped)} from your insurer` : null,
+    overpaidSub:
+      overpaidToProvider >= 1 ? `+$${fmtMoney(overpaidToProvider)} from your provider` : null,
     forgivenessSub:
       args.forgivenessComponent >= 1
         ? `$${fmtMoney(args.forgivenessComponent)} to remove from your balance`

@@ -206,6 +206,27 @@ export interface PlanContext {
    */
   userState: string | null;
   /**
+   * S310 (sender block, Andrew) — the user's mailing address from their OWN
+   * profiles row (the same select userState reads). Non-null only when
+   * complete enough to print (line1 + city + state + zip): the letters'
+   * sender block renders from it fail-soft.
+   *
+   * S311 (tree 13.5) — drafts rebuild on an address edit via the COMPOSE
+   * BASIS (evidence-fingerprint.ts ComposeBasis.profileAddress*), NOT via
+   * planContext: the stamped metadata.planContextFingerprint is informational
+   * only — decideDriftAction compares the evidence fingerprint, so a compose
+   * input must live in ComposeBasis to drift anything. (The original S310
+   * claim here — "planContext is fingerprinted, so an address edit drifts
+   * drafts" — was the 13.5 bug: Andrew's address never reached his letter.)
+   */
+  userAddress: {
+    line1: string;
+    line2: string | null;
+    city: string;
+    state: string;
+    zip: string;
+  } | null;
+  /**
    * dispute-letters v2 S1 — user's self-reported insurance funding type from
    * profiles.plan_source ('employer' | 'marketplace' | 'off_exchange' |
    * 'medicare' | 'medicaid'; may also carry a data-provenance marker like
@@ -616,11 +637,25 @@ export async function resolvePlanContext(
   // gate the ERISA citations. Null when the profile field is missing → generic copy.
   const { data: profile } = await supabase
     .from("profiles")
-    .select("state, plan_source")
+    // S310 (sender block) — the address columns join the SAME select userState
+    // already reads; one loader, every compose path gets userAddress for free.
+    .select("state, plan_source, address_line1, address_line2, city, zip_code")
     .eq("user_id", userId)
     .maybeSingle();
   const userState = (profile?.state as string | null) ?? null;
   const planSource = (profile?.plan_source as string | null) ?? null;
+  // S310 — complete enough to print, or null (fail-soft: no partial addresses
+  // on letters; the profile page + the claim-details row are the fix paths).
+  const userAddress =
+    profile?.address_line1 && profile?.city && profile?.state && profile?.zip_code
+      ? {
+          line1: profile.address_line1 as string,
+          line2: ((profile.address_line2 as string | null) ?? null) || null,
+          city: profile.city as string,
+          state: profile.state as string,
+          zip: profile.zip_code as string,
+        }
+      : null;
 
   // S110 Chunk C — community-corroborated bill-year canonical auto-lookup.
   // Only fires when (a) no exact-year user plan, (b) fallback plan has a
@@ -651,6 +686,7 @@ export async function resolvePlanContext(
     providerContact,
     collectorContact,
     userState,
+    userAddress,
     planSource,
     archiveCanonicalPlan,
     boundCanonicalPlan,

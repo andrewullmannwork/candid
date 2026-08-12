@@ -15,6 +15,7 @@
  */
 import type { DisputeLetter } from "@/lib/billing/types";
 import type { DisputeEvidence } from "@/lib/disputes/evidence-resolver";
+import { plainDate, easternDate } from "@/lib/format/dates";
 import type { StrengthResult, EvidenceBand } from "@/lib/disputes/strength-scoring";
 
 interface Props {
@@ -242,11 +243,12 @@ function titleForType(type: DisputeLetter["letterType"]): string {
 
 function formatServiceDate(iso: string): string {
   try {
-    return new Date(iso).toLocaleDateString("en-US", {
-      year: "numeric",
-      month: "long",
-      day: "numeric",
-    });
+    // S311 (F13's two value classes, reaching this page): a DATE-ONLY DoS
+    // ("2023-08-02") is UTC-pinned and never shifts — the local-timezone parse
+    // this replaced rendered it "August 1" in PDT while the letter said
+    // "August 2". The instant fallback (letter.createdAt) renders on the
+    // user's Eastern calendar like every letter dateline.
+    return /^\d{4}-\d{2}-\d{2}$/.test(iso) ? plainDate(iso) : easternDate(iso);
   } catch {
     return iso;
   }

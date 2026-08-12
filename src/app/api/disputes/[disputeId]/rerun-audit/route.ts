@@ -20,6 +20,7 @@ import {
   selectOwnedChildren,
   updateOwnedChildren,
 } from "@/lib/security/user-scoped";
+import { driftMachineryApplies } from "@/lib/disputes/evidence-fingerprint";
 import { runAudit } from "@/lib/audit";
 import { emitCaseEvent } from "@/lib/case/case-events";
 import { refreshClaimLevelFindings } from "@/lib/audit/reaudit";
@@ -59,12 +60,26 @@ export async function POST(
 
   const { data: dispute } = await userScoped(supabase, user.id)
     .table("dispute_outcomes")
-    .select("id, claim_id, user_id")
+    .select("id, claim_id, user_id, status, sent_at")
     .eq("id", disputeId)
     .maybeSingle();
 
   if (!dispute || !dispute.claim_id) {
     return NextResponse.json({ error: "Dispute or linked claim not found" }, { status: 404 });
+  }
+
+  // S311 (tree §2.1) — a VOID letter is a read-only exhibit (S308's rule;
+  // this route was reachable from a cancelled letter's page and its write
+  // would have moved the frozen row's updated_at). Sent letters stay
+  // writable — their metadata is the knowledge layer follow-ups read.
+  // One rule, stated once: driftMachineryApplies === false ⇔ void.
+  if (
+    !driftMachineryApplies(
+      (dispute.status as string | null) ?? null,
+      dispute.sent_at ? new Date(dispute.sent_at as string) : null,
+    )
+  ) {
+    return NextResponse.json({ error: "letter_void" }, { status: 409 });
   }
 
   const { data: claim } = await userScoped(supabase, user.id)

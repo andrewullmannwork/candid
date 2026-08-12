@@ -4,8 +4,10 @@
  * Inline form rendered inside the EvidenceGaps card when the linked claim is
  * missing (or is editing) the provider's mailing address. Without an address the
  * printed dispute letter has no recipient. POSTs structured fields to
- * /api/disputes/[disputeId]/provider-contact; the parent refetches the dispute so
- * the recipient block + letter body update in place.
+ * /api/claims/[claimId]/provider-contact (S310 — claim-scoped, where the data
+ * lives; the old dispute-scoped route only hopped dispute → claim and is
+ * deleted); the parent refetches the dispute so the recipient block + letter
+ * body update in place.
  *
  * Block C2: replaced the freeform address textarea with structured fields
  * (line1/line2/city/state/ZIP) validated through the shared `validateUsAddress`
@@ -25,7 +27,7 @@ import {
 } from "@/lib/address/validate-us-address";
 
 interface Props {
-  disputeId: string;
+  claimId: string;
   initialName: string | null;
   initialAddress: string | null;
   initialPhone: string | null;
@@ -45,7 +47,7 @@ interface Props {
 }
 
 export function ProviderAddressForm({
-  disputeId,
+  claimId,
   initialName,
   initialPhone,
   initialNpi,
@@ -89,7 +91,7 @@ export function ProviderAddressForm({
     try {
       const token = await getAuthToken();
       if (!token) throw new Error("Sign-in expired. Please reload and try again.");
-      const res = await fetch(`/api/disputes/${disputeId}/provider-contact`, {
+      const res = await fetch(`/api/claims/${claimId}/provider-contact`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

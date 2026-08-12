@@ -47,10 +47,12 @@
  * recordable today — tracker Item Z. The dedupe is the data shape, not a
  * policy choice.
  *
- * Dates render through the letters' shared `formatDate` (UTC, deliberately —
- * see its note). Timestamped sources therefore carry the same ±1 day exposure
- * every other date in every letter already has; consistency across one letter
- * matters more than per-field cleverness.
+ * Dates: DATE-ONLY values render through the letters' shared `formatDate`
+ * (UTC-pinned); TIMESTAMPED sources (call/sent instants) render through
+ * `easternDate` — S309 F13, Andrew's one-clock ruling. The old stance ("UTC,
+ * deliberately — consistency across one letter over per-field cleverness")
+ * is SATISFIED, not overturned: every instant in every letter now moves to
+ * the same Eastern clock together, and the accepted ±1-day exposure is gone.
  *
  * PURE — no DB, no clock, no server-only imports. Exercised by
  * scripts/calibration/fixtures/dispute-grounds/prior-contact.ts.
@@ -62,7 +64,7 @@ import type {
   ProjectedHistoryEntry,
   ProjectedLetterStep,
 } from "@/lib/case/timeline-projector";
-import { formatDate } from "./templates";
+import { easternDate } from "@/lib/format/dates";
 
 /**
  * Letter types that never carry a contact recital. Inherited verbatim from the
@@ -128,7 +130,7 @@ function callSentence(
   entry: GuidedCallLogEntry,
   recipient: LetterRecipientKind,
 ): string | null {
-  const on = formatDate(entry.calledAt);
+  const on = easternDate(entry.calledAt);
   if (recipient === "insurer") {
     if (entry.kind === "insurer_call") {
       return `On ${on}, I called your member services line about this claim and asked that it be reviewed and reprocessed.`;
@@ -228,11 +230,11 @@ function otherTrackClause(
   const detail = step?.outcome?.detail;
   if (!detail) return null;
 
-  const sentOn = formatDate(first.occurredAt);
+  const sentOn = easternDate(first.occurredAt);
   if (CONCLUDED_DENIAL.has(detail)) {
     const loggedAt = step?.outcome?.loggedAt;
     return loggedAt
-      ? `I also appealed to my insurer on ${sentOn}, and that appeal was denied on ${formatDate(loggedAt)}.`
+      ? `I also appealed to my insurer on ${sentOn}, and that appeal was denied on ${easternDate(loggedAt)}.`
       : `I also appealed to my insurer on ${sentOn}, and that appeal was denied.`;
   }
   if (CONCLUDED_SILENCE.has(detail)) {
@@ -273,7 +275,7 @@ export function buildPriorContactRecital(input: PriorContactInput): string {
   // One line per calendar day — two sends stamped the same day read as one contact.
   const sendDates: string[] = [];
   for (const s of mine) {
-    const d = formatDate(s.occurredAt);
+    const d = easternDate(s.occurredAt);
     if (!sendDates.includes(d)) sendDates.push(d);
   }
 
@@ -303,7 +305,7 @@ export function buildPriorContactRecital(input: PriorContactInput): string {
     .sort((a, b) => Date.parse(a) - Date.parse(b))[0];
 
   return [
-    earliest ? `I have been working to resolve these charges since ${formatDate(earliest)}.` : null,
+    earliest ? `I have been working to resolve these charges since ${easternDate(earliest)}.` : null,
     ...callLines,
     sendLine,
     otherTrack,

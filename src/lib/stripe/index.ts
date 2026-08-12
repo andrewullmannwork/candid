@@ -7,6 +7,14 @@ export function getStripe(): Stripe {
   if (!_stripe) {
     _stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
       apiVersion: "2026-02-25.clover",
+      // S311 — the SDK's defaults (80s request timeout) let one stalling
+      // Stripe call hang every page that awaits it: /api/subscription/me sat
+      // at 60–73s while its lazy charges/invoices lookups crawled, and every
+      // letter page blocked behind it. The SDK's own knobs, set once here,
+      // cap every caller: no user-facing request should ever wait a minute
+      // on a billing read (the callers already degrade gracefully on error).
+      timeout: 10_000,
+      maxNetworkRetries: 1,
     });
   }
   return _stripe;
