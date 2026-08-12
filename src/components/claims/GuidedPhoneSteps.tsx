@@ -64,12 +64,21 @@ export function derivePhonePackState(
   const o = stepsState[PHONE_OUTCOME.id];
   const outcome =
     o?.note === "yes" || o?.note === "no" || o?.note === "skip" ? o.note : null;
+  // S309 (Andrew) — the ANSWER's derivation carries its premise. A yes/no
+  // outcome only exists because ≥1 call was attested (anyCallMade renders the
+  // question), so with every call un-checked the stored answer derives as
+  // null: 4a re-opens, 4b deactivates, and the adverse-outcome machinery
+  // stops steering the rail from a ghost. SKIP is exempt — its premise is the
+  // ABSENCE of calls (the escape hatch records it at done=0 by design). The
+  // stored note is never touched (S297: user records persist); re-attesting a
+  // call resurrects the answer.
+  const premiseHeld = outcome === "skip" || done > 0;
   return {
     done,
     total,
-    outcome,
-    outcomeAt: o?.checkedAt ?? null,
-    concluded: outcome != null,
+    outcome: premiseHeld ? outcome : null,
+    outcomeAt: premiseHeld ? (o?.checkedAt ?? null) : null,
+    concluded: premiseHeld && outcome != null,
   };
 }
 

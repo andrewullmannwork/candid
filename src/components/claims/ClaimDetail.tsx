@@ -4118,10 +4118,21 @@ export function ClaimDetail({
                         {PHONE_OUTCOME.resolvedChipPrefix} · {guidedOutcomeDateLabel}
                       </span>
                     )}
+                    {/* S309 (Andrew) — an un-done step must LOOK un-done on the
+                        collapsed header: complete packs keep the calm emerald
+                        count; a pack with un-checked steps goes amber and NAMES
+                        the open count (the S303 fold vocabulary, reused), so
+                        the recheck ask is visible without re-opening anything. */}
                     {guidedPack.outcome === "no" && guidedPack.done > 0 && (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11.5px] font-semibold text-emerald-700 ring-1 ring-inset ring-emerald-200">
-                        {GUIDE_CHROME.doneMeta(guidedPack.done, guidedPack.total)}
-                      </span>
+                      guidedPack.done < guidedPack.total ? (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-0.5 text-[11.5px] font-semibold text-amber-800 ring-1 ring-inset ring-amber-200">
+                          {GUIDE_CHROME.doneMeta(guidedPack.done, guidedPack.total)} · {CASE_RAIL.foldOpenSteps(guidedPack.total - guidedPack.done)}
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11.5px] font-semibold text-emerald-700 ring-1 ring-inset ring-emerald-200">
+                          {GUIDE_CHROME.doneMeta(guidedPack.done, guidedPack.total)}
+                        </span>
+                      )
                     )}
                     <ShowFullStepButton
                       open={phoneFullOpen}
