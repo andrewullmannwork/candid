@@ -37,24 +37,9 @@ async function getAuthUser(req: NextRequest) {
   }
 }
 
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-
-/**
- * A deadline anchor is either null (clear) or a "YYYY-MM-DD" that is on or before
- * today. Future dates are rejected — both anchors record something that already
- * happened (a denial received, a collector's first contact). String comparison is
- * valid for YYYY-MM-DD ordering.
- */
-function validateAnchor(
-  value: unknown,
-  todayIso: string,
-): { ok: true; value: string | null } | { ok: false } {
-  if (value === null) return { ok: true, value: null };
-  if (typeof value !== "string" || !DATE_RE.test(value)) return { ok: false };
-  const t = Date.parse(`${value}T00:00:00Z`);
-  if (Number.isNaN(t) || value > todayIso) return { ok: false };
-  return { ok: true, value };
-}
+// S309 F15 — the anchor validator is SHARED with the escalate route (a second
+// writer of the same fields discovered unguarded): src/lib/disputes/deadline-anchors.ts.
+import { validateAnchor } from "@/lib/disputes/deadline-anchors";
 
 /** Resolve the letter type from a dispute row (metadata.letterType wins; else map dispute_type).
  *  Mirrors resolveLetterTypeFromDispute in the GET + redraft routes (kept local per that pattern). */

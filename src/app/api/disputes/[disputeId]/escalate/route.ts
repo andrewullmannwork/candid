@@ -23,6 +23,7 @@ import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { userScoped } from "@/lib/security/user-scoped";
 import { resolvePlanContext, type InsurerAddressOverride } from "@/lib/disputes/plan-context";
+import { validateAnchor } from "@/lib/disputes/deadline-anchors";
 import { resolveEvidence } from "@/lib/disputes/evidence-resolver";
 import { rerenderDisputeLetter } from "@/lib/disputes/rerender";
 import { persistDisputeLetter } from "@/lib/disputes/persist";
@@ -85,6 +86,31 @@ export async function POST(
     collectorFirstContactDate?: string | null;
     denialNoticeDate?: string | null;
   };
+
+  // S309 F15 — this route is a SECOND writer of the deadline anchors the
+  // letters recite; it stored them unvalidated (the deadline-inputs route
+  // always validated). One shared validator now guards every write path.
+  {
+    const todayIso = new Date().toISOString().slice(0, 10);
+    if (denialNoticeDate !== undefined && !validateAnchor(denialNoticeDate, todayIso).ok) {
+      return NextResponse.json(
+        { error: "denialNoticeDate must be YYYY-MM-DD on or before today, or null" },
+        { status: 400 },
+      );
+    }
+    if (collectorFirstContactDate !== undefined && !validateAnchor(collectorFirstContactDate, todayIso).ok) {
+      return NextResponse.json(
+        { error: "collectorFirstContactDate must be YYYY-MM-DD on or before today, or null" },
+        { status: 400 },
+      );
+    }
+    if (appealExhausted?.denialDate != null && !validateAnchor(appealExhausted.denialDate, todayIso).ok) {
+      return NextResponse.json(
+        { error: "appealExhausted.denialDate must be YYYY-MM-DD on or before today, or null" },
+        { status: 400 },
+      );
+    }
+  }
 
   // Ownership — load the SOURCE dispute (must belong to the caller).
   const { data: dispute, error } = await userScoped(supabase, user.id)

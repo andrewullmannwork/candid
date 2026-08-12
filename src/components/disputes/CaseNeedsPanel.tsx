@@ -433,6 +433,10 @@ function DateEditor({ initial, prompt, onSaved }: { initial: string | null; prom
       <div className="flex flex-wrap items-center justify-end gap-2">
         <input
           type="date"
+          // S309 F15 — the floor pairs with the route's MIN_ANCHOR_DATE: a
+          // typed 3-digit year ("0203") is past-dated and slipped both the
+          // format regex and the future-date guard.
+          min="2000-01-01"
           max={todayIso()}
           value={value}
           onChange={(e) => setValue(e.target.value)}
