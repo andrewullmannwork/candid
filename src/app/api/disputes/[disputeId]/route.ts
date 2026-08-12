@@ -861,6 +861,13 @@ export async function GET(
           // hint only — never drives letter citations (those flow through
           // boundCanonicalPlan below).
           archiveCanonicalPlan: planContext.archiveCanonicalPlan,
+          // S311 (tree 13.3) — the sender-block address. S310 added it to
+          // PlanContext but never named it in this explicit pick, so the
+          // letter printed the address while the claim-details row showed
+          // "Add" on every fresh load (the S310 build test passed only via
+          // the editor's own optimistic value). The row and the letter now
+          // read the same resolver output.
+          userAddress: planContext.userAddress,
         }
       : null,
     // S111 D2 — top-level boundCanonicalPlan for VerifStrip rendering. Holds
