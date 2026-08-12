@@ -347,6 +347,8 @@ export const GUIDE_CHROME = {
   expandLabel: "Show full step",
   collapseLabel: "Hide full step",
   doneMeta: (done: number, total: number) => `${done} of ${total} done`,
+  // S309 (Andrew, verbatim) — the skipped pack's single way back in.
+  undoSkipLabel: "Undo Skip",
   haveReady: "Have ready:",
 } as const;
 

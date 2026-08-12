@@ -64,7 +64,7 @@ import {
   undoResultPayload,
   unsendPayload,
 } from "@/lib/disputes/outcome-actions";
-import { CASE_RAIL, COLLECTIONS_CHROME, GUIDE_4B, GUIDE_CHROME, PHONE_OUTCOME, type GuideFillContext, type GuideFinding } from "@/lib/guides/pack-registry";
+import { CASE_RAIL, GUIDE_4B, GUIDE_CHROME, PHONE_OUTCOME, type GuideFillContext, type GuideFinding } from "@/lib/guides/pack-registry";
 
 interface CodeIdentityState {
   identityId: string | null;
@@ -4132,19 +4132,20 @@ export function ClaimDetail({
                       </span>
                     )}
                     {/* S309 (Andrew) — a skipped pack collapses with the
-                        skipped chrome, and the way back in is the offers'
-                        existing Undo pattern. */}
+                        skipped chrome; the single way back in is one full-size
+                        "Undo Skip" button (ShowFullStepButton's own classes,
+                        so the header buttons match). */}
                     {guidedPack.outcome === "skip" && (
-                      <span className="inline-flex items-center gap-2 text-[11.5px] text-gray-400">
-                        {COLLECTIONS_CHROME.skippedLabel}
-                        <button
-                          type="button"
-                          onClick={() => setPhoneUndoSkipSignal((n) => n + 1)}
-                          className="font-medium text-gray-500 underline underline-offset-2 hover:text-gray-700"
-                        >
-                          {COLLECTIONS_CHROME.undoSkipLabel}
-                        </button>
-                      </span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setPhoneUndoSkipSignal((n) => n + 1);
+                        }}
+                        className="inline-flex items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-4 py-[9px] text-[13px] font-semibold text-gray-700 transition-colors hover:bg-gray-50"
+                      >
+                        {GUIDE_CHROME.undoSkipLabel}
+                      </button>
                     )}
                     <ShowFullStepButton
                       open={phoneFullOpen}
