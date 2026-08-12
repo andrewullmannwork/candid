@@ -1138,7 +1138,16 @@ function DisputesContent() {
       void fetchDispute(disputeId);
     } catch (err) {
       setDisputeStatus(prevStatus);
-      setMarkSentToast(err instanceof Error ? err.message : "Failed to mark as sent");
+      // S311 (Andrew, §A round-3) — the void guard's refusal was invisible:
+      // the raw machine code surfaced as the toast (or nothing readable), so
+      // the by-design refusal on a cancelled letter read as a bug. Machine
+      // codes map to plain language here; everything else keeps its message.
+      const msg = err instanceof Error ? err.message : "";
+      setMarkSentToast(
+        msg === "letter_cancelled"
+          ? "This letter was cancelled — it can't be marked as sent."
+          : msg || "Failed to mark as sent",
+      );
     } finally {
       setMarkingSent(false);
       setTimeout(() => setMarkSentToast(null), 6000);
