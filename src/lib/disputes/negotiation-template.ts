@@ -5,6 +5,7 @@
  * CROA compliant: user reviews, edits, and sends the letter themselves.
  */
 import { renderGated } from "./templates";
+import { easternDate } from "@/lib/format/dates";
 
 export interface NegotiationParams {
   patientName: string;
@@ -31,7 +32,9 @@ export function generateNegotiationLetter(params: NegotiationParams): string {
     communityReportCount,
   } = params;
 
-  const today = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+  // S309 F13 — the dateline is an INSTANT: Eastern clock (was server-local,
+  // which is UTC on Vercel and the dev machine's zone locally).
+  const today = easternDate(new Date());
 
   const benchmarkLines: string[] = [];
   if (medicareBenchmark) {

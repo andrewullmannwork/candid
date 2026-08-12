@@ -17,6 +17,7 @@
  * with the state_timely_billing registry (INERT today).
  */
 import type { LetterRecipientKind } from "@/lib/disputes";
+import { easternDate } from "@/lib/format/dates";
 
 const FOLLOWUP_DISCLAIMER =
   "DISCLAIMER: This letter was prepared using Candid, a consumer billing analysis tool. Candid is not a law firm, does not provide legal advice, and does not act as your legal representative.";
@@ -41,7 +42,10 @@ const PARENT_LABEL: Record<string, string> = {
   negotiation: "billing dispute",
 };
 
-/** UTC-safe long date (matches the templates.ts formatDate convention; no TZ off-by-one). */
+/** UTC-safe long date for the DATE-ONLY inputs (parentSentDate /
+ *  governingDeadlineDate are YYYY-MM-DD; no TZ off-by-one), with the
+ *  fail-closed raw-string degrade. The DATELINE is an instant and renders
+ *  via easternDate (S309 F13). */
 function formatDate(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
@@ -89,7 +93,7 @@ export function buildFollowupLetter(input: FollowupLetterInput): string {
     : `I am following up on my ${parentLabel} sent on ${sent}, to which I have not yet received a written response.`;
 
   return [
-    formatDate((input.now ?? new Date()).toISOString()),
+    easternDate(input.now ?? new Date()),
     "",
     `Re: Follow-up — ${parentLabel} of ${sent}`,
     "",

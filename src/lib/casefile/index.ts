@@ -3,6 +3,7 @@
 // This is the core Beta: Paid Candid Claim — documentation aggregation feature.
 
 import type { DisputeLetter } from "@/lib/billing/types";
+import { easternDate } from "@/lib/format/dates";
 
 const ESCALATION_GUIDE = `WHAT TO DO NEXT
 ---------------
@@ -43,13 +44,12 @@ state. Candid does not submit letters on your behalf — you must send this your
 
 Candid is an Airgetlam Labs LLC company.`;
 
+// S309 F13 — both are INSTANTS (letter.createdAt): the Eastern clock, not the
+// server's local zone (which silently varied between Vercel-UTC and the dev
+// machine). Fail-closed shells preserved.
 function formatDate(iso: string): string {
   try {
-    return new Date(iso).toLocaleDateString("en-US", {
-      year: "numeric",
-      month: "long",
-      day: "numeric",
-    });
+    return easternDate(iso);
   } catch {
     return iso;
   }
@@ -59,11 +59,7 @@ function followUpDate(iso: string): string {
   try {
     const d = new Date(iso);
     d.setDate(d.getDate() + 30);
-    return d.toLocaleDateString("en-US", {
-      year: "numeric",
-      month: "long",
-      day: "numeric",
-    });
+    return easternDate(d);
   } catch {
     return "30 days from today";
   }
