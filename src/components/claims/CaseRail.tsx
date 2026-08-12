@@ -576,6 +576,15 @@ export function CaseRail({
   // (the S300 lesson: a write that fails must show a symptom).
   const [zeroDemandBusy, setZeroDemandBusy] = useState<Record<string, boolean>>({});
   const [zeroDemandError, setZeroDemandError] = useState<Record<string, boolean>>({});
+  // S312 (Andrew: optimistic with snapback) — the click's render settles the
+  // UI: "dismissed" hides the letter's whole group, "kept" returns the plain
+  // send CTA. The POST runs behind it; failure clears the override (the banner
+  // REAPPEARS carrying the inline error — the snapback IS the symptom). The
+  // override holds through the success refetch (no flicker) and is cleared
+  // once the projection agrees. The rail's standing S301 idiom.
+  const [zeroDemandDone, setZeroDemandDone] = useState<
+    Record<string, "dismissed" | "kept" | undefined>
+  >({});
 
   if (groups.length === 0) return null;
 
@@ -583,13 +592,14 @@ export function CaseRail({
 
   // S312 (F2-S312.1) — the rail's Dismiss/Keep, wired to the SAME
   // /api/disputes/[id]/dismiss route the letter page uses (one writer). On
-  // success the projection refetch does the rest: a dismissed letter leaves
+  // success the projection refetch reconciles: a dismissed letter leaves
   // the rail (cancelled ⇒ stage "none"), a kept one drops the banner (the
   // stamp's Keep answer suppresses it).
   const runZeroDemand = async (disputeId: string, action: "dismiss" | "keep") => {
     if (zeroDemandBusy[disputeId]) return;
     setZeroDemandBusy((m) => ({ ...m, [disputeId]: true }));
     setZeroDemandError((m) => ({ ...m, [disputeId]: false }));
+    setZeroDemandDone((m) => ({ ...m, [disputeId]: action === "dismiss" ? "dismissed" : "kept" }));
     try {
       const token = await getAuthToken();
       if (!token) throw new Error("no auth token");
@@ -601,7 +611,12 @@ export function CaseRail({
       if (!res.ok) throw new Error(`dismiss ${res.status}`);
       onStepInteraction?.();
       await onRefetch();
+      // The projection now agrees (letter gone / banner suppressed) — the
+      // override has nothing left to say.
+      setZeroDemandDone((m) => ({ ...m, [disputeId]: undefined }));
     } catch {
+      // Snapback: the banner returns, wearing the failure.
+      setZeroDemandDone((m) => ({ ...m, [disputeId]: undefined }));
       setZeroDemandError((m) => ({ ...m, [disputeId]: true }));
     } finally {
       setZeroDemandBusy((m) => ({ ...m, [disputeId]: false }));
@@ -1257,7 +1272,9 @@ export function CaseRail({
             // letter page), wired to the SAME /dismiss route the letter page
             // uses. "Open the letter" stays as the quiet read-before-deciding
             // path. Same strings as the letter page (CASE_RAIL.zeroDemand*).
-            if (s.zeroDemand) {
+            // Optimistic: a clicked "Keep" renders the plain CTA in the click's
+            // render (the override; a failed POST snaps the banner back).
+            if (s.zeroDemand && zeroDemandDone[s.disputeId] !== "kept") {
               return (
                 <RailStep key={s.key} dataLetter={letterId} n={s.badge} title={s.title} last={last}>
                   <div className="rounded-xl border border-sky-200 bg-sky-50 px-4 py-3.5">
@@ -1347,7 +1364,11 @@ export function CaseRail({
 
   return (
     <>
-      {groups.map((g) => (
+      {/* S312 optimistic — a just-dismissed letter's whole group leaves the rail
+          in the click's render; the refetch (or a snapback) reconciles after. */}
+      {groups
+        .filter((g) => !(g.disputeId && zeroDemandDone[g.disputeId] === "dismissed"))
+        .map((g) => (
         // S306 (Andrew) — breathing room at every group boundary: the previous
         // letter's last card ("Your next move", "Waiting on…") was flush
         // against the next letter's band. First group keeps its position.

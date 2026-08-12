@@ -262,6 +262,8 @@ function DisputesContent() {
   // the client only renders it. `zeroDemandBusy` guards the Dismiss/Keep POSTs.
   const [noRemainingDemand, setNoRemainingDemand] = useState(false);
   const [zeroDemandBusy, setZeroDemandBusy] = useState(false);
+  // S312 optimistic snapback — the returned banner wears this inline error.
+  const [zeroDemandFailed, setZeroDemandFailed] = useState(false);
   // S312 (F2-S311.6) — the cancel stamp for the cancelled band ("cancelled on
   // {date}"). updated_at is stable after cancel: the S311 void guards froze
   // every writer, so the last write IS the cancellation.
@@ -1810,12 +1812,25 @@ function DisputesContent() {
   ) : null;
 
   // S312 (F2-S312.1, Andrew's ruling) — "this letter may no longer be needed."
-  // Dismiss → the letter becomes a cancelled exhibit (status flips locally so the
-  // band + hides render in the click's response; the route wrote the same truth).
-  // Keep → the banner stands down durably (metadata.zeroDemandKeptAt server-side).
+  // OPTIMISTIC with snapback (Andrew, the S310 editor idiom): the click's render
+  // settles the page — Dismiss shows the cancelled band + hides the actions,
+  // Keep drops the banner — and the POST runs behind it. Failure snaps every
+  // flipped state back and the returned banner wears the inline error (the
+  // S300 lesson: a failed write must show a symptom). mutationGenRef guards an
+  // in-flight GET from clobbering the optimistic state (the page's standing
+  // pattern, same as the outcome modal).
   const handleZeroDemand = async (action: "dismiss" | "keep") => {
     if (!user || !disputeId || zeroDemandBusy) return;
     setZeroDemandBusy(true);
+    setZeroDemandFailed(false);
+    const prevStatus = disputeStatus;
+    const prevUpdatedAt = disputeUpdatedAt;
+    mutationGenRef.current += 1;
+    setNoRemainingDemand(false);
+    if (action === "dismiss") {
+      setDisputeStatus("cancelled");
+      setDisputeUpdatedAt(new Date().toISOString());
+    }
     try {
       const token = await user.firebaseUser.getIdToken();
       const res = await fetch(`/api/disputes/${disputeId}/dismiss`, {
@@ -1823,12 +1838,16 @@ function DisputesContent() {
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
         body: JSON.stringify({ action, reason: "zero_demand" }),
       });
-      if (!res.ok) return; // banner stays; the guards' refusal is the truth
-      setNoRemainingDemand(false);
+      if (!res.ok) throw new Error(`dismiss ${res.status}`);
+    } catch {
+      // Snapback — the banner returns carrying the failure.
+      mutationGenRef.current += 1;
+      setNoRemainingDemand(true);
       if (action === "dismiss") {
-        setDisputeStatus("cancelled");
-        setDisputeUpdatedAt(new Date().toISOString());
+        setDisputeStatus(prevStatus);
+        setDisputeUpdatedAt(prevUpdatedAt);
       }
+      setZeroDemandFailed(true);
     } finally {
       setZeroDemandBusy(false);
     }
@@ -1857,6 +1876,9 @@ function DisputesContent() {
           >
             {CASE_RAIL.zeroDemandKeep}
           </button>
+          {zeroDemandFailed && (
+            <span className="text-xs text-red-600">{CASE_RAIL.zeroDemandSaveFailed}</span>
+          )}
         </div>
       </div>
     ) : null;
