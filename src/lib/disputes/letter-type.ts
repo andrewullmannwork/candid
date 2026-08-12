@@ -97,6 +97,20 @@ const INSURER_DISPUTE_TYPES = new Set<string>([
   "not_covered",
 ]);
 
+/**
+ * S311 — the ONE department line each recipient kind's letters print.
+ * templates.ts (the recipient-block builders) and the letter page's
+ * ADDRESSED-TO card read this SAME map, so the card can never describe a
+ * different envelope than the letter body (the S311 drive caught the card
+ * saying "Billing Department" over a letter printing "Compliance
+ * Department" — two inline strings for one envelope). Collector letters
+ * print no department line and are deliberately absent.
+ */
+export const RECIPIENT_DEPARTMENT_LINE = {
+  provider: "Compliance Department",
+  insurer: "Appeals Department",
+} as const;
+
 export function letterRecipientKind(
   type: string | null | undefined,
 ): LetterRecipientKind {

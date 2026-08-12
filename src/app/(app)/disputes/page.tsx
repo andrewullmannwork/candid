@@ -10,6 +10,7 @@ import { LockedOverlay } from "@/components/shared/LockedOverlay";
 import { InlineSubscribePanel } from "@/components/billing/InlineSubscribePanel";
 import { disputeUrlForResult } from "@/lib/disputes/url";
 import { letterRecipientKind } from "@/lib/disputes";
+import { RECIPIENT_DEPARTMENT_LINE } from "@/lib/disputes/letter-type";
 import { unsendPayload } from "@/lib/disputes/outcome-actions";
 import { LETTER_TYPE_LABELS, parseLetterDate, type LetterPatientIdentity } from "@/lib/disputes/letter-type";
 import { LetterView } from "@/components/disputes/LetterView";
@@ -1678,7 +1679,14 @@ function DisputesContent() {
     : null;
   const providerName = evidence?.claims?.[0]?.providerName ?? null;
   const serviceDate = evidence?.claims?.[0]?.dateOfService ?? letter.createdAt;
-  const potentialRecovery = evidence?.totals?.totalDiscrepancy ?? null;
+  // S311 — the hero chip is the LETTER's own money (S310: a letter and its
+  // headline chip are the same money — amount_disputed comes from the
+  // recipient-scoped fold the sentences render from). The claim-level
+  // evidence total stays only as the legacy fallback for rows without an
+  // amount: on the provider letter the two DIVERGE ($60.29 letter vs the
+  // insurer's $67.18 evidence discrepancy), and the chip was advertising the
+  // other party's money.
+  const potentialRecovery = amountDisputed ?? evidence?.totals?.totalDiscrepancy ?? null;
   const letterTypeLabel = LETTER_TYPE_LABELS[letter.letterType] ?? letter.letterType;
 
   const shortRef = letter.id.slice(0, 8).toUpperCase();
@@ -3450,15 +3458,18 @@ function recipientFromPlanContext(
   letterType: DisputeLetter["letterType"],
 ): DisputeLetter["recipient"] {
   const insurer = planContext?.insurer ?? null;
-  // Appeals go to the insurer; everything else (overcharge, balance billing,
-  // duplicate charges, itemized requests, self-pay negotiation) goes to the
-  // provider billing department. S74: the provider mailing address now flows
-  // through planContext.providerContact so we can render it in the card.
-  if (letterType === "insurance_appeal" && insurer) {
+  // S311 — the branch is the SHARED letterRecipientKind (the ad-hoc
+  // `letterType === "insurance_appeal"` re-derivation was the S299/S300
+  // defect family this card had kept: external reviews are insurer-directed
+  // and were falling to the provider branch), and the role line is the SHARED
+  // department map the letter's own recipient block prints — the card can no
+  // longer describe a different envelope than the letter below it. Collector
+  // letters keep today's provider-branch behavior (no department map entry).
+  if (letterRecipientKind(letterType) === "insurer" && insurer) {
     const addr = insurer.appealsAddress;
     return {
       name: insurer.name,
-      role: "Member Services — Appeals",
+      role: RECIPIENT_DEPARTMENT_LINE.insurer,
       address: addr
         ? [addr.line1, addr.line2, `${addr.city}, ${addr.state} ${addr.postalCode}`].filter(Boolean).join("\n")
         : undefined,
@@ -3469,16 +3480,16 @@ function recipientFromPlanContext(
   if (provider && (provider.name || provider.address)) {
     return {
       name: provider.name ?? "Provider",
-      role: "Billing Department",
+      role: RECIPIENT_DEPARTMENT_LINE.provider,
       address: provider.address ?? undefined,
       phone: provider.phone ?? undefined,
     };
   }
   // Fallback when neither side resolved — preserves legacy behavior.
-  if (letterType === "insurance_appeal") {
-    return { name: "Insurance Appeals", role: "Appeals Department" };
+  if (letterRecipientKind(letterType) === "insurer") {
+    return { name: "Insurance Appeals", role: RECIPIENT_DEPARTMENT_LINE.insurer };
   }
-  return { name: "Provider", role: "Billing Department" };
+  return { name: "Provider", role: RECIPIENT_DEPARTMENT_LINE.provider };
 }
 
 function RequestItemizedBill() {

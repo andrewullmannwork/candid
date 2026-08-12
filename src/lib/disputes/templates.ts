@@ -21,6 +21,7 @@ const MEDICARE_BENCHMARK_FINDING_TYPES: ReadonlySet<string> = new Set(
 import { buildObligationContext, renderObligationClauses } from "./obligation-render";
 import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
 import { plainDate, easternDate } from "@/lib/format/dates";
+import { RECIPIENT_DEPARTMENT_LINE } from "./letter-type";
 import { adjudicationBand } from "@/lib/care/interface";
 
 interface LetterTemplate {
@@ -220,7 +221,7 @@ function buildProviderRecipientBlock(
   providerContact: ProviderContact | null | undefined,
   bill: ParsedBill | undefined,
 ): string {
-  const lines: string[] = [providerName, "Compliance Department"];
+  const lines: string[] = [providerName, RECIPIENT_DEPARTMENT_LINE.provider];
   const address = providerContact?.address ?? bill?.provider?.address ?? null;
   if (address) {
     lines.push(address);
@@ -233,7 +234,7 @@ function buildInsurerRecipientBlock(
   insurerName: string,
   planContext: PlanContext | null | undefined,
 ): string {
-  const lines: string[] = [insurerName, "Appeals Department"];
+  const lines: string[] = [insurerName, RECIPIENT_DEPARTMENT_LINE.insurer];
   const appealsAddress = planContext?.insurer?.appealsAddress;
   if (appealsAddress) {
     lines.push(formatAppealsAddressBlock(appealsAddress));
