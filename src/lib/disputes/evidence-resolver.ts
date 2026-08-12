@@ -28,6 +28,8 @@ import type { ClaimLevelFindingMeta, NetworkTier } from "@/lib/billing/types";
 import {
   resolveEffectiveClaimTotals,
   readUserTotalsSource,
+  readUserPatientPaidOverride,
+  applyUserPatientPaidOverride,
   type EffectiveClaimTotals,
 } from "@/lib/claims/effective-totals";
 import { resolveCoverageForLine, type CoverageDecision } from "@/lib/claims/coverage-decision";
@@ -855,6 +857,24 @@ export async function resolveEvidence(
   const byClaim = new Map<string, ClaimEvidence>();
   for (const c of claimRows) {
     const claimLineItems = lineItemsByClaimId.get(c.id) ?? [];
+    // S309 (Andrew's live catch: the letter's refund didn't follow his
+    // amount-paid change) — the THIRD effective-totals site adopts the SAME
+    // Z1.1d overlay the claim routes and the dispute basis already apply:
+    // claims.metadata.userPatientPaid onto the header + prorated per-line,
+    // BEFORE resolveEffectiveClaimTotals — so the letter's classifier,
+    // recovery pools, and per-line citations all see the user's paid truth
+    // the moment it changes. In-memory, like the other two sites; no-op when
+    // the override is unset → byte-identical.
+    {
+      const ov = readUserPatientPaidOverride(c.metadata);
+      if (ov != null) {
+        applyUserPatientPaidOverride(
+          c as { total_patient_paid?: number | null },
+          claimLineItems as Array<{ billed_amount?: number | null; patient_paid_amount?: number | null }>,
+          ov,
+        );
+      }
+    }
     byClaim.set(c.id, {
       claimId: c.id,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
