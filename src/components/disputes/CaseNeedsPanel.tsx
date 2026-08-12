@@ -25,7 +25,7 @@
  */
 "use client";
 
-import { Fragment, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { Row } from "@/components/shared/InputRow";
 import {
   ImportantBadge,
@@ -552,6 +552,32 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
   } = props;
 
   const [openEditor, setOpenEditor] = useState<EditorKey | null>(null);
+  // S311 (Andrew, §A round-2) — editing an ANSWERED row moves it out of the
+  // Added fold to the open list above; without following it, the row looks
+  // like it vanished from under the click. Follow the re-homed editor with a
+  // smooth centered scroll (the S293 #11 treatment), scoped to THIS panel
+  // instance so two mounted panels can never scroll each other.
+  const sectionRef = useRef<HTMLElement | null>(null);
+  const prevEditorRef = useRef<EditorKey | null>(null);
+  useEffect(() => {
+    if (openEditor && prevEditorRef.current !== openEditor) {
+      // One macrotask after the commit (not requestAnimationFrame — rAF never
+      // fires in background tabs): the fold row vanishing and the editor
+      // appearing reflow in the same commit, and the browser's scroll
+      // anchoring counter-adjusts the viewport right after any scroll made
+      // during it. Waiting one tick lets layout + anchoring settle, then the
+      // instant jump lands and nothing fights it (the section also opts out
+      // of anchoring below).
+      const key = openEditor;
+      const t = setTimeout(() => {
+        sectionRef.current
+          ?.querySelector(`[data-needs-editor-row="${key}"]`)
+          ?.scrollIntoView({ behavior: "auto", block: "center" });
+      }, 60);
+      return () => clearTimeout(t);
+    }
+    prevEditorRef.current = openEditor;
+  }, [openEditor]);
   const [showAdded, setShowAdded] = useState(false);
   const [confirmAllStatus, setConfirmAllStatus] = useState<"idle" | "saving" | "error">("idle");
   // S293 (#5) — the one-block's "Something's wrong" expansion (per-item edits +
@@ -1591,6 +1617,11 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
 
   return (
     <section
+      ref={sectionRef}
+      // overflow-anchor:none — the browser's scroll anchoring counter-scrolls
+      // when the Added fold loses a row mid-commit, negating the follow-the-
+      // editor jump above; the panel opts out so the jump sticks.
+      style={{ overflowAnchor: "none" }}
       className={
         embedded
           ? "bg-transparent"
@@ -1630,7 +1661,9 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
         ) : null}
 
         {openDescs.map((d) => (
-          <Fragment key={d.key}>{d.node}</Fragment>
+          <div key={d.key} data-needs-editor-row={d.editorKey ?? undefined}>
+            {d.node}
+          </div>
         ))}
 
         <AddedFold count={doneDescs.length} open={showAdded} onToggle={() => setShowAdded((v) => !v)}>
