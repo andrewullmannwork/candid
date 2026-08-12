@@ -22,7 +22,6 @@ import {
   type SituationId,
 } from "@/lib/onboarding/simplified";
 import { getDocTypeClass, type DocType } from "@/lib/classifier/doc-type-vocabulary";
-import { validateUsAddress } from "@/lib/address/validate-us-address";
 import { OnboardingCardStep, type CardSlotValue } from "./OnboardingCardStep";
 import { OnboardingDocStep, type DocSlotValue } from "./OnboardingDocStep";
 import { OnboardingAboutStep, type AboutState } from "./OnboardingAboutStep";
@@ -76,10 +75,6 @@ export function OnboardingFlow() {
     dobFromProfile: false,
     situations: [],
     note: "",
-    addressLine1: "",
-    addressLine2: "",
-    city: "",
-    state: "",
   });
   const [tryFin, setTryFin] = useState(false);
   const [finishing, setFinishing] = useState(false);
@@ -116,10 +111,6 @@ export function OnboardingFlow() {
             date_of_birth?: string | null;
             sex?: string | null;
             phone?: string | null;
-            address_line1?: string | null;
-            address_line2?: string | null;
-            city?: string | null;
-            state?: string | null;
             in_deductible_individual?: unknown;
             in_oop_max_individual?: unknown;
           } | null;
@@ -263,10 +254,6 @@ export function OnboardingFlow() {
           dobFromProfile: !!(profileDobDisplay || urlDobDisplay),
           situations: (prof?.situation_tags as SituationId[] | null) ?? [],
           note: prof?.primary_concern ?? "",
-          addressLine1: prof?.address_line1 ?? "",
-          addressLine2: prof?.address_line2 ?? "",
-          city: prof?.city ?? "",
-          state: prof?.state ?? "",
         });
 
         // Parity with the legacy wizard's prefill effect: persist the signup
@@ -331,42 +318,6 @@ export function OnboardingFlow() {
       if (iso) payload.date_of_birth = iso;
       else if (opts.requireValid) throw new Error("invalid-dob");
 
-      // S311 (tree A4) — the mailing address, EDIT-MODE ONLY. The signup
-      // funnel never renders these fields, so it never sends the keys (absent
-      // = untouched server-side). A complete address saves; all-empty clears
-      // line1/line2/city (removal must be expressible — the S308 lesson) while
-      // state stays: profiles.state doubles as the DOI/AG state the letters'
-      // escalation clauses read, and the completeness rule (line1+city+state+
-      // zip) already nulls the sender block without it. Partial → invalid.
-      if (mode === "about") {
-        const anyAddr = !!(
-          about.addressLine1.trim() ||
-          about.city.trim() ||
-          about.state.trim()
-        );
-        if (anyAddr) {
-          const errs = validateUsAddress({
-            addressLine1: about.addressLine1,
-            addressLine2: about.addressLine2,
-            city: about.city,
-            state: about.state,
-            postalCode: about.zip,
-          });
-          if (Object.keys(errs).length > 0) {
-            if (opts.requireValid) throw new Error("invalid-address");
-          } else {
-            payload.address_line1 = about.addressLine1.trim();
-            payload.address_line2 = about.addressLine2.trim() || null;
-            payload.city = about.city.trim();
-            payload.state = about.state.trim().toUpperCase();
-          }
-        } else {
-          payload.address_line1 = null;
-          payload.address_line2 = null;
-          payload.city = null;
-        }
-      }
-
       const idToken = await user.firebaseUser.getIdToken();
       const res = await fetch("/api/profile", {
         method: "POST",
@@ -378,7 +329,7 @@ export function OnboardingFlow() {
         throw new Error(body.error || "Couldn't save your answers.");
       }
     },
-    [user, about, mode],
+    [user, about],
   );
 
   const stampComplete = useCallback(async () => {
@@ -415,31 +366,6 @@ export function OnboardingFlow() {
     if (!obZipOk(about.zip) || !obDobOk(about.dob)) {
       setTryFin(true);
       return;
-    }
-    // S311 (tree A4) — a PARTIAL address blocks the save with field-level reds
-    // (the same tryFin pattern zip/dob use); all-empty is fine (address is
-    // optional — letters fail soft without a sender block).
-    if (mode === "about") {
-      const anyAddr = !!(
-        about.addressLine1.trim() ||
-        about.city.trim() ||
-        about.state.trim()
-      );
-      if (
-        anyAddr &&
-        Object.keys(
-          validateUsAddress({
-            addressLine1: about.addressLine1,
-            addressLine2: about.addressLine2,
-            city: about.city,
-            state: about.state,
-            postalCode: about.zip,
-          }),
-        ).length > 0
-      ) {
-        setTryFin(true);
-        return;
-      }
     }
     setFinishing(true);
     setFinishError("");
@@ -702,7 +628,6 @@ export function OnboardingFlow() {
                     value={about}
                     onChange={(patch) => setAbout((prev) => ({ ...prev, ...patch }))}
                     tryFin={tryFin}
-                    withAddress={mode === "about"}
                   />
                   <div className="mt-8 flex flex-col gap-3.5">
                     {mode === "signup" && noDocs && (
