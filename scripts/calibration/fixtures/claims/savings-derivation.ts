@@ -123,7 +123,8 @@ const base = { prorated: false, paidTotal: 0, balanceTotal: 0, refundComponent: 
     d.spreadSentence === "Your bill reports payments only as one total, so we split $154.49 across the charged lines by their share of the bill.",
     d.spreadSentence,
   );
-  check("banner refund sub — tense fix", d.refundSub === "+$52.82 refund to request", d.refundSub);
+  check("banner refund sub — party-named (S310)", d.refundSub === "+$52.82 from your insurer", d.refundSub);
+  check("banner overpaid sub absent when nothing was paid above the charge", d.overpaidSub === null);
   check("banner forgiveness sub absent under $1", d.forgivenessSub === null);
 
   // Bill card — state 1 (paid, refund-shaped)
@@ -137,7 +138,9 @@ const base = { prorated: false, paidTotal: 0, balanceTotal: 0, refundComponent: 
     d.bill.paidSplit!.equation === "$101.67 + $52.82 = the $154.49 you paid ✓",
     d.bill.paidSplit!.equation,
   );
-  check("bill: single split carries the $0.00 forgiveness companion", d.bill.paidSplit!.forgivenessZero === true);
+  // S310 (Andrew) — the zero-companion rule is REMOVED: a row renders only
+  // while ≥ $1. The pin asserts the mechanism's absence so it can't creep back.
+  check("bill: no zero-companion field on the paid split (S310)", !("forgivenessZero" in d.bill.paidSplit!));
   check("bill: no balance split on a settled bill", d.bill.balanceSplit === null);
 }
 
@@ -159,7 +162,7 @@ const base = { prorated: false, paidTotal: 0, balanceTotal: 0, refundComponent: 
     d.bill.balanceSplit!.equation === "$101.67 + $52.82 = the $154.49 balance ✓",
     d.bill.balanceSplit!.equation,
   );
-  check("state 2: single split carries the $0.00 refund companion", d.bill.balanceSplit!.refundZero === true);
+  check("state 2: no zero-companion field on the balance split (S310)", !("refundZero" in d.bill.balanceSplit!));
   check("state 2: banner forgiveness sub — approved copy", d.forgivenessSub === "$52.82 to remove from your balance", d.forgivenessSub);
 }
 
@@ -180,7 +183,7 @@ const base = { prorated: false, paidTotal: 0, balanceTotal: 0, refundComponent: 
     d.bill.balanceSplit!.equation === "$21.67 + $32.82 = the $54.49 balance ✓",
     d.bill.balanceSplit!.equation,
   );
-  check("state 3: NO zero-companion rows in either split", d.bill.paidSplit!.forgivenessZero === false && d.bill.balanceSplit!.refundZero === false);
+  check("state 3: splits carry only real rows (S310 — no zero-companion fields)", !("forgivenessZero" in d.bill.paidSplit!) && !("refundZero" in d.bill.balanceSplit!));
   check("state 3: charged = paid + balance", d.bill.chargedToYou === 154.49, d.bill.chargedToYou);
 }
 
@@ -340,7 +343,8 @@ const base = { prorated: false, paidTotal: 0, balanceTotal: 0, refundComponent: 
   check("F17 refund row = the insurer-claimable slice (capped at charge − share)", split.refund === 67.18, split);
   check("F17 overpaid row = paid above the charge", split.overpaid === 60.29, split);
   check("F17 three-term equation sums to the paid total", split.equation === "$172.53 + $67.18 + $60.29 = the $300.00 you paid ✓", split.equation);
-  check("F17 hero sub names the insurer-claimable slice", d.refundSub === "+$67.18 refund to request", d.refundSub);
+  check("F17 hero sub names the insurer slice — party-named (S310)", d.refundSub === "+$67.18 from your insurer", d.refundSub);
+  check("F17 hero sub names the provider slice (S310)", d.overpaidSub === "+$60.29 from your provider", d.overpaidSub);
 }
 // The no-overpay regression: chargedTotal supplied and equal to paid+balance →
 // overpaid 0, refund uncapped, the two-term equation — byte-identical shape.
@@ -355,6 +359,7 @@ const base = { prorated: false, paidTotal: 0, balanceTotal: 0, refundComponent: 
   });
   const split = d.bill.paidSplit!;
   check("F17 no-overpay: refund uncapped, overpaid 0, two-term equation", split.refund === 240 && split.overpaid === 0 && split.equation === "$60.00 + $240.00 = the $300.00 you paid ✓", split);
+  check("F17 no-overpay: overpaidSub null", d.overpaidSub === null);
 }
 
 const total = pass + fails.length;

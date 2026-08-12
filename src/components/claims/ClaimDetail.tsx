@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { Fragment, useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
 import type { BillState } from "@/lib/claims/derive-bill-state";
@@ -1508,6 +1508,15 @@ export function ClaimDetail({
   // track, its rail-offer reason, and the panel (ONE derivation — the same
   // model field the split renders).
   const overpaidToProvider = savingsDerivation?.bill.paidSplit?.overpaid ?? 0;
+
+  // S310 — the hero banner's party-named sub-spans (insurer slice · provider
+  // slice · balance slice), each already null under $1 in the derivation.
+  // Null when the flag is off → the legacy two-span markup renders instead.
+  const heroSubs = savingsDerivation
+    ? [savingsDerivation.refundSub, savingsDerivation.overpaidSub, savingsDerivation.forgivenessSub].filter(
+        (s): s is string => s != null,
+      )
+    : null;
 
   // Cost-Share v2 (W2) — flatten per-line assumptions with the line context the
   // §5 banner chips + W3 override calls need (lineId + service label/slug). Over
@@ -3710,35 +3719,41 @@ export function ClaimDetail({
               </div>
               <div>
                 <div className="text-sm font-semibold text-gray-900">Recoverable from this bill</div>
-                {(billTotals.refundComponent >= 1 || billTotals.forgivenessComponent >= 1) && (
-                  <div className="mt-1 flex flex-wrap items-center gap-2 text-[12.5px] text-gray-700">
-                    {billTotals.refundComponent >= 1 && (
-                      <span>
-                        {/* S307 flag — tense fix: nothing has been refunded yet. */}
-                        {savingsDerivation ? (
-                          <strong className="font-bold tabular-nums text-emerald-700">{savingsDerivation.refundSub}</strong>
-                        ) : (
-                          <>
-                            <strong className="font-bold tabular-nums text-emerald-700">+${fmtMoney(billTotals.refundComponent)}</strong> refunded to you
-                          </>
-                        )}
-                      </span>
-                    )}
-                    {billTotals.refundComponent >= 1 && billTotals.forgivenessComponent >= 1 && (
-                      <span className="h-[3px] w-[3px] rounded-full bg-gray-400" aria-hidden />
-                    )}
-                    {billTotals.forgivenessComponent >= 1 && (
-                      <span>
-                        {savingsDerivation ? (
-                          <strong className="font-bold tabular-nums text-emerald-700">{savingsDerivation.forgivenessSub}</strong>
-                        ) : (
-                          <>
-                            <strong className="font-bold tabular-nums text-emerald-700">${fmtMoney(billTotals.forgivenessComponent)}</strong> forgiven by provider
-                          </>
-                        )}
-                      </span>
-                    )}
-                  </div>
+                {heroSubs ? (
+                  /* S310 — party-named subs decomposing the recovery total
+                     (Andrew's approved copy); the derivation already nulls any
+                     slice under $1, so every rendered span carries real money. */
+                  heroSubs.length > 0 && (
+                    <div className="mt-1 flex flex-wrap items-center gap-2 text-[12.5px] text-gray-700">
+                      {heroSubs.map((s, i) => (
+                        <Fragment key={s}>
+                          {i > 0 && <span className="h-[3px] w-[3px] rounded-full bg-gray-400" aria-hidden />}
+                          <span>
+                            <strong className="font-bold tabular-nums text-emerald-700">{s}</strong>
+                          </span>
+                        </Fragment>
+                      ))}
+                    </div>
+                  )
+                ) : (
+                  (billTotals.refundComponent >= 1 || billTotals.forgivenessComponent >= 1) && (
+                    <div className="mt-1 flex flex-wrap items-center gap-2 text-[12.5px] text-gray-700">
+                      {billTotals.refundComponent >= 1 && (
+                        <span>
+                          {/* S307 flag-off legacy spans (tense predates the derivation). */}
+                          <strong className="font-bold tabular-nums text-emerald-700">+${fmtMoney(billTotals.refundComponent)}</strong> refunded to you
+                        </span>
+                      )}
+                      {billTotals.refundComponent >= 1 && billTotals.forgivenessComponent >= 1 && (
+                        <span className="h-[3px] w-[3px] rounded-full bg-gray-400" aria-hidden />
+                      )}
+                      {billTotals.forgivenessComponent >= 1 && (
+                        <span>
+                          <strong className="font-bold tabular-nums text-emerald-700">${fmtMoney(billTotals.forgivenessComponent)}</strong> forgiven by provider
+                        </span>
+                      )}
+                    </div>
+                  )
                 )}
               </div>
             </div>
@@ -3952,7 +3967,7 @@ export function ClaimDetail({
                       </div>
                       <div className="flex justify-between gap-3 text-xs">
                         <span className="font-semibold text-emerald-700">
-                          Refund
+                          Refund from your insurer
                           <span className="mt-0.5 block max-w-[220px] text-[11px] font-normal leading-snug text-gray-500">
                             Money you already paid that your plan says you didn&apos;t owe.
                           </span>
@@ -3972,17 +3987,6 @@ export function ClaimDetail({
                           <strong className="font-bold tabular-nums text-emerald-700">+${fmtMoney(savingsDerivation.bill.paidSplit.overpaid)}</strong>
                         </div>
                       )}
-                      {savingsDerivation.bill.paidSplit.forgivenessZero && (
-                        <div className="flex justify-between gap-3 text-xs">
-                          <span className="font-semibold text-emerald-700">
-                            Provider must forgive
-                            <span className="mt-0.5 block max-w-[220px] text-[11px] font-normal leading-snug text-gray-500">
-                              Money still on your balance that your plan says you don&apos;t owe.
-                            </span>
-                          </span>
-                          <strong className="font-semibold tabular-nums text-gray-400">$0.00</strong>
-                        </div>
-                      )}
                     </div>
                     <div className="self-start rounded-full border border-emerald-300 bg-emerald-50 px-2.5 py-0.5 text-[11.5px] font-bold text-emerald-700">
                       {savingsDerivation.bill.paidSplit.equation}
@@ -3999,17 +4003,6 @@ export function ClaimDetail({
                         <span>Legitimately owed under your plan</span>
                         <strong className="font-semibold tabular-nums text-gray-900">${fmtMoney(savingsDerivation.bill.balanceSplit.legit)}</strong>
                       </div>
-                      {savingsDerivation.bill.balanceSplit.refundZero && (
-                        <div className="flex justify-between gap-3 text-xs">
-                          <span className="font-semibold text-emerald-700">
-                            Refund
-                            <span className="mt-0.5 block max-w-[220px] text-[11px] font-normal leading-snug text-gray-500">
-                              Money you already paid that your plan says you didn&apos;t owe.
-                            </span>
-                          </span>
-                          <strong className="font-semibold tabular-nums text-gray-400">$0.00</strong>
-                        </div>
-                      )}
                       <div className="flex justify-between gap-3 text-xs">
                         <span className="font-semibold text-emerald-700">
                           Provider must forgive

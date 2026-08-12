@@ -110,9 +110,10 @@ export interface BillCardModel {
   /** The bill's total demand on the user (= paid + open balance). */
   chargedToYou: number;
   /**
-   * "Where your $X went" — renders when paid ≥ $1 AND refund ≥ $1.
-   * `forgivenessZero` = show the $0.00 forgiveness companion row (only when the
-   * balance split is absent, so the single split tells the whole story).
+   * "Where your $X went" — renders when paid ≥ $1 AND refund ≥ $1. A money row
+   * renders only while its amount is ≥ $1 (S310, Andrew's ruling: the S307
+   * zero-companion rule — force-showing the absent split's $0.00 row — is
+   * removed; nothing about the amounts themselves changed).
    */
   paidSplit: {
     divider: string;
@@ -122,7 +123,6 @@ export interface BillCardModel {
      *  refund (its own letter track), never the insurer-claimable refund.
      *  0 when the user paid at or under the charge. */
     overpaid: number;
-    forgivenessZero: boolean;
     equation: string;
   } | null;
   /** "Where the $X balance stands" — renders when balance ≥ $1 AND forgiveness ≥ $1. */
@@ -130,7 +130,6 @@ export interface BillCardModel {
     divider: string;
     legit: number;
     forgiveness: number;
-    refundZero: boolean;
     equation: string;
   } | null;
 }
@@ -153,8 +152,10 @@ export interface SavingsDerivation {
   bill: BillCardModel;
   /** Present only when amounts are header-prorated. */
   spreadSentence: string | null;
-  /** Banner sub-spans (tense fix): null when the component is < $1. */
+  /** Banner sub-spans, party-named (S310): null while the slice is < $1. */
   refundSub: string | null;
+  /** S310 — the provider-owed slice's banner span ("+$X from your provider"). */
+  overpaidSub: string | null;
   forgivenessSub: string | null;
 }
 
@@ -302,10 +303,11 @@ export function buildSavingsDerivation(args: {
 
   const allPriced = priced.length === charged.length && charged.length > 0;
 
-  // The bill-card state model (v7 mock rules). Refund lives in the paid split,
-  // forgiveness in the balance split; a single split carries its companion's
-  // $0.00 row so it tells the whole story alone; recovery < $1 → no splits at
-  // all (there is no recovery story, and the card keeps today's headline).
+  // The bill-card state model (v7 mock rules, S310 amendment). Refund lives in
+  // the paid split, forgiveness in the balance split; a money row renders only
+  // while its amount is ≥ $1 (Andrew removed the S307 zero-companion rule);
+  // recovery < $1 → no splits at all (there is no recovery story, and the card
+  // keeps today's headline).
   const recovery = args.refundComponent + args.forgivenessComponent;
   const recoveryHeadline = recovery >= 1;
   // S309 F17 (Andrew's design) — paid-above-charge is the PROVIDER's refund,
@@ -331,7 +333,6 @@ export function buildSavingsDerivation(args: {
           yours,
           refund: refundCapped,
           overpaid: overpaidToProvider,
-          forgivenessZero: !balanceSplitOn,
           equation:
             overpaidToProvider >= 1
               ? `$${fmtMoney(yours)} + $${fmtMoney(refundCapped)} + $${fmtMoney(overpaidToProvider)} = the $${fmtMoney(args.paidTotal)} you paid ✓`
@@ -343,7 +344,6 @@ export function buildSavingsDerivation(args: {
           divider: `Where the $${fmtMoney(args.balanceTotal)} balance stands`,
           legit,
           forgiveness: args.forgivenessComponent,
-          refundZero: !paidSplitOn,
           equation: `$${fmtMoney(legit)} + $${fmtMoney(args.forgivenessComponent)} = the $${fmtMoney(args.balanceTotal)} balance ✓`,
         }
       : null,
@@ -366,9 +366,13 @@ export function buildSavingsDerivation(args: {
     spreadSentence: args.prorated
       ? `Your bill reports payments only as one total, so we split $${fmtMoney(spreadTotal)} across the charged lines by their share of the bill.`
       : null,
-    // S309 F17 — the hero sub names the INSURER-claimable slice (the letter's
-    // number); the overpaid slice carries its own panel row + provider letter.
-    refundSub: refundCapped >= 1 ? `+$${fmtMoney(refundCapped)} refund to request` : null,
+    // S310 (Andrew's approved copy) — the hero subs decompose the recovery
+    // total by party: the insurer-claimable slice (the appeal's number), the
+    // paid-above-charge slice (the provider letter's number), and the balance
+    // slice. Each renders only while ≥ $1.
+    refundSub: refundCapped >= 1 ? `+$${fmtMoney(refundCapped)} from your insurer` : null,
+    overpaidSub:
+      overpaidToProvider >= 1 ? `+$${fmtMoney(overpaidToProvider)} from your provider` : null,
     forgivenessSub:
       args.forgivenessComponent >= 1
         ? `$${fmtMoney(args.forgivenessComponent)} to remove from your balance`
