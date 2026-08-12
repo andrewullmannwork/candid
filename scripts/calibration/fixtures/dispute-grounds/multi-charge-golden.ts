@@ -100,15 +100,29 @@ function effTotals(
     insurancePaid: 0,
     insuranceAdjusted: 0,
     patientResponsibility: owes + unalloc,
+    // S309 F12 — the DEFAULT models PROD's resolver on faithful per-line data:
+    // present + consistent lines resolve as per_line_sum (cite-grade), so the
+    // shared per-line money basis keeps each line's own values. Cases that
+    // model a HEADER-AUTHORITY ruling (an under-extracted header the resolver
+    // trusts over sparse/inflated lines — L5, F2) override provenance to
+    // claim_header alongside their overridden totals.
     provenance: {
-      patientPaidSource: "claim_header",
-      insurancePaidSource: "claim_header",
-      insuranceAdjustedSource: "claim_header",
-      patientResponsibilitySource: "claim_header",
+      patientPaidSource: "per_line_sum",
+      insurancePaidSource: "per_line_sum",
+      insuranceAdjustedSource: "per_line_sum",
+      patientResponsibilitySource: "per_line_sum",
     },
     ...over,
   };
 }
+
+/** The header-authority provenance stamp for the under-report cases. */
+const HEADER_PROVENANCE = {
+  patientPaidSource: "claim_header",
+  insurancePaidSource: "claim_header",
+  insuranceAdjustedSource: "claim_header",
+  patientResponsibilitySource: "claim_header",
+} as const;
 
 function makeEvidence(
   opts: {
@@ -397,7 +411,7 @@ const notRenderedLine = makeLine({
 //      (Decision 3: trust the cite-grade header value → conservative). total clamps 500 → 300.
 {
   const line = makeLine({ lineItemId: "f2-nr", serviceNotRenderedAttested: true, billedAmount: 500, patientPaid: 500, patientOwes: 0 });
-  const r = resolveLetterRecovery(makeEvidence({ lines: [line], effectiveTotals: { patientPaid: 300 } }), EMPTY_BASIS, "provider");
+  const r = resolveLetterRecovery(makeEvidence({ lines: [line], effectiveTotals: { patientPaid: 300, provenance: HEADER_PROVENANCE } }), EMPTY_BASIS, "provider");
   check("F2 refund clamp: 500 → 300 (header patient-paid cap)", near(r.total, 300) && near(r.totalRefund, 300), { total: r.total, refund: r.totalRefund });
 }
 
@@ -552,12 +566,19 @@ function letterFor(ev: DisputeEvidence, recipient: "insurer" | "provider"): stri
   check("L3 provider letter asks to itemize the $146 unallocated gap", /bill total exceeds the sum of the listed charges\. Itemize the \$146\.00/i.test(prov), prov);
 }
 
-// L5 — a clamp-bound claim drops precise dollars: the not-rendered ask renders WITHOUT a refund $.
+// L5 — S309 F12/C re-pin (Andrew): the header-under-report conflict now resolves UPSTREAM.
+//      The shared per-line money basis prices the line from the authoritative header (share ×
+//      $300), so the clamp has nothing to bind and the letter asks the header-consistent
+//      conservative dollar PLAINLY — "refund the $300.00 I paid" — instead of dropping every
+//      figure (the old downstream degradation). Decision 3's intent (trust the header,
+//      conservative) is preserved; F2 pins the same total. The clamp machinery remains the
+//      backstop for genuinely irreconcilable mixes.
 {
   const line = makeLine({ lineItemId: "L5-nr", serviceNotRenderedAttested: true, billedAmount: 500, patientPaid: 500, patientOwes: 0 });
-  const ev = makeEvidence({ lines: [line], effectiveTotals: { patientPaid: 300 } });
-  check("L5 the claim is clamp-bound", resolveLetterRecovery(ev, EMPTY_BASIS, "provider").clampBoundClaimIds.length === 1, resolveLetterRecovery(ev, EMPTY_BASIS, "provider").clampBoundClaimIds);
-  check("L5 clamp-bound: the ask renders without a precise refund $", !/refund the \$/i.test(letterFor(ev, "provider")), letterFor(ev, "provider"));
+  const ev = makeEvidence({ lines: [line], effectiveTotals: { patientPaid: 300, provenance: HEADER_PROVENANCE } });
+  check("L5 upstream-consistent: the clamp no longer binds", resolveLetterRecovery(ev, EMPTY_BASIS, "provider").clampBoundClaimIds.length === 0, resolveLetterRecovery(ev, EMPTY_BASIS, "provider").clampBoundClaimIds);
+  check("L5 the ask names the header-consistent refund", /refund the \$300\.00 I paid/i.test(letterFor(ev, "provider")), letterFor(ev, "provider"));
+  check("L5 the billed figure stays the raw charge quote", /\$500\.00/.test(letterFor(ev, "provider")), letterFor(ev, "provider"));
 }
 
 // L6 — Part 1b: a not-rendered survivor of a duplicate: the whole-charge not-rendered ask subsumes the

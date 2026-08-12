@@ -20,6 +20,7 @@ const MEDICARE_BENCHMARK_FINDING_TYPES: ReadonlySet<string> = new Set(
 );
 import { buildObligationContext, renderObligationClauses } from "./obligation-render";
 import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
+import { plainDate, easternDate } from "@/lib/format/dates";
 import { adjudicationBand } from "@/lib/care/interface";
 
 interface LetterTemplate {
@@ -667,8 +668,18 @@ export function buildRequestSection(params: {
     // R3 step 5.3 — drop precise dollars for clamp-bound claims (the ask still renders, sans amounts).
     const dollarLines = b.attested.filter((li) => !lineIsClampBound(li));
     const billed = sumOf(dollarLines, (li) => li.billedAmount);
-    const refund = sumOf(dollarLines, (li) => li.patientPaid);
-    const forgive = sumOf(dollarLines, (li) => li.patientOwes);
+    // S309 F12/C (Andrew) — refund/forgive dollars come from the SAME engine
+    // recovery the cost-share ask adopted in §18 incr-4: ONE money basis for
+    // the whole letter. This branch was the last raw reader — it quoted the
+    // raw line's $500 while the recovery priced the header-consistent $300
+    // (multi-charge L5). The billed figure stays the raw charge quote.
+    // Absent map (flag OFF / legacy) → the raw sums, byte-identical.
+    const refund = letterRecovery
+      ? sumAssertable(b.attested, letterRecovery, "refund")
+      : sumOf(dollarLines, (li) => li.patientPaid);
+    const forgive = letterRecovery
+      ? sumAssertable(b.attested, letterRecovery, "writeOff")
+      : sumOf(dollarLines, (li) => li.patientOwes);
     const insPaid = isInsurer ? sumOf(dollarLines, (li) => li.insurancePaid) : 0;
     const clauses: string[] = [];
     if (isInsurer) {
@@ -1477,17 +1488,11 @@ function renderLineItemEvidence(
 }
 
 export function formatDate(iso: string): string {
-  // S109 PR #2 (Chunk A fix) — render with timeZone: 'UTC' so ISO dates like
-  // "2023-04-25" don't shift to "April 24, 2023" in PT timezone (Date()
-  // parses ISO as UTC midnight; toLocaleDateString without timeZone converts
-  // back to local timezone, dropping a day for any zone west of UTC).
-  const d = new Date(iso);
-  return d.toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-    timeZone: "UTC",
-  });
+  // S109 PR #2 (Chunk A fix) — DATE-ONLY values render UTC-pinned so ISO dates
+  // like "2023-04-25" never shift a day. S309 F13: centralized in
+  // src/lib/format/dates.ts; INSTANTS (datelines, call/sent timestamps) go
+  // through `easternDate` instead — Andrew's one-clock ruling.
+  return plainDate(iso);
 }
 
 function formatCurrency(amount: number): string {
@@ -1602,7 +1607,7 @@ const overchargeTemplate: LetterTemplate = {
 
 Under the No Surprises Act and applicable state consumer protection laws, I am entitled to a clear and accurate bill. I request a written response within 30 days of receipt of this letter.`;
 
-    return `${formatDate(new Date().toISOString())}
+    return `${easternDate(new Date())}
 
 ${recipientBlock}
 
@@ -1665,7 +1670,7 @@ const itemizedRequestTemplate: LetterTemplate = {
   body: ({ patientName, providerName, serviceDate, accountNumber, planContext, bill }) => {
     const recipientBlock = buildProviderRecipientBlock(providerName, planContext?.providerContact, bill);
     const patientRefBlock = buildPatientReferenceBlock(patientName, undefined, planContext?.providerContact, bill);
-    return `${formatDate(new Date().toISOString())}
+    return `${easternDate(new Date())}
 
 ${recipientBlock}
 
@@ -1828,7 +1833,7 @@ const insuranceAppealTemplate: LetterTemplate = {
       ? buildRequestSection({ evidence, planContext, recipient: "insurer", letterRecovery, recovery, noPlanCoverageRequestOn, demandsEnabled: disputeGroundsOn ?? false })
       : `${closingArgument ? `${closingArgument}\n\n` : ""}${escalationParagraph}`;
 
-    return `${formatDate(new Date().toISOString())}
+    return `${easternDate(new Date())}
 
 ${recipientBlock}
 
@@ -1926,7 +1931,7 @@ const balanceBillingTemplate: LetterTemplate = {
 
 Please respond within 30 days. If I do not receive a satisfactory resolution, I intend to file complaints with my state insurance commissioner and the federal No Surprises Help Desk.`;
 
-    return `${formatDate(new Date().toISOString())}
+    return `${easternDate(new Date())}
 
 ${recipientBlock}
 
@@ -2034,7 +2039,7 @@ const duplicateChargeTemplate: LetterTemplate = {
 
 Please provide a written response within 30 days of receipt of this letter.`;
 
-    return `${formatDate(new Date().toISOString())}
+    return `${easternDate(new Date())}
 
 ${recipientBlock}
 
@@ -2073,7 +2078,7 @@ const negotiationTemplate: LetterTemplate = {
   subject: (provider) => `Self-Pay Rate Negotiation — ${provider}`,
   body: ({ patientName, providerName, serviceDate, planContext, bill }) => {
     const recipientBlock = buildProviderRecipientBlock(providerName, planContext?.providerContact, bill);
-    return `${formatDate(new Date().toISOString())}
+    return `${easternDate(new Date())}
 
 ${recipientBlock}
 
@@ -2117,7 +2122,7 @@ const finalNoticeTemplate: LetterTemplate = {
       ? `my state's consumer-protection authority (the ${state} Attorney General's office)`
       : "my state's consumer-protection authority";
     const stateCitation = renderGated(resolveStateCitation(state, "medical_debt"), (c) => ` ${c}`);
-    return `${formatDate(new Date().toISOString())}
+    return `${easternDate(new Date())}
 
 ${recipientBlock}
 
@@ -2148,7 +2153,7 @@ const externalReviewTemplate: LetterTemplate = {
     const insurerName = planContext?.insurer?.name ?? "My Health Plan";
     const recipientBlock = buildInsurerRecipientBlock(insurerName, planContext);
     const denialLine = renderGated(appealExhausted?.denialDate, (d) => ` on ${formatDate(d)}`);
-    return `${formatDate(new Date().toISOString())}
+    return `${easternDate(new Date())}
 
 ${recipientBlock}
 
@@ -2191,7 +2196,7 @@ const debtValidationTemplate: LetterTemplate = {
       ? `\n\nUntil you provide the requested validation, please cease collection activity on this account.`
       : "";
     const stateCitation = renderGated(resolveStateCitation(state, "credit_furnishing"), (c) => ` ${c}`);
-    return `${formatDate(new Date().toISOString())}
+    return `${easternDate(new Date())}
 
 ${recipientBlock}
 
