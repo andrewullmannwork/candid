@@ -25,7 +25,8 @@
 import type { CiteGradeTier } from "./strength-scoring";
 import type { DisputeEvidence, LineItemEvidence } from "./evidence-resolver";
 import type { CostShareV2Result, CostShareAssumption } from "../claims/recovery-math";
-import { ANSWERED_REASONS } from "../claims/recovery-math";
+import { ANSWERED_REASONS, resolveStillOutstanding } from "../claims/recovery-math";
+import { resolvePerLinePatientPaid } from "../claims/effective-totals";
 import type { FindingType } from "../billing/types";
 import { DISPUTE_GROUND_CATALOG } from "./dispute-ground-catalog";
 import { IDENTITY_BENCHMARK_SOURCE } from "../audit/claim-header-arithmetic";
@@ -452,6 +453,42 @@ export function resolveLetterRecovery(
   // another claim's headroom. For today's single-claim disputes with no set/claim findings + no
   // binding clamp, total reduces to round2(Σ assertable capped) → byte-identical. `lineOwes` sums ALL
   // the claim's lines (incl. removed copies — the set tier's write-off comes from them).
+  // S309 F12 — the letter's per-line money basis is the SAME shared derivation
+  // the claim page uses (resolvePerLinePatientPaid / resolveStillOutstanding).
+  // Single-adjudication provider bills carry null per-line paid/owes BY DESIGN
+  // (S304 — the header states adjudication once); reading them raw zeroed
+  // `refundable`, so every such letter fell to the generic-relief branch while
+  // the claim panel asserted the recovery (the S294/#289 under-claim class,
+  // live-caught in the S309 retest: panel $67.18, letter generic). Applied
+  // ONCE here and consumed by the RECOVERY math only — citation fields keep
+  // reading the raw cite-grade columns untouched.
+  const effMoney = new Map<string, { paid: number; owes: number }>();
+  for (const claim of evidence.claims) {
+    for (const l of claim.lineItemEvidence) {
+      const paid = resolvePerLinePatientPaid({
+        lineBilled: l.billedAmount,
+        linePatientPaid: l.patientPaid,
+        claimTotalBilled: claim.totalBilled,
+        effectiveClaimPatientPaid: claim.effectiveTotals,
+      }).value;
+      const owes =
+        l.patientOwes != null
+          ? l.patientOwes
+          : resolveStillOutstanding({
+              lineBilled: l.billedAmount,
+              lineStillOutstanding: null,
+              linePatientOwes: null,
+              claimTotalBilled: claim.totalBilled,
+              claimStillOutstanding: claim.effectiveTotals.patientResponsibility,
+            });
+      effMoney.set(l.lineItemId, { paid, owes });
+    }
+  }
+  const effLine = (l: LineItemEvidence): LineItemEvidence => {
+    const m = effMoney.get(l.lineItemId);
+    return m ? { ...l, patientPaid: m.paid, patientOwes: m.owes } : l;
+  };
+
   type ClaimPool = { refundRaw: number; writeOffRaw: number; paidCap: number; respHeader: number; lineOwes: number };
   const pools = new Map<string, ClaimPool>();
   for (const claim of evidence.claims) {
@@ -460,7 +497,10 @@ export function resolveLetterRecovery(
       writeOffRaw: 0,
       paidCap: claim.effectiveTotals.patientPaid,
       respHeader: claim.effectiveTotals.patientResponsibility,
-      lineOwes: claim.lineItemEvidence.reduce((s, l) => s + Math.max(0, l.patientOwes ?? 0), 0),
+      lineOwes: claim.lineItemEvidence.reduce(
+        (s, l) => s + Math.max(0, effMoney.get(l.lineItemId)?.owes ?? l.patientOwes ?? 0),
+        0,
+      ),
     });
   }
 
@@ -477,10 +517,13 @@ export function resolveLetterRecovery(
     removedLineIds: Set<string>;
   };
   const setAgg = new Map<string, SetAgg>();
+  // S309 F12 — lineById stores the EFFECTIVE-money view (set-tier exposure /
+  // paid sums read it), so the set tier and the line tier price lines the
+  // same way.
   const lineById = new Map<string, LineItemEvidence>();
   for (const claim of evidence.claims) {
     for (const line of claim.lineItemEvidence) {
-      lineById.set(line.lineItemId, line);
+      lineById.set(line.lineItemId, effLine(line));
       for (const f of line.auditFindings ?? []) {
         if (!f.findingId || f.dismissed) continue; // R3 step 5.3 — skip user-dismissed findings
         const ground = FINDING_TO_GROUND.get(f.type as FindingType);
@@ -515,8 +558,10 @@ export function resolveLetterRecovery(
 
   for (const claim of evidence.claims) {
     const pool = pools.get(claim.claimId);
-    for (const line of claim.lineItemEvidence) {
-      if (removedLineIds.has(line.lineItemId)) continue; // removed copy — removal dominates (line tier)
+    for (const rawLine of claim.lineItemEvidence) {
+      if (removedLineIds.has(rawLine.lineItemId)) continue; // removed copy — removal dominates (line tier)
+      // S309 F12 — the line tier computes on the effective-money view.
+      const line = effLine(rawLine);
       const result = basis.get(line.lineItemId) ?? null;
       const { grounds, notRendered, shouldOwe, capped, capBound } = computeLineRecovery(
         line,

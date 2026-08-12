@@ -123,7 +123,22 @@ function makeEvidence(): DisputeEvidence {
   const claim = {
     claimId: "claim-1", dateOfService: "2024-03-15", providerName: "Sample Medical Center",
     totalBilled: 300, planYear: 2024, lineItemEvidence: [costShareLine()],
-    effectiveTotals: {} as unknown as ClaimEvidence["effectiveTotals"],
+    // S309 F12 — real-shaped totals (provenance is REQUIRED by the per-line
+    // money resolvers the recovery now shares with the claim page).
+    // per_line_sum = cite-grade → the resolvers keep the lines' own values →
+    // S1–S5 stay byte-identical.
+    effectiveTotals: {
+      patientPaid: 300,
+      insurancePaid: 0,
+      insuranceAdjusted: 0,
+      patientResponsibility: 0,
+      provenance: {
+        patientPaidSource: "per_line_sum",
+        insurancePaidSource: "per_line_sum",
+        insuranceAdjustedSource: "per_line_sum",
+        patientResponsibilitySource: "per_line_sum",
+      },
+    },
     dataTrust: { headerReconciliationFailed: false, signViolation: false },
   } satisfies ClaimEvidence;
   return {
@@ -231,6 +246,73 @@ console.log("\nS5 — rate-starved (no coinsurance) + deductible/network unknown
   check("S5 line NOT assertable", byLine.assertable === false);
   check("S5 weakened (a dollar was omitted)", rec.weakened === true);
   check("S5 NO promptable fields (deductible/network wouldn't unlock the dollar)", rec.strengthenableFields.length === 0);
+}
+
+// ── S6 (S309 F12) — single-adjudication provider bill: per-line paid/owes are NULL by design
+//    (S304 — the header states adjudication once). The recovery now prices lines through the
+//    SAME shared proration the claim page uses, so the letter claims the dollars the panel
+//    shows. Live case: breast-imaging bill — $30-copay deductible-EXEMPT ultrasound, billed
+//    $157.50 of a $388.50 bill whose header says the patient paid $239.71 → prorated paid
+//    $97.18 → refund $67.18. The raw read produced $0 → the generic-relief branch. ──
+console.log("\nS6 — single-adjudication bill: prorated per-line money reaches the letter (S309 F12)");
+{
+  const SERVICE_COPAY: ServiceCostShare = { covered: true, copay: 30, coinsurance: null, deductibleApplies: false, userStatedRate: false };
+  const result = computeCostShareV2({
+    line: { billed: 157.5, allowed: 97.18, patientPaid: 97.18, patientResponsibility: 97.18 },
+    service: SERVICE_COPAY,
+    insurer: EMPTY_INSURER,
+    plan: PLAN,
+    accumulator: null,
+    overrides: { ...NO_OVERRIDE, deductibleMet: false, userNetworkOverride: "in_network" },
+    networkLine: null,
+    networkClaim: null,
+    claimInsurerPaidZero: true,
+  });
+  const proLine: LineItemEvidence = {
+    ...costShareLine(),
+    lineItemId: "li-pro",
+    billedAmount: 157.5,
+    patientPaid: null,
+    patientOwes: null,
+    expectedPatientCost: 30,
+    actualPatientCost: null,
+    discrepancyAmount: 67.18,
+    dollarAtStake: 67.18,
+    auditFindings: [{
+      type: "overcharge", severity: "high", title: "Cost-share misapplied",
+      description: "Charged more than the plan's cost-sharing terms.",
+      estimatedOvercharge: 67.18, benchmarkAmount: null, benchmarkSource: null,
+    }],
+  };
+  const proEvidence: DisputeEvidence = {
+    claims: [{
+      claimId: "claim-pro", dateOfService: "2023-08-02", providerName: "Sample Imaging Center",
+      totalBilled: 388.5, planYear: 2023, lineItemEvidence: [proLine],
+      effectiveTotals: {
+        patientPaid: 239.71,
+        insurancePaid: 0,
+        insuranceAdjusted: 148.79,
+        patientResponsibility: 239.71,
+        provenance: {
+          patientPaidSource: "claim_header",
+          insurancePaidSource: "claim_header",
+          insuranceAdjustedSource: "claim_header",
+          patientResponsibilitySource: "claim_header",
+        },
+      },
+      dataTrust: { headerReconciliationFailed: false, signViolation: false },
+    }],
+    totals: { claimCount: 1, lineItemCount: 1, totalBilled: 388.5, totalDiscrepancy: 67.18 },
+    planEvidence: null, networkEvidence: null, communityEvidence: null, legalBasis: [], gaps: [],
+    dataTrust: { headerReconciliationFailed: false, signViolation: false },
+  };
+  const rec = resolveLetterRecovery(proEvidence, new Map([["li-pro", result]]), "insurer");
+  const byLine = rec.byLine.get("li-pro")!;
+  check("S6 engine sees the $67.18 recovery (copay 30, ded-exempt, network answered)", near(result.potentialRecovery, 67.18), result.potentialRecovery);
+  check("S6 line assertable (grounded copay + answered network + documented exemption)", byLine.assertable === true, result.assumptions);
+  check("S6 refund == $67.18 from PRORATED per-line paid (raw columns are null)", near(byLine.refund, 67.18), byLine);
+  check("S6 writeOff == $0 (the prorated paid covers the whole recovery)", near(byLine.writeOff, 0), byLine);
+  check("S6 letter dollar == panel recovery (the S309 retest gap closed)", near(byLine.refund + byLine.writeOff, result.potentialRecovery), byLine);
 }
 
 console.log(`\ncost-share-v2 letter-recovery: ${fails.length === 0 ? "ALL GREEN ✓" : `${fails.length} FAILED`}`);
