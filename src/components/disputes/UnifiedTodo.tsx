@@ -216,6 +216,10 @@ export interface UnifiedTodoProps {
   onDownload: () => void;
   onMarkSent: () => void;
   markingSent: boolean;
+  /** S311 (§A round-6) — the mark-sent failure, surfaced INLINE at the row the
+   *  user clicked (the page's toolbar toast renders far from this checklist;
+   *  the void-guard refusal looked like a silent bug). Null = no error. */
+  markSentError: string | null;
 
   // ── Unified case timeline (S286) ──────────────────────────────────────────
   /** Persisted check-offs from dispute.metadata.checklist. */
@@ -425,6 +429,7 @@ export function UnifiedTodo({
   onDownload,
   onMarkSent,
   markingSent,
+  markSentError,
   initialChecks,
   onPersistCheck,
   caseEvents = null,
@@ -1177,6 +1182,13 @@ export function UnifiedTodo({
                   </div>
                 )}
 
+                {/* S311 — the refusal, where the click happened (amber, not
+                    the toolbar's success-green toast two screens away). */}
+                {row.id === "marksent" && !sent && markSentError && (
+                  <div className="animate-fade-in mt-2 mb-2 rounded-[10px] border border-amber-200 bg-amber-50 px-3 py-2.5 text-[12.5px] font-medium text-amber-900">
+                    {markSentError}
+                  </div>
+                )}
                 {/* Inline confirm — Mark as sent */}
                 {row.id === "marksent" && asking && !sent && (
                   <div className="animate-fade-in mt-2 mb-2 rounded-[10px] border border-blue-200 bg-blue-50 px-3 py-2.5 text-[12.5px] text-blue-900">

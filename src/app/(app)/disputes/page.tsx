@@ -343,7 +343,10 @@ function DisputesContent() {
   const [providerAddressOpen, setProviderAddressOpen] = useState(false);
   // S74 — Mark-sent button state + transient toast.
   const [markingSent, setMarkingSent] = useState(false);
-  const [markSentToast, setMarkSentToast] = useState<string | null>(null);
+  // S311 (§A round-6) — {kind} mirrors redraftToast: the void-guard refusal
+  // was rendering in the SUCCESS-green toolbar toast, far from the checklist
+  // button that was clicked; errors are amber AND surface inline at the row.
+  const [markSentToast, setMarkSentToast] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   // S74.6 D5 §E.2 — outcome reporting modal state.
   const [outcomeModalOpen, setOutcomeModalOpen] = useState(false);
   // Zone-3 (S266) — advisory next rung surfaced after an outcome is reported.
@@ -1134,7 +1137,7 @@ function DisputesContent() {
         const data = await res.json().catch(() => ({}));
         throw new Error(data?.error || `mark-sent failed (${res.status})`);
       }
-      setMarkSentToast("Marked as sent. Follow-up reminders are scheduled.");
+      setMarkSentToast({ kind: "success", text: "Marked as sent. Follow-up reminders are scheduled." });
       void fetchDispute(disputeId);
     } catch (err) {
       setDisputeStatus(prevStatus);
@@ -1143,11 +1146,13 @@ function DisputesContent() {
       // the by-design refusal on a cancelled letter read as a bug. Machine
       // codes map to plain language here; everything else keeps its message.
       const msg = err instanceof Error ? err.message : "";
-      setMarkSentToast(
-        msg === "letter_cancelled"
-          ? "This letter was cancelled — it can't be marked as sent."
-          : msg || "Failed to mark as sent",
-      );
+      setMarkSentToast({
+        kind: "error",
+        text:
+          msg === "letter_cancelled"
+            ? "This letter was cancelled — it can't be marked as sent."
+            : msg || "Failed to mark as sent",
+      });
     } finally {
       setMarkingSent(false);
       setTimeout(() => setMarkSentToast(null), 6000);
@@ -1173,7 +1178,7 @@ function DisputesContent() {
       return true;
     } catch {
       setDisputeStatus(prevStatus);
-      setMarkSentToast("Couldn't undo — please try again.");
+      setMarkSentToast({ kind: "error", text: "Couldn't undo — please try again." });
       setTimeout(() => setMarkSentToast(null), 6000);
       return false;
     }
@@ -1932,8 +1937,14 @@ function DisputesContent() {
         </div>
       )}
       {markSentToast && (
-        <div className="mt-2 rounded-md bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
-          {markSentToast}
+        <div
+          className={`mt-2 rounded-md px-3 py-2 text-xs ${
+            markSentToast.kind === "error"
+              ? "bg-amber-50 text-amber-800"
+              : "bg-emerald-50 text-emerald-800"
+          }`}
+        >
+          {markSentToast.text}
         </div>
       )}
       {outcomeToast && (
@@ -2652,6 +2663,7 @@ function DisputesContent() {
       }
       onDownload={handleDownload}
       onMarkSent={handleMarkSent}
+      markSentError={markSentToast?.kind === "error" ? markSentToast.text : null}
       markingSent={markingSent}
       initialChecks={checklist}
       onPersistCheck={handlePersistCheck}
