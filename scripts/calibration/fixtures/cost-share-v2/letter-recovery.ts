@@ -380,6 +380,132 @@ console.log("\nS6 — single-adjudication bill: prorated per-line money reaches 
   check("S6 letter dollar == panel recovery (the S309 retest gap closed)", near(byLine.refund + byLine.writeOff, result.potentialRecovery), byLine);
 }
 
+// ── S312 (Andrew's §0 ruling, approved §1) — the provider letter argues from the BILL:
+//    the evidence header names the bill's arithmetic, no-ask lines render as PLAIN charge
+//    lines (their plan citations were insurer-side logic on a provider envelope), the
+//    disputed line LEADS with the bill's own charge and folds plan basis + Source + Plan
+//    language into ONE bullet (the "Discrepancy: $X" sentence — the insurer's reprocessing
+//    money — is gone), the sums block renders from the SAME fold the relief reads (F17
+//    row ⇒ Overpaid line ⇔ the refund ask), and the fold goes SINGULAR on one cited line.
+//    The insurer letter on IDENTICAL evidence keeps the plan-terms evidence byte-for-byte
+//    — the party-scope proof at fixture level. Mini fresh-claim (696a7c07) replica. ──
+console.log("\nS312 — the provider letter argues from the bill (evidence restructure, both directions)");
+{
+  const benefit: NonNullable<LineItemEvidence["planBenefit"]> = {
+    covered: true, copay: 30, coinsurance: null, deductibleApplies: false,
+    source: "sbc_parser", confidence: 1,
+    citation: "Plan SBC — Basic Imaging (X-ray / Ultrasound)",
+    sbcExcerpt: "Outpatient radiology center   $30/visit   50%", sbcPage: 3,
+    sbcExcerptVerified: true, citationSource: null,
+    sourcedFrom: "user_exact", sourcedFromYear: 2026,
+  };
+  const disputed: LineItemEvidence = {
+    ...costShareLine(), lineItemId: "li-us",
+    serviceName: "HC US UNI BREAST LIMITED", billingCode: { value: "76642", type: "CPT" },
+    billedAmount: 157.5, patientPaid: null, patientOwes: null,
+    planBenefit: benefit, expectedPatientCost: 30, actualPatientCost: 97.18,
+    discrepancyAmount: 67.18, dollarAtStake: 67.18,
+    auditFindings: [{
+      type: "overcharge", severity: "high", title: "Cost-share misapplied",
+      description: "Charged more than the plan's cost-sharing terms.",
+      estimatedOvercharge: 67.18, benchmarkAmount: null, benchmarkSource: null,
+    }],
+  };
+  // The no-ask sibling: a trusted planBenefit and nothing wrong — today's letters cite it
+  // anyway (the §0 defect); the bill view renders it as a plain charge line.
+  const mammo: LineItemEvidence = {
+    ...costShareLine(), lineItemId: "li-mam",
+    serviceName: "HC MAMMO DIAG BILAT INCL CAD", billingCode: { value: "77066", type: "CPT" },
+    billedAmount: 147, patientPaid: null, patientOwes: null, disputeType: "other",
+    planBenefit: {
+      ...benefit, copay: null, coinsurance: 0.2,
+      citation: "Plan SBC — Advanced Imaging (CT/PET/MRI)", sbcExcerpt: "20% coinsurance",
+    },
+    expectedPatientCost: null, actualPatientCost: null, discrepancyAmount: null,
+    dollarAtStake: 0, auditFindings: null,
+  };
+  const mk312 = (paid: number): DisputeEvidence => ({
+    claims: [{
+      claimId: "claim-312", dateOfService: "2023-08-02", providerName: "Sample Imaging Center",
+      totalBilled: 388.5, planYear: 2026, lineItemEvidence: [mammo, disputed],
+      effectiveTotals: {
+        patientPaid: paid,
+        insurancePaid: 0,
+        insuranceAdjusted: 148.79,
+        patientResponsibility: 239.71,
+        provenance: {
+          patientPaidSource: "claim_header",
+          insurancePaidSource: "claim_header",
+          insuranceAdjustedSource: "claim_header",
+          patientResponsibilitySource: "claim_header",
+        },
+      },
+      dataTrust: { headerReconciliationFailed: false, signViolation: false },
+    }],
+    totals: { claimCount: 1, lineItemCount: 2, totalBilled: 388.5, totalDiscrepancy: 67.18 },
+    planEvidence: null, networkEvidence: null, communityEvidence: null, legalBasis: [], gaps: [],
+    dataTrust: { headerReconciliationFailed: false, signViolation: false },
+  });
+  const renderFull = (type: "overcharge" | "insurance_appeal", ev: DisputeEvidence): string => {
+    const rec = resolveLetterRecovery(ev, new Map(), type === "insurance_appeal" ? "insurer" : "provider");
+    return LETTER_TEMPLATES[type].body({
+      patientName: "Jordan Sample", providerName: "Sample Imaging Center", serviceDate: "2023-08-02",
+      findings: [], bill: makeBill(), planContext: null, evidence: ev,
+      gateUnverified: true, v3DesignOn: true, disputeGroundsOn: true,
+      letterRecovery: rec.byLine, recovery: rec,
+    });
+  };
+
+  // Direction 1 — paid $249.71 (the $10 overpayment story).
+  const pro = renderFull("overcharge", mk312(249.71));
+  check("S312 provider header = the bill's arithmetic", pro.includes("THIS BILL'S CHARGES AND MY PAYMENTS"));
+  check("S312 provider: old evidence header gone", !pro.includes("SUPPORTING EVIDENCE FOR EACH CHARGE"));
+  check(
+    "S312 provider: the no-ask line is a PLAIN charge line (headline, then the next line)",
+    pro.includes("1. HC MAMMO DIAG BILAT INCL CAD (CPT 77066) — billed $147.00\n\n2. HC US UNI BREAST LIMITED (CPT 76642) — billed $157.50"),
+  );
+  check("S312 provider: the no-ask line's plan citation is gone", !pro.includes("specifies 20% coinsurance"));
+  check(
+    "S312 provider: the disputed line leads with the bill's own charge (§1 approved bytes)",
+    pro.includes(
+      `   - This bill charges me $97.18 for this service. My plan specifies a $30.00 copay for it, as determined by my insurer. Source: Plan SBC — Basic Imaging (X-ray / Ultrasound). Plan language: "Outpatient radiology center   $30/visit   50%"`,
+    ),
+  );
+  check("S312 provider: the Discrepancy sentence (insurer money) is gone", !pro.includes("Discrepancy:"));
+  check(
+    "S312 provider: sums block from the fold (charged / payments / overpaid)",
+    pro.includes("Charged to me on this bill: $239.71\nMy payments toward this bill: $249.71\nOverpaid: $10.00"),
+  );
+  check(
+    "S312 provider: the fold goes SINGULAR on one cited line",
+    pro.includes("for this service (cited above), as determined by my insurer"),
+  );
+  check("S312 provider: the F17 refund ask agrees with the sums", pro.includes("Refund the $10.00 difference"));
+
+  // Direction 2 — paid reset to $239.71: the overpayment dies; sums two-line; correction-only.
+  const proReset = renderFull("overcharge", mk312(239.71));
+  check(
+    "S312 provider (reset): sums two-line, Overpaid absent",
+    proReset.includes("Charged to me on this bill: $239.71\nMy payments toward this bill: $239.71") &&
+      !proReset.includes("Overpaid:"),
+  );
+  check("S312 provider (reset): correction-only (no refund ask)", !proReset.includes("Refund the $10.00 difference"));
+
+  // The party-scope proof — the insurer letter on IDENTICAL evidence keeps the plan-terms
+  // evidence: every line cited, the Expected/Actual/Discrepancy arithmetic intact, no sums.
+  const ins = renderFull("insurance_appeal", mk312(249.71));
+  check("S312 insurer: keeps its own evidence header", ins.includes("SUPPORTING DETAIL"));
+  check("S312 insurer: never the bill-view header", !ins.includes("THIS BILL'S CHARGES AND MY PAYMENTS"));
+  check("S312 insurer: no-ask line keeps its plan citation", ins.includes("specifies 20% coinsurance for this service"));
+  check(
+    "S312 insurer: the Expected/Actual/Discrepancy arithmetic intact",
+    ins.includes("   - Expected patient cost per plan: $30.00. Actual patient responsibility: $97.18. Discrepancy: $67.18."),
+  );
+  check("S312 insurer: no bill-view lead sentence", !ins.includes("This bill charges me"));
+  check("S312 insurer: no sums block", !ins.includes("Charged to me on this bill:"));
+  check("S312 insurer: the F17 overpayment never folds insurer-side", !ins.includes("Refund the $10.00"));
+}
+
 console.log(`\ncost-share-v2 letter-recovery: ${fails.length === 0 ? "ALL GREEN ✓" : `${fails.length} FAILED`}`);
 if (fails.length > 0) {
   for (const f of fails) console.log(`  ✗ ${f}`);
