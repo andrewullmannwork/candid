@@ -879,7 +879,12 @@ export async function GET(
       .table("claims")
       .select("id, date_of_service, status, total_billed, metadata")
       .eq("claim_group_id", claim.claim_group_id)
-      .neq("id", claimId);
+      .neq("id", claimId)
+      // S311 — mirror the list's own filter: soft-deleted (retired-duplicate)
+      // claims are not "other bills from this visit"; without this, both
+      // retired Ballard twins rendered as live related bills (ghost rows,
+      // one of them ghosting since 8/5).
+      .is("deleted_at", null);
     relatedClaims = (grouped || []).map((g) => {
       const meta = (g.metadata as Record<string, unknown>) || {};
       const provider = (meta.provider as Record<string, unknown> | undefined) || {};

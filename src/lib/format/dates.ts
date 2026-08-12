@@ -36,6 +36,18 @@ export function plainDate(iso: string): string {
   return new Date(iso).toLocaleDateString("en-US", { ...LONG, timeZone: "UTC" });
 }
 
+/** DATE-ONLY ISO ("2023-08-02") → "Aug 2, 2023" (short month). UTC-pinned:
+ *  never shifts. S311 — the compact-card variant of plainDate; the related-
+ *  bills cards rendered Apr 25 bills as "Apr 24" via a local-timezone parse. */
+export function plainDateShort(iso: string): string {
+  return new Date(iso).toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  });
+}
+
 /** An INSTANT (Date or ISO timestamp) → its EASTERN calendar date, long form. */
 export function easternDate(instant: Date | string): string {
   const d = typeof instant === "string" ? new Date(instant) : instant;
