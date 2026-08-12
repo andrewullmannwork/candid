@@ -39,6 +39,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { userScoped } from "@/lib/security/user-scoped";
+import { driftMachineryApplies } from "@/lib/disputes/evidence-fingerprint";
 
 interface CollectorAddressFieldsInput {
   addressLine1?: string;
@@ -141,11 +142,25 @@ export async function POST(
 
   const { data: dispute } = await userScoped(supabase, user.id)
     .table("dispute_outcomes")
-    .select("id, user_id, claim_id")
+    .select("id, user_id, claim_id, status, sent_at")
     .eq("id", disputeId)
     .single();
   if (!dispute || dispute.user_id !== user.id) {
     return NextResponse.json({ error: "Dispute not found" }, { status: 404 });
+  }
+
+  // S311 (tree §2.1) — a VOID letter is a read-only exhibit (S308's rule;
+  // this route was reachable from a cancelled letter's page and its write
+  // would have moved the frozen row's updated_at). Sent letters stay
+  // writable — their metadata is the knowledge layer follow-ups read.
+  // One rule, stated once: driftMachineryApplies === false ⇔ void.
+  if (
+    !driftMachineryApplies(
+      (dispute.status as string | null) ?? null,
+      dispute.sent_at ? new Date(dispute.sent_at as string) : null,
+    )
+  ) {
+    return NextResponse.json({ error: "letter_void" }, { status: 409 });
   }
   if (!dispute.claim_id) {
     return NextResponse.json({ error: "Dispute has no linked claim" }, { status: 400 });

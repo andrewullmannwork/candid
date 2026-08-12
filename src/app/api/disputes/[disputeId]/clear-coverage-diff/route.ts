@@ -12,6 +12,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { userScoped } from "@/lib/security/user-scoped";
+import { driftMachineryApplies } from "@/lib/disputes/evidence-fingerprint";
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -46,11 +47,25 @@ export async function POST(
 
   const { data: dispute, error: fetchErr } = await userScoped(supabase, user.id)
     .table("dispute_outcomes")
-    .select("id, metadata")
+    .select("id, metadata, status, sent_at")
     .eq("id", disputeId)
     .single();
   if (fetchErr || !dispute) {
     return NextResponse.json({ error: "Dispute not found" }, { status: 404 });
+  }
+
+  // S311 (tree §2.1) — a VOID letter is a read-only exhibit (S308's rule;
+  // this route was reachable from a cancelled letter's page and its write
+  // would have moved the frozen row's updated_at). Sent letters stay
+  // writable — their metadata is the knowledge layer follow-ups read.
+  // One rule, stated once: driftMachineryApplies === false ⇔ void.
+  if (
+    !driftMachineryApplies(
+      (dispute.status as string | null) ?? null,
+      dispute.sent_at ? new Date(dispute.sent_at as string) : null,
+    )
+  ) {
+    return NextResponse.json({ error: "letter_void" }, { status: 409 });
   }
 
   const nextMetadata = { ...((dispute.metadata as Record<string, unknown>) ?? {}) };

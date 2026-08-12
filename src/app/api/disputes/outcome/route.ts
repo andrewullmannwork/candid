@@ -162,6 +162,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Dispute not found" }, { status: 404 });
     }
 
+    // S311 (tree §2.1) — a CANCELLED letter is void by the user's own choice:
+    // marking it sent (or stamping any outcome) would resurrect a read-only
+    // exhibit into a live record — the corpse's page rendered a working
+    // "Mark as sent" while redraft had its 409 since S308; this writer was
+    // the missed sibling. Deliberately narrower than driftMachineryApplies:
+    // a RESOLVED-without-send row must stay outcome-correctable (lost →
+    // settled, amount fixes), so only the cancelled status blocks here.
+    if (((existing.status as string | null) ?? "") === "cancelled") {
+      return NextResponse.json({ error: "letter_cancelled" }, { status: 409 });
+    }
+
     // ── S302 SEND GATE ────────────────────────────────────────────────────────
     // Andrew: "make sure the letter can't be sent or used until the required
     // fields are added." The screen locks the buttons; this is the backstop on
