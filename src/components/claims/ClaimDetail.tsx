@@ -601,11 +601,15 @@ export function ClaimDetail({
   // S310 (F14a) — the claim-header provider-name editor (pencil beside the
   // title). Writes the claim-scoped provider-contact route — the same single
   // path the letter page uses — then refetches; every surface re-resolves.
+  // Saves are OPTIMISTIC (Andrew): the editor closes in the click's render and
+  // the page shows the value immediately via the overrides below; a failed
+  // write snaps back — override cleared, editor reopened with the error.
   const [providerNameEdit, setProviderNameEdit] = useState<{
     value: string;
-    saving: boolean;
     error: boolean;
   } | null>(null);
+  const [providerNameOptimistic, setProviderNameOptimistic] = useState<string | null>(null);
+  const [insurerNameOptimistic, setInsurerNameOptimistic] = useState<string | null>(null);
   // S293 (#1) — the ACA question block's "Not sure" dismissal, lifted from the
   // banner so the ONE pending set (pendingAssumptionFields → the step badge)
   // sees it: a dismissed block must stop counting, or the badge goes amber over
@@ -1331,7 +1335,12 @@ export function ClaimDetail({
   }
 
   const claim = data.claim as Record<string, unknown>;
-  const providerName = ((claim.metadata as Record<string, unknown>)?.provider as Record<string, unknown>)?.name as string || "Unknown Provider";
+  // S310 — the optimistic override applies at this ONE derivation, so every
+  // consumer on the page (title, offers, footer) shows a just-saved name in
+  // the click's render; server truth replaces it on the refetch.
+  const providerName =
+    providerNameOptimistic ??
+    (((claim.metadata as Record<string, unknown>)?.provider as Record<string, unknown>)?.name as string || "Unknown Provider");
 
   // S292 — services-verification state. `svcConfirmed` is the persisted truth;
   // the in-flight target wins only until the write settles. Derived (not stored)
@@ -1632,8 +1641,10 @@ export function ClaimDetail({
   })();
   const pinnedPlanId = (claim.insurance_plan_id as string | null) ?? null;
   const pinnedPlan = planCandidates?.find((p) => p.insurancePlanId === pinnedPlanId) ?? null;
+  // S310 — insurer optimistic override applied at the label derivation too.
+  const pinnedInsurerName = insurerNameOptimistic ?? pinnedPlan?.insurerName ?? null;
   const planIdentityLabel = pinnedPlan
-    ? [pinnedPlan.planName, pinnedPlan.insurerName].filter(Boolean).join(" — ") || null
+    ? [pinnedPlan.planName, pinnedInsurerName].filter(Boolean).join(" — ") || null
     : null;
   // S291 — the pinned plan's own year vs the year the care happened. Both are
   // facts off real documents; disagreeing means the bill is being checked
@@ -1647,28 +1658,32 @@ export function ClaimDetail({
 
   // S310 (F14a) — the two name-correction writes. Plain consts (no hooks):
   // they close over pinnedPlan above and are handed to the header editor and
-  // the banner's pinned-plan row.
-  const saveProviderName = async (): Promise<void> => {
-    if (!providerNameEdit || providerNameEdit.saving) return;
-    const name = providerNameEdit.value.trim();
-    if (!name) return;
-    setProviderNameEdit((p) => (p ? { ...p, saving: true, error: false } : p));
-    try {
-      const token = await getAuthToken();
-      const res = await fetch(`/api/claims/${claimId}/provider-contact`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ name }),
-      });
-      if (!res.ok) throw new Error(String(res.status));
-      setProviderNameEdit(null);
-      await refetchClaim();
-    } catch {
-      setProviderNameEdit((p) => (p ? { ...p, saving: false, error: true } : p));
-    }
+  // the banner's pinned-plan row. Both are OPTIMISTIC with snapback (Andrew):
+  // the override shows the value in the click's render; the slow part (the
+  // refetch that carries server truth) happens behind it; a failed write
+  // clears the override and resurfaces the editor with the error.
+  const saveProviderName = (name: string): void => {
+    setProviderNameOptimistic(name);
+    void (async () => {
+      try {
+        const token = await getAuthToken();
+        const res = await fetch(`/api/claims/${claimId}/provider-contact`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ name }),
+        });
+        if (!res.ok) throw new Error(String(res.status));
+        await refetchClaim(); // server truth lands first…
+        setProviderNameOptimistic(null); // …then the override retires (no flicker)
+      } catch {
+        setProviderNameOptimistic(null);
+        setProviderNameEdit({ value: name, error: true });
+      }
+    })();
   };
   const saveInsurerName = async (name: string): Promise<boolean> => {
     if (!pinnedPlan?.insurancePlanId) return false;
+    setInsurerNameOptimistic(name);
     try {
       const token = await getAuthToken();
       const res = await fetch(`/api/plan/insurer-name`, {
@@ -1676,10 +1691,12 @@ export function ClaimDetail({
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ planId: pinnedPlan.insurancePlanId, insurerName: name }),
       });
-      if (!res.ok) return false;
+      if (!res.ok) throw new Error(String(res.status));
       await refetchClaim();
+      setInsurerNameOptimistic(null);
       return true;
     } catch {
+      setInsurerNameOptimistic(null);
       return false;
     }
   };
@@ -2300,11 +2317,17 @@ export function ClaimDetail({
               />
               <button
                 type="button"
-                disabled={providerNameEdit.saving || providerNameEdit.value.trim().length === 0}
-                onClick={() => void saveProviderName()}
+                disabled={providerNameEdit.value.trim().length === 0}
+                onClick={() => {
+                  const v = providerNameEdit.value.trim();
+                  if (!v) return;
+                  // Optimistic: close now; saveProviderName snaps back on failure.
+                  setProviderNameEdit(null);
+                  saveProviderName(v);
+                }}
                 className="rounded-lg bg-blue-600 px-3 py-1.5 text-[13px] font-semibold text-white transition-colors hover:bg-blue-700 disabled:opacity-60"
               >
-                {providerNameEdit.saving ? "Saving…" : "Save"}
+                Save
               </button>
               <button
                 type="button"
@@ -2329,7 +2352,6 @@ export function ClaimDetail({
                 onClick={() =>
                   setProviderNameEdit({
                     value: providerName === "Unknown Provider" ? "" : providerName,
-                    saving: false,
                     error: false,
                   })
                 }
@@ -2654,7 +2676,7 @@ export function ClaimDetail({
                         planYearMismatch,
                         onChange: () => setRepinOpen(true),
                         // S310 (F14a) — insurer-name fix on the pinned-plan row.
-                        insurerName: pinnedPlan?.insurerName ?? null,
+                        insurerName: pinnedInsurerName,
                         onSaveInsurerName: saveInsurerName,
                       }
                     : null
@@ -2841,7 +2863,7 @@ export function ClaimDetail({
                         planYearMismatch,
                         onChange: () => setRepinOpen(true),
                         // S310 (F14a) — insurer-name fix on the pinned-plan row.
-                        insurerName: pinnedPlan?.insurerName ?? null,
+                        insurerName: pinnedInsurerName,
                         onSaveInsurerName: saveInsurerName,
                       }
                     : null

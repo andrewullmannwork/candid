@@ -531,10 +531,12 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
   const [detailsWrongMode, setDetailsWrongMode] = useState(false);
   // S310 (F14a) — the open name editor in wrong-mode (provider / insurer),
   // mirroring the per-service Edit rows: value + Edit → input + Save/Cancel.
+  // Save is OPTIMISTIC (Andrew): the editor closes in the click's render (the
+  // page's optimistic override shows the value at once); a rejected save
+  // reopens it with the attempted value + error — the snapback.
   const [nameEdit, setNameEdit] = useState<{
     field: "provider" | "insurer";
     value: string;
-    saving: boolean;
     error: boolean;
   } | null>(null);
   // S294 — the shared three-choice patient-identity form, expanded below its row.
@@ -761,21 +763,19 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
               />
               <button
                 type="button"
-                disabled={nameEdit.saving || nameEdit.value.trim().length === 0}
+                disabled={nameEdit.value.trim().length === 0}
                 onClick={() => {
-                  void (async () => {
-                    setNameEdit((p) => (p ? { ...p, saving: true, error: false } : p));
-                    try {
-                      await onFix(nameEdit.value.trim());
-                      setNameEdit(null);
-                    } catch {
-                      setNameEdit((p) => (p ? { ...p, saving: false, error: true } : p));
-                    }
-                  })();
+                  const v = nameEdit.value.trim();
+                  if (!v) return;
+                  // Optimistic: close now; snap back open on rejection.
+                  setNameEdit(null);
+                  void Promise.resolve(onFix(v)).catch(() => {
+                    setNameEdit({ field, value: v, error: true });
+                  });
                 }}
                 className="rounded-lg bg-blue-600 px-3 py-1.5 text-[13px] font-semibold text-white transition-colors hover:bg-blue-700 disabled:opacity-60"
               >
-                {nameEdit.saving ? "Saving…" : "Save"}
+                Save
               </button>
               <button
                 type="button"
@@ -791,7 +791,7 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
           ) : (
             <button
               type="button"
-              onClick={() => setNameEdit({ field, value: value ?? "", saving: false, error: false })}
+              onClick={() => setNameEdit({ field, value: value ?? "", error: false })}
               className="text-[13px] font-medium text-blue-600 hover:text-blue-700"
             >
               Edit

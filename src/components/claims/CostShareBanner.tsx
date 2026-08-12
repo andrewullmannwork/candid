@@ -525,10 +525,12 @@ export function CostShareBanner({
   // S293 (#1) — controlled when the parent supplies the pair (so the badge's
   // pending set sees the dismissal); internal otherwise.
   const [acaDismissedLocal, setAcaDismissedLocal] = useState(false);
-  // S310 (F14a) — the pinned-plan row's inline insurer-name editor.
+  // S310 (F14a) — the pinned-plan row's inline insurer-name editor. Save is
+  // OPTIMISTIC (Andrew): the editor closes in the click's render (ClaimDetail
+  // shows the value instantly via its optimistic override); a failed write
+  // reopens it with the attempted value + error — the snapback.
   const [insurerNameEdit, setInsurerNameEdit] = useState<{
     value: string;
-    saving: boolean;
     error: boolean;
   } | null>(null);
   const acaDismissed = acaDismissedProp ?? acaDismissedLocal;
@@ -979,19 +981,19 @@ export function CostShareBanner({
                               />
                               <button
                                 type="button"
-                                disabled={insurerNameEdit.saving || insurerNameEdit.value.trim().length === 0}
+                                disabled={insurerNameEdit.value.trim().length === 0}
                                 onClick={() => {
-                                  void (async () => {
-                                    if (!insurerNameEdit || insurerNameEdit.saving) return;
-                                    setInsurerNameEdit((p) => (p ? { ...p, saving: true, error: false } : p));
-                                    const ok = await planIdentity.onSaveInsurerName!(insurerNameEdit.value.trim());
-                                    if (ok) setInsurerNameEdit(null);
-                                    else setInsurerNameEdit((p) => (p ? { ...p, saving: false, error: true } : p));
-                                  })();
+                                  const v = insurerNameEdit.value.trim();
+                                  if (!v) return;
+                                  // Optimistic: close now; snap back open on failure.
+                                  setInsurerNameEdit(null);
+                                  void planIdentity.onSaveInsurerName!(v).then((ok) => {
+                                    if (!ok) setInsurerNameEdit({ value: v, error: true });
+                                  });
                                 }}
                                 className="rounded-lg bg-blue-600 px-3 py-1.5 text-[13px] font-semibold text-white transition-colors hover:bg-blue-700 disabled:opacity-60"
                               >
-                                {insurerNameEdit.saving ? "Saving…" : "Save"}
+                                Save
                               </button>
                               <button
                                 type="button"
@@ -1012,7 +1014,6 @@ export function CostShareBanner({
                                 onClick={() =>
                                   setInsurerNameEdit({
                                     value: planIdentity.insurerName ?? "",
-                                    saving: false,
                                     error: false,
                                   })
                                 }

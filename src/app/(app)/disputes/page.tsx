@@ -229,6 +229,10 @@ function DisputesContent() {
     () => !!searchParams.get("dispute"),
   );
   const [planContext, setPlanContext] = useState<PlanContext | null>(null);
+  // S310 (F14a, optimistic) — a just-saved name shows in the claim-details
+  // facts immediately; server truth replaces it after the refetch. Cleared on
+  // success (post-refetch, so no flicker) and on failure (the snapback).
+  const [nameOptimistic, setNameOptimistic] = useState<{ provider?: string; insurer?: string }>({});
   const [evidence, setEvidence] = useState<DisputeEvidence | null>(null);
   const [nameMismatch, setNameMismatch] = useState<{ billName: string; profileName: string } | null>(null);
   // Phase 4 Task 4-E: server-authoritative flag state for cite-grade gating on
@@ -1553,17 +1557,40 @@ function DisputesContent() {
     });
     if (!res.ok) throw new Error(`save failed (${res.status})`);
   };
+  const clearNameOptimistic = (field: "provider" | "insurer") =>
+    setNameOptimistic((p) => {
+      const next = { ...p };
+      delete next[field];
+      return next;
+    });
   const fixProviderName = async (name: string): Promise<void> => {
     const claimId = letter?.auditReportId;
     if (!claimId) throw new Error("no claim");
-    await authedNamePost(`/api/claims/${claimId}/provider-contact`, { name });
-    await refetchAfterChange();
+    // Optimistic — the facts line shows the name in this render; the panel's
+    // editor has already closed. Failure clears the override and rethrows so
+    // the row snaps back open with the error.
+    setNameOptimistic((p) => ({ ...p, provider: name }));
+    try {
+      await authedNamePost(`/api/claims/${claimId}/provider-contact`, { name });
+      await refetchAfterChange();
+      clearNameOptimistic("provider");
+    } catch (err) {
+      clearNameOptimistic("provider");
+      throw err;
+    }
   };
   const fixInsurerName = async (name: string): Promise<void> => {
     const planId = planContext?.plan?.id;
     if (!planId) throw new Error("no plan");
-    await authedNamePost(`/api/plan/insurer-name`, { planId, insurerName: name });
-    await refetchAfterChange();
+    setNameOptimistic((p) => ({ ...p, insurer: name }));
+    try {
+      await authedNamePost(`/api/plan/insurer-name`, { planId, insurerName: name });
+      await refetchAfterChange();
+      clearNameOptimistic("insurer");
+    } catch (err) {
+      clearNameOptimistic("insurer");
+      throw err;
+    }
   };
   const vouchNames = (): void => {
     // Fire-and-forget flywheel stamps; never blocks or fails the confirm.
@@ -2196,13 +2223,20 @@ function DisputesContent() {
                 (patientIdentityResolved
                   ? letterPatientNameSrv ?? accountName
                   : (nameMismatch?.billName ?? nameMismatch?.profileName ?? accountName)) || null,
-              providerName: evidence?.claims?.[0]?.providerName ?? null,
+              providerName: nameOptimistic.provider ?? evidence?.claims?.[0]?.providerName ?? null,
               serviceDate: evidence?.claims?.[0]?.dateOfService ?? null,
               // S310 — only insurer-recipient letters print the insurer, so
               // only they carry the fact (and its fix row). Same coalesce the
-              // letter's recipient block resolves through.
+              // letter's recipient block resolves through; optimistic override
+              // first so a just-saved fix shows at once.
               ...(printsInsurerName
-                ? { insurerName: planContext?.insurer?.name ?? planContext?.plan?.insurerName ?? null }
+                ? {
+                    insurerName:
+                      nameOptimistic.insurer ??
+                      planContext?.insurer?.name ??
+                      planContext?.plan?.insurerName ??
+                      null,
+                  }
                 : {}),
             }
           : null
