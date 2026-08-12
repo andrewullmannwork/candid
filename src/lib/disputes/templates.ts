@@ -4,7 +4,7 @@
 import type { AuditFinding, ParsedBill, DisputeLetterType } from "../billing/types";
 import type { PlanContext, ProviderContact, AppealsAddress } from "./plan-context";
 import type { DisputeEvidence, LineItemEvidence } from "./evidence-resolver";
-import { groundFindingsForEvidence, type GroundFinding, type LineRecovery, type LetterRecoveryResult } from "./dispute-grounds";
+import { groundFindingsForEvidence, OVERPAYMENT_BENCHMARK_SOURCE, type GroundFinding, type LineRecovery, type LetterRecoveryResult } from "./dispute-grounds";
 import { DISPUTE_GROUND_CATALOG, type RequestBucket } from "./dispute-ground-catalog";
 
 /**
@@ -926,11 +926,17 @@ export function buildRequestSection(params: {
     // asserting otherwise hands the provider a one-line rebuttal.
     const live = claimRecoveries.filter((c) => !clampBound.has(c.claimId));
     const IDENTITY_SOURCE = "claim_header_identity";
+    // S309 F17 — a THIRD basis: the user PAID above what the bill charged
+    // (the derived overpayment tier). Exactly the extension the S304 composed
+    // design anticipated: a new route adds ONE statement; the remedy line is
+    // reused as-is (refund > 0 → "Refund the … difference or provide a
+    // corrected statement …").
     const byBasis = [
-      { isIdentity: true, group: live.filter((c) => c.benchmarkSource === IDENTITY_SOURCE) },
-      { isIdentity: false, group: live.filter((c) => c.benchmarkSource !== IDENTITY_SOURCE) },
+      { kind: "identity" as const, group: live.filter((c) => c.benchmarkSource === IDENTITY_SOURCE) },
+      { kind: "overpayment" as const, group: live.filter((c) => c.benchmarkSource === OVERPAYMENT_BENCHMARK_SOURCE) },
+      { kind: "other" as const, group: live.filter((c) => c.benchmarkSource !== IDENTITY_SOURCE && c.benchmarkSource !== OVERPAYMENT_BENCHMARK_SOURCE) },
     ];
-    for (const { isIdentity, group } of byBasis) {
+    for (const { kind, group } of byBasis) {
       if (group.length === 0) continue;
       const refund = group.reduce((sum, c) => sum + c.refund, 0);
       const writeOff = group.reduce((sum, c) => sum + c.writeOff, 0);
@@ -942,9 +948,11 @@ export function buildRequestSection(params: {
       // later cannot go silently unmentioned.
       const gap = group.find((c) => c.arithmeticGap)?.arithmeticGap;
       const statement =
-        isIdentity && gap
+        kind === "identity" && gap
           ? `This bill's charges, adjustments and payments do not add up to the amount I was billed: the total charge of ${formatCurrency(gap.billed)} less ${gap.reductions.join(" and ")} leaves ${formatCurrency(gap.leftOver)}, but I was billed ${formatCurrency(gap.billedToPatient)}.`
-          : `The bill total exceeds the sum of the listed charges.`;
+          : kind === "overpayment"
+            ? `My payments on this bill exceed the amount it charged me.`
+            : `The bill total exceeds the sum of the listed charges.`;
 
       // Remedy — refund when the money is already out of pocket, forgiveness
       // when it is still charged. Mixed claims lead with the refund.

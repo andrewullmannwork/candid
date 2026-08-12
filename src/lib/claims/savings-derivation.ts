@@ -118,6 +118,10 @@ export interface BillCardModel {
     divider: string;
     yours: number;
     refund: number;
+    /** S309 F17 — the slice paid ABOVE what the bill charged: the PROVIDER's
+     *  refund (its own letter track), never the insurer-claimable refund.
+     *  0 when the user paid at or under the charge. */
+    overpaid: number;
     forgivenessZero: boolean;
     equation: string;
   } | null;
@@ -244,6 +248,15 @@ export function buildSavingsDerivation(args: {
   balanceTotal: number;
   refundComponent: number;
   forgivenessComponent: number;
+  /**
+   * S309 F17 — what the bill actually CHARGED the patient (effective patient
+   * responsibility, override-independent). Splits the refund into the
+   * insurer-claimable slice (capped at charge − share) and the paid-above-
+   * charge slice the PROVIDER owes back. Optional with the honest fallback
+   * paid + balance — the charge identity for every non-overpaid bill —
+   * so untouched callers are byte-identical.
+   */
+  chargedTotal?: number;
 }): SavingsDerivation {
   const charged = args.lines.filter((l) => l.billed > 0);
   const priced = charged.filter((l) => l.rateKnown);
@@ -295,20 +308,34 @@ export function buildSavingsDerivation(args: {
   // all (there is no recovery story, and the card keeps today's headline).
   const recovery = args.refundComponent + args.forgivenessComponent;
   const recoveryHeadline = recovery >= 1;
+  // S309 F17 (Andrew's design) — paid-above-charge is the PROVIDER's refund,
+  // not the insurer-claimable one: split the refund at the charge line so the
+  // panel's refund row equals what the insurer letter claims and the overpaid
+  // row equals what the provider letter claims — three surfaces, two
+  // derivations, agreement by construction. chargedTotal falls back to
+  // paid + balance (the charge identity when nobody overpaid) → byte-identical
+  // for untouched callers.
+  const chargedTotal = args.chargedTotal ?? round2(args.paidTotal + args.balanceTotal);
+  const overpaidToProvider = round2(Math.max(0, args.paidTotal - chargedTotal));
+  const refundCapped = round2(Math.max(0, args.refundComponent - overpaidToProvider));
   const paidSplitOn = recoveryHeadline && args.paidTotal >= 1 && args.refundComponent >= 1;
   const balanceSplitOn = recoveryHeadline && args.balanceTotal >= 1 && args.forgivenessComponent >= 1;
   const yours = round2(args.paidTotal - args.refundComponent);
   const legit = round2(args.balanceTotal - args.forgivenessComponent);
   const bill: BillCardModel = {
     recoveryHeadline,
-    chargedToYou: round2(args.paidTotal + args.balanceTotal),
+    chargedToYou: chargedTotal,
     paidSplit: paidSplitOn
       ? {
           divider: `Where your $${fmtMoney(args.paidTotal)} went`,
           yours,
-          refund: args.refundComponent,
+          refund: refundCapped,
+          overpaid: overpaidToProvider,
           forgivenessZero: !balanceSplitOn,
-          equation: `$${fmtMoney(yours)} + $${fmtMoney(args.refundComponent)} = the $${fmtMoney(args.paidTotal)} you paid ✓`,
+          equation:
+            overpaidToProvider >= 1
+              ? `$${fmtMoney(yours)} + $${fmtMoney(refundCapped)} + $${fmtMoney(overpaidToProvider)} = the $${fmtMoney(args.paidTotal)} you paid ✓`
+              : `$${fmtMoney(yours)} + $${fmtMoney(refundCapped)} = the $${fmtMoney(args.paidTotal)} you paid ✓`,
         }
       : null,
     balanceSplit: balanceSplitOn
@@ -339,7 +366,9 @@ export function buildSavingsDerivation(args: {
     spreadSentence: args.prorated
       ? `Your bill reports payments only as one total, so we split $${fmtMoney(spreadTotal)} across the charged lines by their share of the bill.`
       : null,
-    refundSub: args.refundComponent >= 1 ? `+$${fmtMoney(args.refundComponent)} refund to request` : null,
+    // S309 F17 — the hero sub names the INSURER-claimable slice (the letter's
+    // number); the overpaid slice carries its own panel row + provider letter.
+    refundSub: refundCapped >= 1 ? `+$${fmtMoney(refundCapped)} refund to request` : null,
     forgivenessSub:
       args.forgivenessComponent >= 1
         ? `$${fmtMoney(args.forgivenessComponent)} to remove from your balance`

@@ -99,7 +99,11 @@ function effTotals(
     patientPaid,
     insurancePaid: 0,
     insuranceAdjusted: 0,
-    patientResponsibility: owes + unalloc,
+    // S309 F17 — the DEFAULT models a faithful settled bill: what was paid was
+    // what was charged, so responsibility ≥ paid and the derived OVERPAYMENT
+    // tier (paid > responsibility) never phantom-fires on cases about other
+    // things. Overpayment cases override effectiveTotals explicitly.
+    patientResponsibility: Math.max(owes + unalloc, patientPaid),
     // S309 F12 — the DEFAULT models PROD's resolver on faithful per-line data:
     // present + consistent lines resolve as per_line_sum (cite-grade), so the
     // shared per-line money basis keeps each line's own values. Cases that
@@ -433,7 +437,10 @@ const notRenderedLine = makeLine({
   const mkClaim = (id: string, line: LineItemEvidence, paidCap: number): ClaimEvidence => ({
     claimId: id, dateOfService: "2024-03-15", providerName: "P", totalBilled: line.billedAmount, planYear: 2024,
     lineItemEvidence: [line],
-    effectiveTotals: effTotals([line], [], { patientPaid: paidCap }),
+    // S309 F17 — paidCap here means CLAMP HEADROOM, not an overpaid bill:
+    // responsibility = paid (a settled header) so the derived overpayment
+    // tier stays out of a case that is about per-claim clamp isolation.
+    effectiveTotals: effTotals([line], [], { patientPaid: paidCap, patientResponsibility: paidCap }),
     dataTrust: { headerReconciliationFailed: false, signViolation: false },
     claimFindings: [],
   });
@@ -622,6 +629,24 @@ function letterFor(ev: DisputeEvidence, recipient: "insurer" | "provider"): stri
   check("B2 both attested → full not-rendered recovery 180 (set not folded on top)", near(rec.total, 180), rec.total);
   check("B2 attestationSubsumed flag set", rec.setRecoveries[0]?.attestationSubsumed === true, rec.setRecoveries[0]);
   check("B2 no removed copies (both rescued)", rec.setRecoveries[0]?.removedLineItemIds.length === 0, rec.setRecoveries[0]?.removedLineItemIds);
+}
+
+// ── F17 (S309, Andrew's design) — the OVERPAYMENT tier: the user paid above what the bill
+//    charged (effectiveTotals, via the Z1.1d paid overlay). Claim-scope, provider-obligated,
+//    pure refund; its own byBasis statement + the EXISTING refund-the-difference remedy. The
+//    insurer letter never folds or mentions it. ──
+console.log("\nF17 — overpayment tier: provider letter asks the refund; insurer letter silent");
+{
+  const line = makeLine({ lineItemId: "f17-l", billedAmount: 300, patientPaid: 300, patientOwes: 0 });
+  const ev = makeEvidence({ lines: [line], effectiveTotals: { patientPaid: 360, patientResponsibility: 300 } });
+  const prov = resolveLetterRecovery(ev, EMPTY_BASIS, "provider");
+  const ins = resolveLetterRecovery(ev, EMPTY_BASIS, "insurer");
+  check("F17 the overpayment tier derives ($60 claim recovery, pure refund)", prov.claimRecoveries.some((c) => c.type === "provider_overpayment" && near(c.refund, 60) && near(c.writeOff, 0)), prov.claimRecoveries);
+  check("F17 provider totals fold it; insurer totals exclude it", near(prov.total - ins.total, 60), { prov: prov.total, ins: ins.total });
+  const provLetter = letterFor(ev, "provider");
+  check("F17 provider letter: the overpayment statement + the existing refund-the-difference remedy", /My payments on this bill exceed the amount it charged me\. Refund the \$60\.00 difference or provide a corrected statement/.test(provLetter), provLetter);
+  const insLetter = letterFor(ev, "insurer");
+  check("F17 insurer letter carries NO overpayment ask", !/exceed the amount it charged me/.test(insLetter));
 }
 
 console.log(`\nmulti-charge-golden fixtures: ${pass} passed, ${fails.length} failed`);

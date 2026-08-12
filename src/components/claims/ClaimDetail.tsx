@@ -1497,8 +1497,17 @@ export function ClaimDetail({
       balanceTotal: data.recovery?.stillOutstanding ?? 0,
       refundComponent: data.recovery?.refundComponent ?? 0,
       forgivenessComponent: data.recovery?.forgivenessComponent ?? 0,
+      // S309 F17 — the bill's actual charge (effective patient responsibility,
+      // override-independent) so the derivation can split the refund at the
+      // charge line: insurer-claimable vs paid-above-charge (the provider's).
+      chargedTotal: data.effectiveTotals?.patientResponsibility,
     });
   })();
+
+  // S309 F17 — the paid-above-charge slice, shared by the provider letter
+  // track, its rail-offer reason, and the panel (ONE derivation — the same
+  // model field the split renders).
+  const overpaidToProvider = savingsDerivation?.bill.paidSplit?.overpaid ?? 0;
 
   // Cost-Share v2 (W2) — flatten per-line assumptions with the line context the
   // §5 banner chips + W3 override calls need (lineId + service label/slug). Over
@@ -1844,7 +1853,13 @@ export function ClaimDetail({
   const insurerUnderpaid = primaryLineItems.some(
     (li) => (li.insurerDiscrepancy?.delta ?? 0) > 0,
   );
-  const letterTracks = deriveLetterTracks({ findingTypes, insurerUnderpaid });
+  const letterTracks = deriveLetterTracks({
+    findingTypes,
+    insurerUnderpaid,
+    // S309 F17 — paid above the charge raises the PROVIDER track the same way
+    // insurerUnderpaid raises the insurer one (engine math, not a finding).
+    providerOverpaid: overpaidToProvider >= 1,
+  });
   // Which parties already have a letter. Collector letters count as the
   // provider track (the same fold `guidedTrack` has always applied): a
   // debt-validation letter means that track is already in flight, and offering
@@ -1987,7 +2002,14 @@ export function ClaimDetail({
                     title: null,
                     detail: `Your plan puts your share around $${fmtMoney(billTotals.shouldOwe)}, but this bill charges you $${fmtMoney(billTotals.shouldOwe + billTotals.potentialRecovery)} — the appeal asks for the $${fmtMoney(billTotals.potentialRecovery)} difference.`,
                   }
-                : null;
+                : // S309 F17 — the overpayment-raised provider track speaks the
+                  // engine's reason too (the F1-B pattern, live numbers).
+                  !reason && t.party === "provider" && overpaidToProvider >= 1
+                  ? {
+                      title: null,
+                      detail: `You paid $${fmtMoney(overpaidToProvider)} more than this bill charged — this letter asks the provider to refund it.`,
+                    }
+                  : null;
             return {
               party: t.party,
               letterType: t.letterType,
@@ -3937,6 +3959,19 @@ export function ClaimDetail({
                         </span>
                         <strong className="font-bold tabular-nums text-emerald-700">+${fmtMoney(savingsDerivation.bill.paidSplit.refund)}</strong>
                       </div>
+                      {/* S309 F17 (Andrew-approved copy) — the paid-above-charge
+                          slice: the PROVIDER's refund, its own letter track. */}
+                      {savingsDerivation.bill.paidSplit.overpaid >= 1 && (
+                        <div className="flex justify-between gap-3 text-xs">
+                          <span className="font-semibold text-emerald-700">
+                            Overpaid to provider
+                            <span className="mt-0.5 block max-w-[220px] text-[11px] font-normal leading-snug text-gray-500">
+                              Money you paid above what this bill charged — the provider owes it back.
+                            </span>
+                          </span>
+                          <strong className="font-bold tabular-nums text-emerald-700">+${fmtMoney(savingsDerivation.bill.paidSplit.overpaid)}</strong>
+                        </div>
+                      )}
                       {savingsDerivation.bill.paidSplit.forgivenessZero && (
                         <div className="flex justify-between gap-3 text-xs">
                           <span className="font-semibold text-emerald-700">

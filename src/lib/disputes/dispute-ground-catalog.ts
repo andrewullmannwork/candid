@@ -361,6 +361,33 @@ export const DISPUTE_GROUND_CATALOG: Record<DisputeGroundType, DisputeGroundSpec
       { element: "published_rate_ceiling", party: "provider", authority: "the provider's own published standard charge (federal Hospital Price Transparency requirements)", condition: "published_rate_exceeded", voiceIfMet: "raise", voiceIfNot: "omit" },
     ],
   },
+  // S309 F17 (Andrew's design) — the user PAID above what the bill charged.
+  // CLAIM scope (no line, no plan-term ground), derived from effectiveTotals
+  // (the Z1.1d paid overlay), never from a stored finding — `fromFindings` is
+  // empty by construction. The provider is the obligated party: the money is
+  // out of pocket against the provider's own statement, so the ask is a pure
+  // refund ("refund the difference or provide a corrected statement" —
+  // templates.ts byBasis "user_paid_overpayment"). No OBLIGATION_PROSE entry,
+  // same as unallocated_balance: the routing fact lives here; the composed
+  // ask lives in templates.
+  provider_overpayment: {
+    order: 10,
+    scoringClass: "other",
+    autoLetterType: "overcharge",
+    requestBucket: null,
+    fromFindings: [],
+    scope: "claim",
+    obligationElements: [
+      {
+        element: "overpayment_refund",
+        party: "provider",
+        authority: "the provider's own billing and payment records",
+        condition: null,
+        voiceIfMet: "demand",
+        voiceIfNot: "omit",
+      },
+    ],
+  },
 };
 
 /**

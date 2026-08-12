@@ -39,6 +39,9 @@ const ORIGINAL_TYPE_ORDER: DisputeGroundType[] = [
   "unallocated_balance",
   "coding_peer",
   "chargemaster",
+  // S309 F17 — the derived overpayment tier appends after the original ten
+  // (order 10): additive, no reordering of the pre-refactor sequence.
+  "provider_overpayment",
 ];
 // disputes/index.ts FINDING_TO_LETTER (now projected via deriveFindingToLetter()).
 const ORIGINAL_FINDING_TO_LETTER: Partial<Record<FindingType, DisputeLetterType>> = {
@@ -78,6 +81,7 @@ const EXPECTED_BUCKET: Record<DisputeGroundType, string | null> = {
   unallocated_balance: null,
   coding_peer: "coding",
   chargemaster: null, // finding-keyed data-aware ask (not a bucket); see templates.ts
+  provider_overpayment: null, // S309 F17 — claim-tier composed ask (byBasis "user_paid_overpayment"), not a bucket
 };
 // plan §3 — the recovery aggregation scope per ground.
 const EXPECTED_SCOPE: Record<DisputeGroundType, string> = {
@@ -91,6 +95,7 @@ const EXPECTED_SCOPE: Record<DisputeGroundType, string> = {
   unallocated_balance: "claim",
   coding_peer: "line_set",
   chargemaster: "line",
+  provider_overpayment: "claim", // S309 F17 — derived from effective totals, no line
 };
 // scorer class per ground (service_not_rendered = the resolver's attestation OVERRIDE).
 const EXPECTED_CLASS: Record<DisputeGroundType, DisputeTypeClass> = {
@@ -104,6 +109,7 @@ const EXPECTED_CLASS: Record<DisputeGroundType, DisputeTypeClass> = {
   unallocated_balance: "other",
   coding_peer: "coding_peer",
   chargemaster: "benchmark", // statistical tier, reused (no new DisputeTypeClass)
+  provider_overpayment: "other", // S309 F17 — derived claim tier, same class as unallocated_balance
 };
 
 const ALL_GROUNDS = Object.keys(EXPECTED_CLASS) as DisputeGroundType[];
@@ -113,11 +119,12 @@ const ALL_GROUNDS = Object.keys(EXPECTED_CLASS) as DisputeGroundType[];
   const keys = Object.keys(DISPUTE_GROUND_CATALOG) as DisputeGroundType[];
   check(
     "P1 catalog has all 10 grounds",
-    keys.length === 10 && ALL_GROUNDS.every((g) => g in DISPUTE_GROUND_CATALOG),
+    keys.length === 11 && ALL_GROUNDS.every((g) => g in DISPUTE_GROUND_CATALOG),
     keys,
   );
   const orders = ALL_GROUNDS.map((g) => DISPUTE_GROUND_CATALOG[g].order).sort((a, b) => a - b);
-  check("P1 orders are 0..9 unique", orders.join() === "0,1,2,3,4,5,6,7,8,9", orders);
+  // S309 F17 — 11 grounds (provider_overpayment appended at order 10).
+  check("P1 orders are 0..10 unique", orders.join() === "0,1,2,3,4,5,6,7,8,9,10", orders);
 }
 
 // ── P2 — order parity: grounds sorted by catalog.order == original TYPE_ORDER. ────

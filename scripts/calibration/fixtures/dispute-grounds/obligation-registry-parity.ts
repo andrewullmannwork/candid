@@ -117,6 +117,12 @@ type Row = {
   voiceIfNot: ObligationElement["voiceIfNot"];
 };
 const EXPECTED_SEEDING: Record<DisputeGroundType, Row[]> = {
+  // S309 F17 — the derived overpayment tier: provider-obligated, demand voice
+  // (arithmetic on the provider's own records), no prose entry (composed ask
+  // lives in templates byBasis).
+  provider_overpayment: [
+    { element: "overpayment_refund", party: "provider", condition: null, voiceIfMet: "demand", voiceIfNot: "omit" },
+  ],
   service_not_rendered: [
     { element: "proof_of_service_rendered", party: "provider", condition: null, voiceIfMet: "demand", voiceIfNot: "fall_to_facts" },
   ],

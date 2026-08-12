@@ -46,7 +46,8 @@ export type DisputeGroundType =
   | "benchmark" // billed far above the CMS / community benchmark (overcharge)
   | "unallocated_balance" // bill header total exceeds the sum of line responsibilities
   | "coding_peer" // a peer code is paid for the same service
-  | "chargemaster"; // billed above the provider's OWN published standard/average charge (HPT/AB-1045; Item C)
+  | "chargemaster" // billed above the provider's OWN published standard/average charge (HPT/AB-1045; Item C)
+  | "provider_overpayment"; // S309 F17 — the user PAID above what the bill charged; the provider owes the difference back
 
 /**
  * A render-ready finding for a ground: the persisted `description` (now surfaced via the
@@ -255,6 +256,11 @@ export function computeLineRecovery(
  * without a hard accumulator) lands by making MORE lines `shouldOweGrounded` in the engine — an
  * additive grounding source, NOT a change to this predicate. Until then case-B lines omit + prompt.
  */
+/** S309 F17 — the byBasis marker for the derived overpayment claim recovery
+ *  (paid > charged). Shared with templates.ts so the grouping can never drift
+ *  from the producer. */
+export const OVERPAYMENT_BENCHMARK_SOURCE = "user_paid_overpayment";
+
 const BLOCKING_ASSUMPTION_FIELDS: ReadonlySet<CostShareAssumption["field"]> = new Set([
   "network",
   "denial",
@@ -727,6 +733,35 @@ export function resolveLetterRecovery(
         writeOff: round2(writeOffRaw),
         benchmarkSource: f.benchmarkSource,
         arithmeticGap: f.arithmeticGap,
+      });
+    }
+
+    // S309 F17 (Andrew's design) — the OVERPAYMENT tier: what the user paid
+    // ABOVE what the bill charged. Derived, not stored (the stored fact is
+    // claims.metadata.userPatientPaid; effectiveTotals already carries it via
+    // the Z1.1d overlay), and a CLAIM-scope element like unallocated_balance:
+    // it has no line, no plan-term ground, and it obligates the PROVIDER —
+    // pure refund (the money is out of pocket by definition). The insurer
+    // letter never folds it (recipient guard, same as every claim-tier
+    // dollar); the provider letter's request block renders its own statement
+    // (templates byBasis "user_paid_overpayment") with the EXISTING
+    // refund-the-difference remedy.
+    const overpaid = round2(
+      Math.max(0, claim.effectiveTotals.patientPaid - claim.effectiveTotals.patientResponsibility),
+    );
+    if (overpaid >= 1) {
+      const claimPool = pools.get(claim.claimId);
+      if (claimPool && recipient === "provider") claimPool.refundRaw += overpaid;
+      claimRecoveries.push({
+        claimId: claim.claimId,
+        type: "provider_overpayment",
+        findingId: `overpayment:${claim.claimId}`,
+        title: "Paid above the billed amount",
+        recovery: overpaid,
+        refund: overpaid,
+        writeOff: 0,
+        benchmarkSource: OVERPAYMENT_BENCHMARK_SOURCE,
+        arithmeticGap: undefined,
       });
     }
   }

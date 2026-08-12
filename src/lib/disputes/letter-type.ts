@@ -147,7 +147,7 @@ export function letterRecipientKind(
 export interface LetterTrack {
   party: "insurer" | "provider";
   /** Why the track exists. Distinct sources, so a rung can say what it rests on. */
-  basis: "obligated_finding" | "insurer_underpaid";
+  basis: "obligated_finding" | "insurer_underpaid" | "provider_overpaid";
   /**
    * S305 — the template this track's FIRST letter renders.
    *
@@ -236,6 +236,11 @@ function letterTypeForTrack(
 export function deriveLetterTracks(input: {
   findingTypes: readonly string[];
   insurerUnderpaid: boolean;
+  /** S309 F17 — the user paid above what the bill charged (derived from the
+   *  effective totals; the Z1.1d paid overlay). Raises the PROVIDER track the
+   *  same way insurerUnderpaid raises the insurer one: engine math, not a
+   *  finding. Optional so existing callers are byte-identical. */
+  providerOverpaid?: boolean;
 }): LetterTrack[] {
   const parties = new Map<LetterTrack["party"], LetterTrack["basis"]>();
 
@@ -250,6 +255,9 @@ export function deriveLetterTracks(input: {
   // An obligated finding is the stronger basis, so it is not overwritten.
   if (input.insurerUnderpaid && !parties.has("insurer")) {
     parties.set("insurer", "insurer_underpaid");
+  }
+  if (input.providerOverpaid && !parties.has("provider")) {
+    parties.set("provider", "provider_overpaid");
   }
 
   // Stable order: the insurer track reads first because its deadline is the one

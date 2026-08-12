@@ -320,6 +320,43 @@ const base = { prorated: false, paidTotal: 0, balanceTotal: 0, refundComponent: 
   check("cell composes beside planTerm — dedUnmet term unchanged", d.rows.find((r) => r.id === "coins-unmet")?.planTerm === "10% after deductible");
 }
 
+// ── S309 F17 (Andrew's design) — the overpay split: the refund row equals the
+//    insurer-claimable slice (what the insurer letter asks), the paid-above-
+//    charge slice is the PROVIDER's own row (what the provider letter asks),
+//    and "Charged to you" is the bill's charge — three surfaces, agreement by
+//    construction. Live case: paid $300 on a $239.71 charge, share $172.53. ──
+{
+  const d = buildSavingsDerivation({
+    prorated: true,
+    lines: [line("f17", { billed: 388.5, shouldOwe: 172.53, refund: 127.47, paid: 300, coinsurance: 0.1, deductibleApplies: true, deductibleMet: false })],
+    paidTotal: 300,
+    balanceTotal: 0,
+    refundComponent: 127.47,
+    forgivenessComponent: 0,
+    chargedTotal: 239.71,
+  });
+  const split = d.bill.paidSplit!;
+  check("F17 chargedToYou is the bill's charge, not paid+balance", d.bill.chargedToYou === 239.71, d.bill.chargedToYou);
+  check("F17 refund row = the insurer-claimable slice (capped at charge − share)", split.refund === 67.18, split);
+  check("F17 overpaid row = paid above the charge", split.overpaid === 60.29, split);
+  check("F17 three-term equation sums to the paid total", split.equation === "$172.53 + $67.18 + $60.29 = the $300.00 you paid ✓", split.equation);
+  check("F17 hero sub names the insurer-claimable slice", d.refundSub === "+$67.18 refund to request", d.refundSub);
+}
+// The no-overpay regression: chargedTotal supplied and equal to paid+balance →
+// overpaid 0, refund uncapped, the two-term equation — byte-identical shape.
+{
+  const d = buildSavingsDerivation({
+    ...base,
+    lines: [line("reg", { shouldOwe: 60, refund: 240, paid: 300 })],
+    paidTotal: 300,
+    balanceTotal: 0,
+    refundComponent: 240,
+    chargedTotal: 300,
+  });
+  const split = d.bill.paidSplit!;
+  check("F17 no-overpay: refund uncapped, overpaid 0, two-term equation", split.refund === 240 && split.overpaid === 0 && split.equation === "$60.00 + $240.00 = the $300.00 you paid ✓", split);
+}
+
 const total = pass + fails.length;
 if (fails.length) {
   console.error(`savings-derivation: ${pass}/${total} passed`);
