@@ -8,6 +8,7 @@ import { useAuth } from "@/lib/auth/auth-context";
 import type { InsuranceCardFields } from "@/app/api/profile/scan-card/route";
 import { createBrowserClient } from "@/lib/supabase/client";
 import { ProfileDashboard } from "@/components/profile/ProfileDashboard";
+import { AddressEditModal, type AddressModalValue } from "@/components/profile/AddressEditModal";
 import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 import { useMinHoldLoading } from "@/lib/loading/use-min-hold";
 
@@ -286,6 +287,9 @@ export default function ProfilePage() {
 
 function ProfileContent() {
   const { user } = useAuth();
+  // S311 (Andrew's ruling) — the profile page's address edits open a MODAL,
+  // never the whole About setup flow.
+  const [addrModalOpen, setAddrModalOpen] = useState(false);
   const router = useRouter();
   const searchParams = useSearchParams();
   const isOnboarding = searchParams.get("onboarding") === "true";
@@ -748,6 +752,7 @@ function ProfileContent() {
     flagEnabled === true
   ) {
     return (
+      <>
       <ProfileDashboard
         firebaseUser={user!.firebaseUser}
         memberSinceISO={
@@ -759,6 +764,7 @@ function ProfileContent() {
         onUpdateInsurance={() => void openFlowOrWizard("plan", 1)}
         onRescanCard={() => void openFlowOrWizard("plan", 0)}
         onEditAbout={() => void openFlowOrWizard("about", 3)}
+        onEditAddress={() => setAddrModalOpen(true)}
         onSaveMemberId={async (value: string) => {
           if (!user) throw new Error("Not signed in");
           const idToken = await user.firebaseUser.getIdToken();
@@ -779,7 +785,54 @@ function ProfileContent() {
           setProfile((p) => ({ ...p, member_id: value }));
         }}
       />
-    );
+      {/* S311 (Andrew's ruling) — address edits are a MODAL on this page, never
+          the whole About setup. Saves through the ONE existing /api/profile
+          writer; letters' drafts follow via the drift watch. */}
+      {addrModalOpen && (
+        <AddressEditModal
+          open
+          initial={{
+            line1: profile.address_line1,
+            line2: profile.address_line2,
+            city: profile.city,
+            state: profile.state,
+            zip: profile.zip_code,
+          }}
+          onClose={() => setAddrModalOpen(false)}
+          onSave={async (v: AddressModalValue) => {
+            if (!user) throw new Error("Not signed in");
+            const idToken = await user.firebaseUser.getIdToken();
+            const res = await fetch("/api/profile", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${idToken}`,
+              },
+              body: JSON.stringify({
+                address_line1: v.line1 || null,
+                address_line2: v.line2 || null,
+                city: v.city || null,
+                state: v.state || null,
+                zip_code: v.zip || null,
+              }),
+            });
+            if (!res.ok) {
+              const body = (await res.json().catch(() => ({}))) as { error?: string };
+              throw new Error(body.error || "Save failed");
+            }
+            setProfile((p) => ({
+              ...p,
+              address_line1: v.line1,
+              address_line2: v.line2,
+              city: v.city,
+              state: v.state,
+              zip_code: v.zip,
+            }));
+          }}
+        />
+      )}
+    </>
+  );
   }
 
   // Flag still loading — brief placeholder to avoid flicker between legacy
