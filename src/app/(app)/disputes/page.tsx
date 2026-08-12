@@ -1535,6 +1535,48 @@ function DisputesContent() {
     if (disputeId) await fetchDispute(disputeId);
   };
 
+  // S310 (F14a) — name corrections from the claim-details block + the
+  // "These look right" name vouch. One write path per name: the claim-scoped
+  // provider-contact route (the same one the address form posts to) and the
+  // plan row's insurer-name route. The refetch is the SAME plain GET every
+  // other edit uses — its own drift machinery rebuilds the live draft with
+  // the corrected name (both names sit inside the watched compose basis /
+  // plan context).
+  const printsInsurerName = letter ? letterRecipientKind(letter.letterType) === "insurer" : false;
+  const authedNamePost = async (url: string, body: unknown): Promise<void> => {
+    const token = await getAuthToken();
+    if (!token) throw new Error("not signed in");
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`save failed (${res.status})`);
+  };
+  const fixProviderName = async (name: string): Promise<void> => {
+    const claimId = letter?.auditReportId;
+    if (!claimId) throw new Error("no claim");
+    await authedNamePost(`/api/claims/${claimId}/provider-contact`, { name });
+    await refetchAfterChange();
+  };
+  const fixInsurerName = async (name: string): Promise<void> => {
+    const planId = planContext?.plan?.id;
+    if (!planId) throw new Error("no plan");
+    await authedNamePost(`/api/plan/insurer-name`, { planId, insurerName: name });
+    await refetchAfterChange();
+  };
+  const vouchNames = (): void => {
+    // Fire-and-forget flywheel stamps; never blocks or fails the confirm.
+    const claimId = letter?.auditReportId;
+    if (claimId) {
+      void authedNamePost(`/api/claims/${claimId}/provider-contact`, { confirmName: true }).catch(() => {});
+    }
+    const planId = planContext?.plan?.id;
+    if (printsInsurerName && planId) {
+      void authedNamePost(`/api/plan/insurer-name`, { planId, confirm: true }).catch(() => {});
+    }
+  };
+
   if (!letter) {
     if (disputeFetching) {
       // S132 iter-8 — unified cube loader.
@@ -2156,6 +2198,12 @@ function DisputesContent() {
                   : (nameMismatch?.billName ?? nameMismatch?.profileName ?? accountName)) || null,
               providerName: evidence?.claims?.[0]?.providerName ?? null,
               serviceDate: evidence?.claims?.[0]?.dateOfService ?? null,
+              // S310 — only insurer-recipient letters print the insurer, so
+              // only they carry the fact (and its fix row). Same coalesce the
+              // letter's recipient block resolves through.
+              ...(printsInsurerName
+                ? { insurerName: planContext?.insurer?.name ?? planContext?.plan?.insurerName ?? null }
+                : {}),
             }
           : null
       }
@@ -2184,6 +2232,9 @@ function DisputesContent() {
         })
       }
       onResolvePatient={resolvePatientChoice}
+      onFixProviderName={letter?.auditReportId ? fixProviderName : undefined}
+      onFixInsurerName={printsInsurerName && planContext?.plan?.id ? fixInsurerName : undefined}
+      onVouchNames={vouchNames}
       onEditLetter={() => setIsEditing(true)}
       onReviewAttestation={() => {
         // S293 (#11) — jump to the attestation STEP, not the evidence card.
@@ -3071,10 +3122,10 @@ function DisputesContent() {
         />
       ) : null}
 
-      {disputeId ? (
+      {letter?.auditReportId ? (
         <ProviderAddressModal
           open={providerAddressOpen}
-          disputeId={disputeId}
+          claimId={letter.auditReportId}
           initialName={planContext?.providerContact?.name ?? null}
           initialAddressFields={planContext?.providerContact?.addressFields ?? null}
           initialPhone={planContext?.providerContact?.phone ?? null}

@@ -598,6 +598,14 @@ export function ClaimDetail({
    */
   const [planCandidates, setPlanCandidates] = useState<DisputePlanChooserPlan[] | null>(null);
   const [repinOpen, setRepinOpen] = useState(false);
+  // S310 (F14a) — the claim-header provider-name editor (pencil beside the
+  // title). Writes the claim-scoped provider-contact route — the same single
+  // path the letter page uses — then refetches; every surface re-resolves.
+  const [providerNameEdit, setProviderNameEdit] = useState<{
+    value: string;
+    saving: boolean;
+    error: boolean;
+  } | null>(null);
   // S293 (#1) — the ACA question block's "Not sure" dismissal, lifted from the
   // banner so the ONE pending set (pendingAssumptionFields → the step badge)
   // sees it: a dismissed block must stop counting, or the badge goes amber over
@@ -1637,6 +1645,45 @@ export function ClaimDetail({
       ? pinnedPlan.planYear
       : null;
 
+  // S310 (F14a) — the two name-correction writes. Plain consts (no hooks):
+  // they close over pinnedPlan above and are handed to the header editor and
+  // the banner's pinned-plan row.
+  const saveProviderName = async (): Promise<void> => {
+    if (!providerNameEdit || providerNameEdit.saving) return;
+    const name = providerNameEdit.value.trim();
+    if (!name) return;
+    setProviderNameEdit((p) => (p ? { ...p, saving: true, error: false } : p));
+    try {
+      const token = await getAuthToken();
+      const res = await fetch(`/api/claims/${claimId}/provider-contact`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ name }),
+      });
+      if (!res.ok) throw new Error(String(res.status));
+      setProviderNameEdit(null);
+      await refetchClaim();
+    } catch {
+      setProviderNameEdit((p) => (p ? { ...p, saving: false, error: true } : p));
+    }
+  };
+  const saveInsurerName = async (name: string): Promise<boolean> => {
+    if (!pinnedPlan?.insurancePlanId) return false;
+    try {
+      const token = await getAuthToken();
+      const res = await fetch(`/api/plan/insurer-name`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ planId: pinnedPlan.insurancePlanId, insurerName: name }),
+      });
+      if (!res.ok) return false;
+      await refetchClaim();
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   // The line the banner's verdict-specific CTAs act on (matching line, else first).
   const bannerTargetLineId = (() => {
     const v = data.costShareBill?.verdict;
@@ -2239,9 +2286,63 @@ export function ClaimDetail({
           Bill from
         </div>
         <div className="flex items-center gap-2.5">
-          <h1 className="m-0 text-[28px] font-bold leading-tight tracking-[-0.02em] text-gray-900">
-            {providerName}
-          </h1>
+          {providerNameEdit ? (
+            /* S310 (F14a) — inline provider-name editor; Save writes the one
+               claim-scoped provider-contact path and refetches. */
+            <span className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+              <input
+                type="text"
+                value={providerNameEdit.value}
+                onChange={(e) => setProviderNameEdit((p) => (p ? { ...p, value: e.target.value } : p))}
+                aria-label="Provider name"
+                autoFocus
+                className="min-w-0 flex-1 rounded-lg border border-gray-300 px-3 py-2 text-[18px] font-semibold text-gray-900 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100"
+              />
+              <button
+                type="button"
+                disabled={providerNameEdit.saving || providerNameEdit.value.trim().length === 0}
+                onClick={() => void saveProviderName()}
+                className="rounded-lg bg-blue-600 px-3 py-1.5 text-[13px] font-semibold text-white transition-colors hover:bg-blue-700 disabled:opacity-60"
+              >
+                {providerNameEdit.saving ? "Saving…" : "Save"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setProviderNameEdit(null)}
+                className="text-[13px] font-medium text-gray-500 hover:text-gray-700"
+              >
+                Cancel
+              </button>
+              {providerNameEdit.error ? (
+                <span className="w-full text-[12px] text-red-600">Couldn&apos;t save — try again.</span>
+              ) : null}
+            </span>
+          ) : (
+            <>
+              <h1 className="m-0 text-[28px] font-bold leading-tight tracking-[-0.02em] text-gray-900">
+                {providerName}
+              </h1>
+              {/* S310 (F14a) — the rail-side provider-name edit Andrew asked
+                  for; same icon-button chrome as the view-bill control. */}
+              <button
+                type="button"
+                onClick={() =>
+                  setProviderNameEdit({
+                    value: providerName === "Unknown Provider" ? "" : providerName,
+                    saving: false,
+                    error: false,
+                  })
+                }
+                className="grid h-9 w-9 place-items-center rounded-lg text-gray-400 transition-colors hover:bg-gray-100 hover:text-blue-600"
+                title="Edit provider name"
+                aria-label="Edit provider name"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+                </svg>
+              </button>
+            </>
+          )}
           {hasSourceDocument && (
             <button
               type="button"
@@ -2552,6 +2653,9 @@ export function ClaimDetail({
                         year: claimServiceYear,
                         planYearMismatch,
                         onChange: () => setRepinOpen(true),
+                        // S310 (F14a) — insurer-name fix on the pinned-plan row.
+                        insurerName: pinnedPlan?.insurerName ?? null,
+                        onSaveInsurerName: saveInsurerName,
                       }
                     : null
                 }
@@ -2736,6 +2840,9 @@ export function ClaimDetail({
                         year: claimServiceYear,
                         planYearMismatch,
                         onChange: () => setRepinOpen(true),
+                        // S310 (F14a) — insurer-name fix on the pinned-plan row.
+                        insurerName: pinnedPlan?.insurerName ?? null,
+                        onSaveInsurerName: saveInsurerName,
                       }
                     : null
                 }

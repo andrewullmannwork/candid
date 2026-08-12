@@ -182,6 +182,12 @@ export interface CaseNeedsPanelProps {
     patientName: string | null;
     providerName: string | null;
     serviceDate: string | null;
+    /**
+     * S310 (F14a) — present only when THIS letter prints the insurer (the page
+     * gates by recipient kind), so the fact — and its fix row — appears exactly
+     * when the name is in the letter. Undefined → no insurer fact.
+     */
+    insurerName?: string | null;
   } | null;
   /** every billed line — the attestation picker's candidates (same shape the
    *  ServiceAttestationFlow always consumed). */
@@ -207,6 +213,21 @@ export interface CaseNeedsPanelProps {
   onResolvePatient: (choice: "me" | "dependent" | "wrong", correctedName?: string) => void;
   onEditLetter: () => void;
   onReviewAttestation: () => void;
+  /**
+   * S310 (F14a) — name corrections from the claim-details block's
+   * "Something's wrong" mode. Provider name renders whenever the handler is
+   * present (every letter prints the provider); the insurer row additionally
+   * requires claimFacts.insurerName (page-gated to insurer-recipient letters).
+   * Both write their single upstream source (claims.metadata.provider /
+   * the plan row), so every surface + the live draft follow on the reconcile.
+   */
+  onFixProviderName?: (name: string) => Promise<unknown>;
+  onFixInsurerName?: (name: string) => Promise<unknown>;
+  /**
+   * S310 — "These look right" also vouches the printed names (flywheel
+   * corroboration stamps; fire-and-forget on the page side).
+   */
+  onVouchNames?: () => void | Promise<unknown>;
   onAddProviderAddress: () => void;
   onAddInsurerAddress: () => void;
   onUploadEob: () => void;
@@ -495,6 +516,7 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
     onAddPlanDetails, onConfirmParsedCosts, onRejectParsedCost, onResolvePatient, onEditLetter,
     onReviewAttestation,
     claimFacts, attestationLines, attestedLineItemIds, accountName, attestingAsName, onAttest,
+    onFixProviderName, onFixInsurerName, onVouchNames,
     onAddProviderAddress, onAddInsurerAddress, onUploadEob, onSaveAmountPaid,
     onChangePlan, onSaveDeadlineDate,
     letterRequirementsOn = false,
@@ -507,6 +529,14 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
   // S293 (#5) — the one-block's "Something's wrong" expansion (per-item edits +
   // the didn't-receive attestation flow).
   const [detailsWrongMode, setDetailsWrongMode] = useState(false);
+  // S310 (F14a) — the open name editor in wrong-mode (provider / insurer),
+  // mirroring the per-service Edit rows: value + Edit → input + Save/Cancel.
+  const [nameEdit, setNameEdit] = useState<{
+    field: "provider" | "insurer";
+    value: string;
+    saving: boolean;
+    error: boolean;
+  } | null>(null);
   // S294 — the shared three-choice patient-identity form, expanded below its row.
   const [nameChoicesOpen, setNameChoicesOpen] = useState(false);
   const close = () => setOpenEditor(null);
@@ -692,8 +722,84 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
     const factsLine = [
       claimFacts.patientName ? `Patient: ${claimFacts.patientName}` : null,
       claimFacts.providerName ? `Provider: ${claimFacts.providerName}` : null,
+      // S310 — present only when this letter prints the insurer (page-gated).
+      claimFacts.insurerName ? `Insurer: ${claimFacts.insurerName}` : null,
       claimFacts.serviceDate ? `Service date: ${prettyDate(claimFacts.serviceDate)}` : null,
     ].filter(Boolean).join(" · ");
+    // S310 (F14a, Andrew's ruling) — the names the letter prints are part of
+    // confirming the claim details: "These look right" vouches them, and
+    // "Something's wrong" offers the fix. Row style mirrors the per-service
+    // edit rows; the save awaits the parent's write + reconcile, so the value
+    // shown is always server truth.
+    const nameFixRow = (
+      field: "provider" | "insurer",
+      label: string,
+      value: string | null,
+      onFix: (name: string) => Promise<unknown>,
+    ) => {
+      const editing = nameEdit?.field === field;
+      return (
+        <li key={field} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[13px]">
+          <span className="min-w-0 text-gray-700">
+            {label}
+            {value ? (
+              <>
+                {" · "}
+                <span className="font-medium text-gray-900">{value}</span>
+              </>
+            ) : null}
+          </span>
+          {editing && nameEdit ? (
+            <span className="flex w-full flex-wrap items-center gap-2">
+              <input
+                type="text"
+                value={nameEdit.value}
+                onChange={(e) => setNameEdit((p) => (p ? { ...p, value: e.target.value } : p))}
+                aria-label={label}
+                autoFocus
+                className="min-w-0 flex-1 rounded-lg border border-gray-300 px-2.5 py-1.5 text-[13px] text-gray-900 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100"
+              />
+              <button
+                type="button"
+                disabled={nameEdit.saving || nameEdit.value.trim().length === 0}
+                onClick={() => {
+                  void (async () => {
+                    setNameEdit((p) => (p ? { ...p, saving: true, error: false } : p));
+                    try {
+                      await onFix(nameEdit.value.trim());
+                      setNameEdit(null);
+                    } catch {
+                      setNameEdit((p) => (p ? { ...p, saving: false, error: true } : p));
+                    }
+                  })();
+                }}
+                className="rounded-lg bg-blue-600 px-3 py-1.5 text-[13px] font-semibold text-white transition-colors hover:bg-blue-700 disabled:opacity-60"
+              >
+                {nameEdit.saving ? "Saving…" : "Save"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setNameEdit(null)}
+                className="text-[13px] font-medium text-gray-500 hover:text-gray-700"
+              >
+                Cancel
+              </button>
+              {nameEdit.error ? (
+                <span className="w-full text-[12px] text-red-600">Couldn&apos;t save — try again.</span>
+              ) : null}
+            </span>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setNameEdit({ field, value: value ?? "", saving: false, error: false })}
+              className="text-[13px] font-medium text-blue-600 hover:text-blue-700"
+            >
+              Edit
+            </button>
+          )}
+        </li>
+      );
+    };
     const svcValue = (svc: PlanCostService): string =>
       svc.copay != null ? `${money(svc.copay)} copay` : `${svc.coinsurancePercent}% coinsurance`;
     const confirmDetails = () => {
@@ -711,9 +817,12 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
               }),
             );
           }
+          // S310 — "These look right" also vouches the printed names.
+          if (onVouchNames) ops.push(onVouchNames());
           await Promise.all(ops);
           setConfirmAllStatus("idle");
           setDetailsWrongMode(false);
+          setNameEdit(null);
         } catch {
           setConfirmAllStatus("error");
         }
@@ -759,6 +868,20 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
           below={
             <div className="space-y-2.5">
               {factsLine ? <p className="text-[13px] text-gray-700">{factsLine}</p> : null}
+              {/* S310 — wrong-mode name fixes (provider always; insurer only
+                  when the letter prints it — claimFacts.insurerName gated by
+                  the page to insurer-recipient letters). */}
+              {detailsWrongMode &&
+              (onFixProviderName || (onFixInsurerName && claimFacts.insurerName !== undefined)) ? (
+                <ul className="space-y-1.5 border-l-2 border-gray-100 pl-2.5">
+                  {onFixProviderName
+                    ? nameFixRow("provider", "Provider name", claimFacts.providerName, onFixProviderName)
+                    : null}
+                  {onFixInsurerName && claimFacts.insurerName !== undefined
+                    ? nameFixRow("insurer", "Insurer name", claimFacts.insurerName ?? null, onFixInsurerName)
+                    : null}
+                </ul>
+              ) : null}
               <ul className="space-y-1.5">
                 {planServices.map((svc) => (
                   <li

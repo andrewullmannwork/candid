@@ -395,6 +395,48 @@ eq("valuesMatch: null never matches", valuesMatch(null, null), false);
 }
 
 {
+  // S310 — a USER's answer never yields to a parse (the F14a insurer-name
+  // correction guard: without it the doc_wins_weak branch treated a
+  // user_correction incumbent as "uncited" and overwrote it on the next
+  // upload). Disagreement keeps the user's value; agreement corroborates
+  // without touching value or source.
+  const r = applyDocSupplementMerge({
+    base: {},
+    docFields: { insurer_name: "Swedish Health Services" },
+    existingRow: { insurer_name: "Providence Swedish" },
+    existingProvenance: {
+      insurer_name: { source: "user_correction", previous: "Swedish Health Services" },
+    },
+    parseProvenance: { insurer_name: { source: "doc_extraction" } },
+    documentId: "doc-4",
+  });
+  eq("S310 user-kept: value not overwritten", "insurer_name" in r.update, false);
+  eq("S310 user-kept: action", r.actions.insurer_name, "user_kept");
+  eq("S310 user-kept: no conflict resolution", r.conflictWinner, null);
+  eq("S310 user-kept: provenance untouched", "field_provenance" in r.update, false);
+
+  const r2 = applyDocSupplementMerge({
+    base: {},
+    docFields: { insurer_name: "providence swedish" },
+    existingRow: { insurer_name: "Providence Swedish" },
+    existingProvenance: {
+      insurer_name: { source: "user_correction", previous: "Swedish Health Services" },
+    },
+    parseProvenance: { insurer_name: { source: "doc_extraction" } },
+    documentId: "doc-5",
+  });
+  eq("S310 user+match: value not rewritten", "insurer_name" in r2.update, false);
+  eq("S310 user+match: corroboration recorded on the USER entry", r2.update.field_provenance, {
+    insurer_name: {
+      source: "user_correction",
+      previous: "Swedish Health Services",
+      corroborated_by: ["doc-5"],
+    },
+  });
+  eq("S310 user+match: action stays confirm", r2.actions.insurer_name, "confirm");
+}
+
+{
   // Conflict, new parse more complete → conflicting fields flip TOGETHER; fills still apply.
   const r = applyDocSupplementMerge({
     base: {},

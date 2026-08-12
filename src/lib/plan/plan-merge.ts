@@ -67,6 +67,19 @@ export function isDocProvenance(entry: unknown): boolean {
   return typeof source === "string" && DOC_PROVENANCE_SOURCES.has(source);
 }
 
+/**
+ * S310 — is this row value the USER's own answer? (S291 provenance vocabulary:
+ * an explicit correction or an initial manual entry.) A user's answer never
+ * yields to a parse — without this rule the F14a insurer-name correction (and
+ * any manually-entered plan field carrying provenance) would be silently
+ * overwritten by the next document upload via the doc_wins_weak branch.
+ */
+export function isUserProvenance(entry: unknown): boolean {
+  if (typeof entry !== "object" || entry === null) return false;
+  const source = (entry as ProvenanceEntry).source;
+  return source === "user_correction" || source === "user_initial_entry";
+}
+
 /** Empty = no data. 0 is a real value (a $0 deductible is a finding). */
 function isEmpty(v: unknown): boolean {
   return v == null || v === "";
@@ -88,7 +101,8 @@ export type MergeAction =
   | "doc_wins_weak"
   | "confirm"
   | "conflict_new_wins"
-  | "conflict_existing_kept";
+  | "conflict_existing_kept"
+  | "user_kept";
 
 export interface SupplementMergeResult {
   /** The UPDATE payload for the plan row (base fields + adopted values). */
@@ -145,9 +159,19 @@ export function applyDocSupplementMerge(input: {
       continue;
     }
 
-    if (!isDocProvenance(existingProv[col])) {
-      // Weak incumbent (manual entry, profile fallback, uncited legacy value):
-      // the cited parse supersedes it.
+    if (isUserProvenance(existingProv[col])) {
+      // S310 — the user's own answer never yields to a parse. Disagreement
+      // keeps the user's value (no conflict entry — there is nothing to
+      // resolve); agreement falls through to CONFIRM below so the document
+      // still corroborates what the user typed.
+      if (!valuesMatch(existingVal, parsedVal)) {
+        actions[col] = "user_kept";
+        continue;
+      }
+    } else if (!isDocProvenance(existingProv[col])) {
+      // Weak incumbent (unstamped manual entry, profile fallback, uncited
+      // legacy value): the cited parse supersedes it. User-stamped answers are
+      // excluded above — they are anything but weak.
       actions[col] = "doc_wins_weak";
       update[col] = parsedVal;
       if (parseProv[col] != null) {

@@ -124,6 +124,14 @@ interface CostShareBannerProps {
      */
     planYearMismatch: number | null;
     onChange: () => void;
+    /**
+     * S310 (F14a) — the pinned plan's insurer name + its correction write
+     * (ClaimDetail's saveInsurerName → /api/plan/insurer-name → refetch).
+     * Present → the row's description offers "Fix insurer name" with an
+     * inline editor. Resolves to true when the save landed.
+     */
+    insurerName?: string | null;
+    onSaveInsurerName?: (name: string) => Promise<boolean>;
   } | null;
   /**
    * The user has tried to finish this step (any override persisted, or the
@@ -517,6 +525,12 @@ export function CostShareBanner({
   // S293 (#1) — controlled when the parent supplies the pair (so the badge's
   // pending set sees the dismissal); internal otherwise.
   const [acaDismissedLocal, setAcaDismissedLocal] = useState(false);
+  // S310 (F14a) — the pinned-plan row's inline insurer-name editor.
+  const [insurerNameEdit, setInsurerNameEdit] = useState<{
+    value: string;
+    saving: boolean;
+    error: boolean;
+  } | null>(null);
   const acaDismissed = acaDismissedProp ?? acaDismissedLocal;
   const setAcaDismissed = (v: boolean) => {
     onAcaDismissedChange?.(v);
@@ -946,7 +960,71 @@ export function CostShareBanner({
                   ? `We don't have a plan on file for${planIdentity.year ? ` ${planIdentity.year}` : " when this care happened"}. Pick the plan you were on so we can check this bill properly.`
                   : planIdentity.planYearMismatch != null
                     ? `This bill is from ${planIdentity.year}, but we checked it against your ${planIdentity.planYearMismatch} plan. Coverage changes year to year — add your ${planIdentity.year} plan for an accurate check.`
-                    : `We checked this bill against ${planIdentity.label}. Change it if you were on a different plan${planIdentity.year ? ` in ${planIdentity.year}` : ""}.`}
+                    : (
+                      <>
+                        {`We checked this bill against ${planIdentity.label}. Change it if you were on a different plan${planIdentity.year ? ` in ${planIdentity.year}` : ""}.`}
+                        {/* S310 (F14a) — fix the insurer's NAME (a spelling/
+                            identity correction on the plan row) as distinct
+                            from Change (a different plan). */}
+                        {planIdentity.insurerName && planIdentity.onSaveInsurerName ? (
+                          insurerNameEdit ? (
+                            <span className="mt-1.5 flex flex-wrap items-center gap-2">
+                              <input
+                                type="text"
+                                value={insurerNameEdit.value}
+                                onChange={(e) => setInsurerNameEdit((p) => (p ? { ...p, value: e.target.value } : p))}
+                                aria-label="Insurer name"
+                                autoFocus
+                                className="min-w-0 flex-1 rounded-lg border border-gray-300 px-2.5 py-1.5 text-[13px] text-gray-900 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100"
+                              />
+                              <button
+                                type="button"
+                                disabled={insurerNameEdit.saving || insurerNameEdit.value.trim().length === 0}
+                                onClick={() => {
+                                  void (async () => {
+                                    if (!insurerNameEdit || insurerNameEdit.saving) return;
+                                    setInsurerNameEdit((p) => (p ? { ...p, saving: true, error: false } : p));
+                                    const ok = await planIdentity.onSaveInsurerName!(insurerNameEdit.value.trim());
+                                    if (ok) setInsurerNameEdit(null);
+                                    else setInsurerNameEdit((p) => (p ? { ...p, saving: false, error: true } : p));
+                                  })();
+                                }}
+                                className="rounded-lg bg-blue-600 px-3 py-1.5 text-[13px] font-semibold text-white transition-colors hover:bg-blue-700 disabled:opacity-60"
+                              >
+                                {insurerNameEdit.saving ? "Saving…" : "Save"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setInsurerNameEdit(null)}
+                                className="text-[13px] font-medium text-gray-500 hover:text-gray-700"
+                              >
+                                Cancel
+                              </button>
+                              {insurerNameEdit.error ? (
+                                <span className="w-full text-[12px] text-red-600">Couldn&apos;t save — try again.</span>
+                              ) : null}
+                            </span>
+                          ) : (
+                            <>
+                              {" "}
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setInsurerNameEdit({
+                                    value: planIdentity.insurerName ?? "",
+                                    saving: false,
+                                    error: false,
+                                  })
+                                }
+                                className="font-medium text-blue-600 hover:text-blue-700"
+                              >
+                                Fix insurer name
+                              </button>
+                            </>
+                          )
+                        ) : null}
+                      </>
+                    )}
               </Row>
   ) : null;
 
