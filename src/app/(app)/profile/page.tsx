@@ -8,7 +8,8 @@ import { useAuth } from "@/lib/auth/auth-context";
 import type { InsuranceCardFields } from "@/app/api/profile/scan-card/route";
 import { createBrowserClient } from "@/lib/supabase/client";
 import { ProfileDashboard } from "@/components/profile/ProfileDashboard";
-import { AddressEditModal, type AddressModalValue } from "@/components/profile/AddressEditModal";
+import { AboutEditModal, type AboutModalValue } from "@/components/profile/AboutEditModal";
+import { obDobFromIso, obDobOk, obDobToIso } from "@/lib/onboarding/simplified";
 import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 import { useMinHoldLoading } from "@/lib/loading/use-min-hold";
 
@@ -763,7 +764,10 @@ function ProfileContent() {
         needsCardRescan={needsCardRescan}
         onUpdateInsurance={() => void openFlowOrWizard("plan", 1)}
         onRescanCard={() => void openFlowOrWizard("plan", 0)}
-        onEditAbout={() => void openFlowOrWizard("about", 3)}
+        // S311 (§A round-4, Andrew): About-you edits are a MODAL on this page
+        // (date of birth + sex + mailing address) — never the setup flow. Both
+        // the section Edit and the address row's Edit open the same modal.
+        onEditAbout={() => setAddrModalOpen(true)}
         onEditAddress={() => setAddrModalOpen(true)}
         onSaveMemberId={async (value: string) => {
           if (!user) throw new Error("Not signed in");
@@ -789,9 +793,11 @@ function ProfileContent() {
           the whole About setup. Saves through the ONE existing /api/profile
           writer; letters' drafts follow via the drift watch. */}
       {addrModalOpen && (
-        <AddressEditModal
+        <AboutEditModal
           open
           initial={{
+            dob: obDobFromIso(profile.date_of_birth),
+            sex: profile.sex || null,
             line1: profile.address_line1,
             line2: profile.address_line2,
             city: profile.city,
@@ -799,8 +805,34 @@ function ProfileContent() {
             zip: profile.zip_code,
           }}
           onClose={() => setAddrModalOpen(false)}
-          onSave={async (v: AddressModalValue) => {
+          onSave={async (v: AboutModalValue) => {
             if (!user) throw new Error("Not signed in");
+            const payload: Record<string, unknown> = {
+              sex: v.sex,
+              address_line1: v.line1 || null,
+              address_line2: v.line2 || null,
+              city: v.city || null,
+              state: v.state || null,
+              zip_code: v.zip || null,
+            };
+            const dobIso = v.dob && obDobOk(v.dob) ? obDobToIso(v.dob) : null;
+            if (dobIso) payload.date_of_birth = dobIso;
+            // County powers local rates — same best-effort resolve the flow's
+            // saveAbout does, so a ZIP edit here keeps county in step.
+            if (/^\d{5}$/.test(v.zip)) {
+              try {
+                const cRes = await fetch(`/api/profile/resolve-county?zip=${v.zip}`);
+                const cData = (await cRes.json().catch(() => ({}))) as {
+                  counties?: { fips?: string; name?: string }[];
+                };
+                if (cData.counties?.length === 1 && cData.counties[0].fips) {
+                  payload.county_fips = cData.counties[0].fips;
+                  payload.county_name = cData.counties[0].name ?? null;
+                }
+              } catch {
+                /* county optional */
+              }
+            }
             const idToken = await user.firebaseUser.getIdToken();
             const res = await fetch("/api/profile", {
               method: "POST",
@@ -808,13 +840,7 @@ function ProfileContent() {
                 "Content-Type": "application/json",
                 Authorization: `Bearer ${idToken}`,
               },
-              body: JSON.stringify({
-                address_line1: v.line1 || null,
-                address_line2: v.line2 || null,
-                city: v.city || null,
-                state: v.state || null,
-                zip_code: v.zip || null,
-              }),
+              body: JSON.stringify(payload),
             });
             if (!res.ok) {
               const body = (await res.json().catch(() => ({}))) as { error?: string };
@@ -822,11 +848,16 @@ function ProfileContent() {
             }
             setProfile((p) => ({
               ...p,
+              ...(dobIso ? { date_of_birth: dobIso } : {}),
+              sex: v.sex || "",
               address_line1: v.line1,
               address_line2: v.line2,
               city: v.city,
               state: v.state,
               zip_code: v.zip,
+              ...(typeof payload.county_name === "string"
+                ? { county_name: payload.county_name }
+                : {}),
             }));
           }}
         />
