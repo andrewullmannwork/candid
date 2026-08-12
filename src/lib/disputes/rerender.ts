@@ -14,7 +14,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { DisputeLetterType, AuditReport } from "@/lib/billing/types";
 import type { PlanContext } from "./plan-context";
 import type { DisputeEvidence } from "./evidence-resolver";
-import { LETTER_TEMPLATES } from "./templates";
+import { LETTER_TEMPLATES, buildSenderBlock } from "./templates";
 import { letterRecipientKind } from "./index";
 import { letterPatientName, pickPatientName, type LetterPatientIdentity } from "./letter-type";
 import { buildPriorContactRecital, RECITAL_IN_OPENING } from "./prior-contact";
@@ -248,10 +248,15 @@ export async function rerenderDisputeLetter(
 
   // Sign-off injection — mirrors generateDisputeLetter exactly (keep the two
   // build paths in lockstep). ONE placement decision governs both branches.
-  const finalBody =
+  const spliced =
     !recitalInOpening && priorContactRecital
       ? body.replace("\n\nSincerely,", `\n\n${priorContactRecital}\n\nSincerely,`)
       : body;
+
+  // S310 (Andrew) — the sender block above the dateline; same builder + same
+  // fail-soft rule as generateDisputeLetter (lockstep).
+  const senderBlock = buildSenderBlock(bill.patient.name ?? "", planContext?.userAddress);
+  const finalBody = senderBlock ? `${senderBlock}\n\n${spliced}` : spliced;
 
   return {
     body: finalBody,

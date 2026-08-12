@@ -25,7 +25,7 @@ import {
   isPreciseDollarAssertable,
   type LineRecovery,
 } from "../../../../src/lib/disputes/dispute-grounds";
-import { LETTER_TEMPLATES } from "../../../../src/lib/disputes/templates";
+import { LETTER_TEMPLATES, buildSenderBlock } from "../../../../src/lib/disputes/templates";
 import type {
   DisputeEvidence,
   LineItemEvidence,
@@ -227,6 +227,23 @@ console.log("\nS2 — deductible met: real $240 recovery preserved (letter == ca
     "S2 insurer ON letter demands the $240.00 refund",
     renderInsurerReqBlock(evidence, new Map([["li-1", { ...byLine }]])).includes("$240.00"),
   );
+}
+
+// ── S310 — the sender block (prepended at the two compose exits): shape + fail-soft. ──
+console.log("\nS310 — sender block: name + address above the dateline, fail-soft");
+{
+  const addr = { line1: "456 Oak Ave", line2: null, city: "Pittsburg", state: "WA", zip: "87726" };
+  check(
+    "sender block: name + address, standard shape",
+    buildSenderBlock("Jordan Sample", addr) === "Jordan Sample\n456 Oak Ave\nPittsburg, WA 87726",
+    buildSenderBlock("Jordan Sample", addr),
+  );
+  check(
+    "sender block: line2 renders when present",
+    buildSenderBlock("Jordan Sample", { ...addr, line2: "Apt 2" }) ===
+      "Jordan Sample\n456 Oak Ave\nApt 2\nPittsburg, WA 87726",
+  );
+  check("sender block: no address → nothing (fail-soft)", buildSenderBlock("Jordan Sample", null) === null);
 }
 
 // ── S310 — the collections-hold ask: an attested phone hold upgrades the standing

@@ -232,7 +232,13 @@ function DisputesContent() {
   // S310 (F14a, optimistic) — a just-saved name shows in the claim-details
   // facts immediately; server truth replaces it after the refetch. Cleared on
   // success (post-refetch, so no flicker) and on failure (the snapback).
-  const [nameOptimistic, setNameOptimistic] = useState<{ provider?: string; insurer?: string }>({});
+  const [factsOptimistic, setFactsOptimistic] = useState<{
+    provider?: string;
+    insurer?: string;
+    // S310 (sender block) — the just-saved mailing address, shown until the
+    // reconcile carries server truth.
+    address?: { line1: string; line2: string | null; city: string; state: string; zip: string };
+  }>({});
   const [evidence, setEvidence] = useState<DisputeEvidence | null>(null);
   const [nameMismatch, setNameMismatch] = useState<{ billName: string; profileName: string } | null>(null);
   // Phase 4 Task 4-E: server-authoritative flag state for cite-grade gating on
@@ -1557,8 +1563,8 @@ function DisputesContent() {
     });
     if (!res.ok) throw new Error(`save failed (${res.status})`);
   };
-  const clearNameOptimistic = (field: "provider" | "insurer") =>
-    setNameOptimistic((p) => {
+  const clearFactsOptimistic = (field: "provider" | "insurer" | "address") =>
+    setFactsOptimistic((p) => {
       const next = { ...p };
       delete next[field];
       return next;
@@ -1569,26 +1575,53 @@ function DisputesContent() {
     // Optimistic — the facts line shows the name in this render; the panel's
     // editor has already closed. Failure clears the override and rethrows so
     // the row snaps back open with the error.
-    setNameOptimistic((p) => ({ ...p, provider: name }));
+    setFactsOptimistic((p) => ({ ...p, provider: name }));
     try {
       await authedNamePost(`/api/claims/${claimId}/provider-contact`, { name });
       await refetchAfterChange();
-      clearNameOptimistic("provider");
+      clearFactsOptimistic("provider");
     } catch (err) {
-      clearNameOptimistic("provider");
+      clearFactsOptimistic("provider");
       throw err;
     }
   };
   const fixInsurerName = async (name: string): Promise<void> => {
     const planId = planContext?.plan?.id;
     if (!planId) throw new Error("no plan");
-    setNameOptimistic((p) => ({ ...p, insurer: name }));
+    setFactsOptimistic((p) => ({ ...p, insurer: name }));
     try {
       await authedNamePost(`/api/plan/insurer-name`, { planId, insurerName: name });
       await refetchAfterChange();
-      clearNameOptimistic("insurer");
+      clearFactsOptimistic("insurer");
     } catch (err) {
-      clearNameOptimistic("insurer");
+      clearFactsOptimistic("insurer");
+      throw err;
+    }
+  };
+  const fixUserAddress = async (addr: {
+    line1: string;
+    line2: string | null;
+    city: string;
+    state: string;
+    zip: string;
+  }): Promise<void> => {
+    // S310 (sender block) — writes the user's OWN profiles row through the
+    // EXISTING /api/profile route (the same one the profile page uses); the
+    // refetch re-resolves planContext.userAddress and the drift machinery
+    // rebuilds the draft with the sender block.
+    setFactsOptimistic((p) => ({ ...p, address: addr }));
+    try {
+      await authedNamePost(`/api/profile`, {
+        address_line1: addr.line1,
+        address_line2: addr.line2 ?? "",
+        city: addr.city,
+        state: addr.state,
+        zip_code: addr.zip,
+      });
+      await refetchAfterChange();
+      clearFactsOptimistic("address");
+    } catch (err) {
+      clearFactsOptimistic("address");
       throw err;
     }
   };
@@ -2223,8 +2256,11 @@ function DisputesContent() {
                 (patientIdentityResolved
                   ? letterPatientNameSrv ?? accountName
                   : (nameMismatch?.billName ?? nameMismatch?.profileName ?? accountName)) || null,
-              providerName: nameOptimistic.provider ?? evidence?.claims?.[0]?.providerName ?? null,
+              providerName: factsOptimistic.provider ?? evidence?.claims?.[0]?.providerName ?? null,
               serviceDate: evidence?.claims?.[0]?.dateOfService ?? null,
+              // S310 (sender block) — the letters print this address above the
+              // dateline when complete; the row lets the user fix it in place.
+              userAddress: factsOptimistic.address ?? planContext?.userAddress ?? null,
               // S310 — only insurer-recipient letters print the insurer, so
               // only they carry the fact (and its fix row). Same coalesce the
               // letter's recipient block resolves through; optimistic override
@@ -2232,7 +2268,7 @@ function DisputesContent() {
               ...(printsInsurerName
                 ? {
                     insurerName:
-                      nameOptimistic.insurer ??
+                      factsOptimistic.insurer ??
                       planContext?.insurer?.name ??
                       planContext?.plan?.insurerName ??
                       null,
@@ -2268,6 +2304,7 @@ function DisputesContent() {
       onResolvePatient={resolvePatientChoice}
       onFixProviderName={letter?.auditReportId ? fixProviderName : undefined}
       onFixInsurerName={printsInsurerName && planContext?.plan?.id ? fixInsurerName : undefined}
+      onFixUserAddress={fixUserAddress}
       onVouchNames={vouchNames}
       onEditLetter={() => setIsEditing(true)}
       onReviewAttestation={() => {

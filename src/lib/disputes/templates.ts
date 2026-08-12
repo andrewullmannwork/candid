@@ -286,6 +286,31 @@ function resolveStateCitation(state: string | null | undefined, lever: string): 
 /** Patient + reference block. Surfaces Provider NPI when it's known —
  *  preferring planContext.providerContact, falling back to bill.provider.npi
  *  for audit-only flows. */
+/**
+ * S310 (Andrew) — the letter's SENDER block: the user's name + mailing address
+ * above the dateline (standard business-letter position), so "send your
+ * response to the address above" is finally truthful. Rendered at the TWO
+ * compose exits (index.ts generateDisputeLetter + rerender.ts
+ * rerenderDisputeLetter), never per-template; fail-soft — an absent or
+ * incomplete address renders nothing and the letter is byte-identical.
+ */
+export function buildSenderBlock(
+  name: string | null | undefined,
+  addr:
+    | { line1: string; line2: string | null; city: string; state: string; zip: string }
+    | null
+    | undefined,
+): string | null {
+  if (!addr) return null;
+  const lines = [
+    ...(name && name.trim() ? [name.trim()] : []),
+    addr.line1,
+    ...(addr.line2 ? [addr.line2] : []),
+    `${addr.city}, ${addr.state} ${addr.zip}`,
+  ];
+  return lines.join("\n");
+}
+
 function buildPatientReferenceBlock(
   patientName: string,
   memberId: string | undefined,

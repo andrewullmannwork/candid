@@ -39,6 +39,11 @@ import {
 } from "@/components/shared/needs-format";
 import { PatientIdentityChoices } from "@/components/disputes/PatientIdentityChoices";
 import {
+  validateUsAddress,
+  composeUsAddress,
+  type UsAddressErrors,
+} from "@/lib/address/validate-us-address";
+import {
   ServiceAttestationFlow,
   type AttestationLine,
 } from "@/components/disputes/ServiceAttestationFlow";
@@ -188,6 +193,18 @@ export interface CaseNeedsPanelProps {
      * when the name is in the letter. Undefined → no insurer fact.
      */
     insurerName?: string | null;
+    /**
+     * S310 (sender block) — the user's mailing address (profiles row), printed
+     * above every letter's dateline when complete. Null → the letter renders
+     * no sender block and the wrong-mode row offers Add.
+     */
+    userAddress?: {
+      line1: string;
+      line2: string | null;
+      city: string;
+      state: string;
+      zip: string;
+    } | null;
   } | null;
   /** every billed line — the attestation picker's candidates (same shape the
    *  ServiceAttestationFlow always consumed). */
@@ -223,6 +240,17 @@ export interface CaseNeedsPanelProps {
    */
   onFixProviderName?: (name: string) => Promise<unknown>;
   onFixInsurerName?: (name: string) => Promise<unknown>;
+  /**
+   * S310 (sender block) — saves the user's mailing address through the page's
+   * existing /api/profile write; letters rebuild with the sender block.
+   */
+  onFixUserAddress?: (addr: {
+    line1: string;
+    line2: string | null;
+    city: string;
+    state: string;
+    zip: string;
+  }) => Promise<unknown>;
   /**
    * S310 — "These look right" also vouches the printed names (flywheel
    * corroboration stamps; fire-and-forget on the page side).
@@ -516,7 +544,7 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
     onAddPlanDetails, onConfirmParsedCosts, onRejectParsedCost, onResolvePatient, onEditLetter,
     onReviewAttestation,
     claimFacts, attestationLines, attestedLineItemIds, accountName, attestingAsName, onAttest,
-    onFixProviderName, onFixInsurerName, onVouchNames,
+    onFixProviderName, onFixInsurerName, onFixUserAddress, onVouchNames,
     onAddProviderAddress, onAddInsurerAddress, onUploadEob, onSaveAmountPaid,
     onChangePlan, onSaveDeadlineDate,
     letterRequirementsOn = false,
@@ -537,6 +565,19 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
   const [nameEdit, setNameEdit] = useState<{
     field: "provider" | "insurer";
     value: string;
+    error: boolean;
+  } | null>(null);
+  // S310 (sender block) — the wrong-mode mailing-address editor (5 fields,
+  // the SHARED US-address validation the provider/insurer forms use). Local
+  // validation keeps the form open; a valid save closes optimistically and
+  // snaps back open on failure, same as the name rows.
+  const [addrEdit, setAddrEdit] = useState<{
+    line1: string;
+    line2: string;
+    city: string;
+    state: string;
+    zip: string;
+    errors: UsAddressErrors;
     error: boolean;
   } | null>(null);
   // S294 — the shared three-choice patient-identity form, expanded below its row.
@@ -727,6 +768,16 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
       // S310 — present only when this letter prints the insurer (page-gated).
       claimFacts.insurerName ? `Insurer: ${claimFacts.insurerName}` : null,
       claimFacts.serviceDate ? `Service date: ${prettyDate(claimFacts.serviceDate)}` : null,
+      // S310 (sender block) — the address the letters print above the dateline.
+      claimFacts.userAddress
+        ? `Your address: ${composeUsAddress({
+            addressLine1: claimFacts.userAddress.line1,
+            addressLine2: claimFacts.userAddress.line2 ?? "",
+            city: claimFacts.userAddress.city,
+            state: claimFacts.userAddress.state,
+            postalCode: claimFacts.userAddress.zip,
+          })}`
+        : null,
     ].filter(Boolean).join(" · ");
     // S310 (F14a, Andrew's ruling) — the names the letter prints are part of
     // confirming the claim details: "These look right" vouches them, and
@@ -795,6 +846,155 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
               className="text-[13px] font-medium text-blue-600 hover:text-blue-700"
             >
               Edit
+            </button>
+          )}
+        </li>
+      );
+    };
+    // S310 (sender block) — validate locally (shared US-address rules); a valid
+    // save closes optimistically and snaps back open on rejection.
+    const saveAddr = () => {
+      if (!addrEdit || !onFixUserAddress) return;
+      const fields = {
+        addressLine1: addrEdit.line1.trim(),
+        addressLine2: addrEdit.line2.trim() || undefined,
+        city: addrEdit.city.trim(),
+        state: addrEdit.state.trim().toUpperCase(),
+        postalCode: addrEdit.zip.trim(),
+      };
+      const errs = validateUsAddress(fields);
+      if (Object.keys(errs).length > 0) {
+        setAddrEdit((p) => (p ? { ...p, errors: errs } : p));
+        return;
+      }
+      const addr = {
+        line1: fields.addressLine1,
+        line2: addrEdit.line2.trim() || null,
+        city: fields.city,
+        state: fields.state,
+        zip: fields.postalCode,
+      };
+      setAddrEdit(null);
+      void Promise.resolve(onFixUserAddress(addr)).catch(() => {
+        setAddrEdit({
+          line1: addr.line1,
+          line2: addr.line2 ?? "",
+          city: addr.city,
+          state: addr.state,
+          zip: addr.zip,
+          errors: {},
+          error: true,
+        });
+      });
+    };
+    const addrRow = () => {
+      const a = claimFacts.userAddress ?? null;
+      const inputCls =
+        "rounded-lg border border-gray-300 px-2.5 py-1.5 text-[13px] text-gray-900 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100";
+      const errCls =
+        "rounded-lg border border-red-400 px-2.5 py-1.5 text-[13px] text-gray-900 focus:outline-none focus:ring-2 focus:ring-red-100";
+      return (
+        <li key="user-address" className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[13px]">
+          <span className="min-w-0 text-gray-700">
+            Your mailing address
+            {a ? (
+              <>
+                {" · "}
+                <span className="font-medium text-gray-900">
+                  {composeUsAddress({
+                    addressLine1: a.line1,
+                    addressLine2: a.line2 ?? "",
+                    city: a.city,
+                    state: a.state,
+                    postalCode: a.zip,
+                  })}
+                </span>
+              </>
+            ) : null}
+          </span>
+          {addrEdit ? (
+            <span className="flex w-full flex-col gap-2">
+              <input
+                type="text"
+                value={addrEdit.line1}
+                onChange={(e) => setAddrEdit((p) => (p ? { ...p, line1: e.target.value } : p))}
+                aria-label="Street address"
+                placeholder="Street address"
+                autoFocus
+                className={`w-full ${addrEdit.errors.addressLine1 ? errCls : inputCls}`}
+              />
+              <input
+                type="text"
+                value={addrEdit.line2}
+                onChange={(e) => setAddrEdit((p) => (p ? { ...p, line2: e.target.value } : p))}
+                aria-label="Suite / unit"
+                placeholder="Suite / unit (optional)"
+                className={`w-full ${inputCls}`}
+              />
+              <span className="flex w-full gap-2">
+                <input
+                  type="text"
+                  value={addrEdit.city}
+                  onChange={(e) => setAddrEdit((p) => (p ? { ...p, city: e.target.value } : p))}
+                  aria-label="City"
+                  placeholder="City"
+                  className={`min-w-0 flex-1 ${addrEdit.errors.city ? errCls : inputCls}`}
+                />
+                <input
+                  type="text"
+                  value={addrEdit.state}
+                  onChange={(e) => setAddrEdit((p) => (p ? { ...p, state: e.target.value } : p))}
+                  aria-label="State"
+                  placeholder="ST"
+                  maxLength={2}
+                  className={`w-14 ${addrEdit.errors.state ? errCls : inputCls}`}
+                />
+                <input
+                  type="text"
+                  value={addrEdit.zip}
+                  onChange={(e) => setAddrEdit((p) => (p ? { ...p, zip: e.target.value } : p))}
+                  aria-label="ZIP code"
+                  placeholder="ZIP"
+                  className={`w-24 ${addrEdit.errors.postalCode ? errCls : inputCls}`}
+                />
+              </span>
+              <span className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={saveAddr}
+                  className="rounded-lg bg-blue-600 px-3 py-1.5 text-[13px] font-semibold text-white transition-colors hover:bg-blue-700"
+                >
+                  Save
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAddrEdit(null)}
+                  className="text-[13px] font-medium text-gray-500 hover:text-gray-700"
+                >
+                  Cancel
+                </button>
+                {addrEdit.error ? (
+                  <span className="text-[12px] text-red-600">Couldn&apos;t save — try again.</span>
+                ) : null}
+              </span>
+            </span>
+          ) : (
+            <button
+              type="button"
+              onClick={() =>
+                setAddrEdit({
+                  line1: a?.line1 ?? "",
+                  line2: a?.line2 ?? "",
+                  city: a?.city ?? "",
+                  state: a?.state ?? "",
+                  zip: a?.zip ?? "",
+                  errors: {},
+                  error: false,
+                })
+              }
+              className="text-[13px] font-medium text-blue-600 hover:text-blue-700"
+            >
+              {a ? "Edit" : "Add"}
             </button>
           )}
         </li>
@@ -872,7 +1072,9 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
                   when the letter prints it — claimFacts.insurerName gated by
                   the page to insurer-recipient letters). */}
               {detailsWrongMode &&
-              (onFixProviderName || (onFixInsurerName && claimFacts.insurerName !== undefined)) ? (
+              (onFixProviderName ||
+                (onFixInsurerName && claimFacts.insurerName !== undefined) ||
+                onFixUserAddress) ? (
                 <ul className="space-y-1.5 border-l-2 border-gray-100 pl-2.5">
                   {onFixProviderName
                     ? nameFixRow("provider", "Provider name", claimFacts.providerName, onFixProviderName)
@@ -880,6 +1082,9 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
                   {onFixInsurerName && claimFacts.insurerName !== undefined
                     ? nameFixRow("insurer", "Insurer name", claimFacts.insurerName ?? null, onFixInsurerName)
                     : null}
+                  {/* S310 (sender block) — the mailing address the letters
+                      print; Add state when the profile has none. */}
+                  {onFixUserAddress ? addrRow() : null}
                 </ul>
               ) : null}
               <ul className="space-y-1.5">
