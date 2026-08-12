@@ -165,6 +165,24 @@ interface CostShareBannerProps {
     deductibleApplies: boolean | null;
     costProvenance: "plan_document" | "user" | "card" | "unknown";
   }> | null;
+  /**
+   * S310 F16 (Andrew's ruling) — lines whose rate is an ESTIMATE borrowed from
+   * a category sibling (S153/S154, `coverageNeedsConfirmation`). Each renders
+   * a confirmable row: "Looks right" fires the SAME S154 confirm-coverage
+   * write the line table's Coverage badge uses, "Edit" opens the existing
+   * rate modal — one row, two surfaces, flow by construction.
+   */
+  estimateRows?: Array<{
+    lineId: string;
+    serviceLabel: string;
+    siblingLabel: string | null;
+    rateText: string;
+    serviceSlug: string | null;
+  }> | null;
+  /** S310 F16 — the S154 confirm (ClaimDetail's handleConfirmCoverage). */
+  onConfirmEstimate?: (lineId: string) => void | Promise<void>;
+  /** S310 F16 — the in-flight confirm's line id (ClaimDetail's pending state). */
+  confirmingEstimateId?: string | null;
   /** S308 — the persisted reviewed/collapsed state (claims.metadata.assumptionsReviewedAt). */
   initiallyReviewed?: boolean;
   /** S308 — bumps when the collapsed rail step's "Update assumptions" link is
@@ -281,6 +299,7 @@ export const DONE_WRITABLE_FIELDS: ReadonlySet<string> = new Set(
 export function pendingAssumptionFields(
   assumptions: BannerAssumption[],
   overrides: CostShareOverrides | null,
+  // (trailing optional params below; S310 F16 adds `estimateRows` at the end)
   /**
    * S292 — the plan-identity row's state, so its amber comes from THIS set like
    * every other row's. It used to be flagged by its own independent condition
@@ -318,6 +337,13 @@ export function pendingAssumptionFields(
    * re-maps every existing caller's arguments.
    */
   totalsSource?: unknown,
+  /**
+   * S310 F16 — estimate-borrowed rates awaiting the S154 confirm. One key per
+   * visible row (the caller passes only needing-confirmation lines, so the
+   * amber ⟺ counted ⟺ on-screen invariant holds by construction). APPENDED,
+   * same rule as totalsSource.
+   */
+  estimateRows?: Array<{ lineId: string }> | null,
 ): Set<string> {
   const has = (field: string) => assumptions.some((a) => a.field === field);
   const pending = new Set<string>();
@@ -407,6 +433,8 @@ export function pendingAssumptionFields(
       pending.add(`service_cost:${a.serviceSlug ?? a.serviceLabel}`);
     }
   }
+  // S310 F16 — one key per estimate row on screen.
+  for (const er of estimateRows ?? []) pending.add(`estimate:${er.lineId}`);
   return clearUnactionable(pending);
 }
 
@@ -513,6 +541,9 @@ export function CostShareBanner({
   onShouldBeCovered,
   onAddPlanDetails,
   statedServiceCosts,
+  estimateRows,
+  onConfirmEstimate,
+  confirmingEstimateId,
   initiallyReviewed,
   expandSignal,
   onUploadEob,
@@ -819,11 +850,12 @@ export function CostShareBanner({
       ((oopExists && !oopResolved) ? 1 : 0) +
       pendingServiceCostChips.length +
       (showAca ? 1 : 0);
-  const rawSectionHasRows = !!totalsSource || !!planIdentity || showNetwork || showDeductible || showOop || hasServiceCostGap || statedCosts.length > 0 || showAca;
+  const estimates = estimateRows ?? [];
+  const rawSectionHasRows = !!totalsSource || !!planIdentity || showNetwork || showDeductible || showOop || hasServiceCostGap || statedCosts.length > 0 || estimates.length > 0 || showAca;
   // Section is OPEN unless the user dismissed it via "Done"; when closed but
   // assumptions exist, "Update assumptions" brings it back.
   const sectionOpen = !dismissed && rawSectionHasRows;
-  const anyAssumptions = networkExists || deductibleExists || oopExists || hasServiceCostGap || !!acaA || statedCosts.length > 0;
+  const anyAssumptions = networkExists || deductibleExists || oopExists || hasServiceCostGap || !!acaA || statedCosts.length > 0 || estimates.length > 0;
   const showUpdateLink = !sectionOpen && anyAssumptions;
   const effectivePending = sectionOpen ? pendingCount : 0;
   const isClean = verdict === "correct" || verdict === "confident";
@@ -1187,6 +1219,47 @@ export function CostShareBanner({
         ),
       });
     }
+  }
+
+  // S310 F16 (Andrew's ruling) — estimate-borrowed rates are confirmable here
+  // too. Same wire row the line table's Coverage badge renders from, same S154
+  // confirm write; confirming either surface settles both on the refetch.
+  for (const er of estimates) {
+    const confirming = confirmingEstimateId === er.lineId;
+    descs.push({
+      key: `estimate:${er.lineId}`,
+      done: false,
+      node: (
+              <Row
+                flagged={flagRow(`estimate:${er.lineId}`)}
+                icon={DocIcon}
+                label={`Estimated rate — ${er.serviceLabel}`}
+                control={
+                  <span className="inline-flex flex-none items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={confirming || !onConfirmEstimate}
+                      onClick={() => void onConfirmEstimate?.(er.lineId)}
+                      className="whitespace-nowrap rounded-lg bg-blue-600 px-3 py-1.5 text-[13px] font-semibold text-white transition-colors hover:bg-blue-700 disabled:opacity-60"
+                    >
+                      {confirming ? "Saving…" : "Looks right"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onAddPlanDetails({ lineId: er.lineId, serviceSlug: er.serviceSlug })}
+                      className="text-[13px] font-medium text-blue-600 hover:text-blue-700"
+                    >
+                      Edit
+                    </button>
+                  </span>
+                }
+              >
+                {er.siblingLabel
+                  ? `Your plan doesn't list ${er.serviceLabel.toLowerCase()} directly, so we're using its ${er.siblingLabel} rate: ${er.rateText}. Confirm it or set the real rate.`
+                  : `We're using an estimated rate for ${er.serviceLabel.toLowerCase()}: ${er.rateText}. Confirm it or set the real rate.`}
+              </Row>
+      ),
+    });
   }
 
   if (showAca) {

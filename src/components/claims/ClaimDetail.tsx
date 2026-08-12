@@ -1783,6 +1783,29 @@ export function ClaimDetail({
   // Green check once every assumption is answered; amber — number kept, because
   // it's skipped rather than finished — when answers are still outstanding but
   // the user has already confirmed the services below it.
+  // S310 F16 (Andrew's ruling) — estimate-borrowed rates surface in the
+  // assumptions card as confirmable rows. Same wire data the line table's
+  // Coverage badge renders from (coverageNeedsConfirmation, S154), same
+  // confirm write (handleConfirmCoverage), so the card row and the badge
+  // read + settle ONE row — flow by construction, no new derivations.
+  const estimateRateRows = primaryLineItems
+    .filter((li) => li.coverageNeedsConfirmation === true)
+    .map((li) => ({
+      lineId: li.id,
+      serviceLabel:
+        humanizeSlug(li.service_slug ?? "") || li.description || "this service",
+      siblingLabel: li.coverageSecondaryMatchedSlug
+        ? humanizeSlug(li.coverageSecondaryMatchedSlug) || null
+        : null,
+      rateText:
+        li.planCoverage?.copay != null
+          ? `$${fmtMoney(li.planCoverage.copay)} copay`
+          : li.planCoverage?.coinsurance != null
+            ? `${Math.round(normalizeCoinsurancePct(li.planCoverage.coinsurance) ?? 0)}% coinsurance`
+            : "a borrowed rate",
+      serviceSlug: li.service_slug ?? null,
+    }));
+
   const assumptionsPendingFields = railHasAssumptions
     ? pendingAssumptionFields(
         bannerAssumptions,
@@ -1813,6 +1836,9 @@ export function ClaimDetail({
         // S302 — same object the banner renders from, so the badge and the row
         // can never disagree about whether the question is outstanding.
         totalsSourceRow?.answered == null ? totalsSourceRow : null,
+        // S310 F16 — the estimate rows join the ONE pending set (amber ⟺
+        // counted; the badge and the card row read the same keys).
+        estimateRateRows,
       )
     : new Set<string>();
   const assumptionsPending = assumptionsPendingFields.size;
@@ -2667,6 +2693,9 @@ export function ClaimDetail({
                 onConfirmDefaults={confirmAssumptionDefaults}
                 onOptimistic={(patch) => setAssumptionOptimistic((prev) => ({ ...prev, ...patch }))}
                 pendingFields={assumptionsPendingFields}
+                estimateRows={estimateRateRows}
+                onConfirmEstimate={handleConfirmCoverage}
+                confirmingEstimateId={confirmingCoverageId}
                 totalsSource={totalsSourceRow}
                 planIdentity={
                   planCandidates
@@ -2855,6 +2884,9 @@ export function ClaimDetail({
                 onConfirmDefaults={confirmAssumptionDefaults}
                 onOptimistic={(patch) => setAssumptionOptimistic((prev) => ({ ...prev, ...patch }))}
                 pendingFields={assumptionsPendingFields}
+                estimateRows={estimateRateRows}
+                onConfirmEstimate={handleConfirmCoverage}
+                confirmingEstimateId={confirmingCoverageId}
                 planIdentity={
                   planCandidates
                     ? {
