@@ -250,3 +250,22 @@ async function main() {
   console.log(`\n■ CLAIM ROLLUP  priced lines: ${pricedCount}/${lineItems.length} · summed shouldOwe over priced = ${pricedShouldOwe.toFixed(2)} · header patient_resp = ${claim.total_patient_responsibility} · effectivePatientPaid = ${JSON.stringify(effectiveTotals)}`);
 }
 main().catch((e) => { console.error("VERIFY FAILED:", e.message, e.stack?.split("\n").slice(1, 4).join("\n")); process.exit(1); });
+
+// appended: the DISPUTE basis for the same claim (PROBE_BASIS=1) — the letter
+// pipeline's own engine run, deciding isPreciseDollarAssertable per line.
+// Read-only. Diagnoses why a live letter omitted its dollar (S309 F12 live gap).
+if (process.env.PROBE_BASIS) {
+  (async () => {
+    const { loadDisputeGroundBasis } = await import("../src/lib/disputes/dispute-ground-basis");
+    const { isPreciseDollarAssertable } = await import("../src/lib/disputes/dispute-grounds");
+    const { data: claim } = await sb.from("claims").select("id, user_id").eq("id", CLAIM).single();
+    const basis = await loadDisputeGroundBasis(sb, claim!.user_id as string, [CLAIM]);
+    console.log(`\n■ DISPUTE BASIS lines: ${basis.size}`);
+    for (const [lineId, r] of basis) {
+      console.log(`  line ${lineId.slice(0, 8)}: shouldOwe=${r.shouldOwe} grounded=${r.shouldOweGrounded} verdict=${JSON.stringify(r.verdict)} assertable=${isPreciseDollarAssertable(r)}`);
+      for (const a of r.assumptions ?? []) {
+        console.log(`    assumption ${a.field} reason=${a.reason} answered=${(a as unknown as Record<string, unknown>).answered ?? "—"}`);
+      }
+    }
+  })().catch((e) => { console.error("BASIS FAIL:", e.message, e.stack?.split("\n").slice(1, 3).join("\n")); process.exit(1); });
+}
