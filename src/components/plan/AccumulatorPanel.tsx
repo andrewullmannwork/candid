@@ -504,9 +504,16 @@ export function AccumulatorPanel({ insurancePlanId, planYear, insurer, className
 
 /**
  * S294 — the plan-change ask (Andrew-approved copy + mock). Per-bill choice (a
- * member can legitimately split); defaults to "Keep on old plan" so nothing
- * moves by accident; Apply = the EXISTING `claim_plan` re-pin per moved bill
- * (one POST each — no new API surface), then the panel refetches.
+ * member can legitimately split); Apply = the EXISTING `claim_plan` re-pin per
+ * moved bill (one POST each), then the panel refetches.
+ *
+ * S313 — no longer defaults to keeping. Nothing is chosen until the member
+ * chooses, and Done stays disabled until every bill is decided. The old
+ * "default to keep" was expressed as a BOOLEAN, which meant an explicit Keep
+ * and an untouched row were the same value: the Keep button painted grey on
+ * load (reading as pre-selected, or as disabled), and the apply loop skipped
+ * both alike — so a deliberate Keep wrote nothing and the ask came back on the
+ * next visit, forever.
  */
 function PlanChangeAskModal({
   bills,
@@ -524,10 +531,18 @@ function PlanChangeAskModal({
   onApplied: () => void;
 }) {
   const { user } = useAuth();
-  const [moves, setMoves] = useState<Record<string, boolean>>({});
+  // S313 — THREE-valued, not a boolean. `undefined` (not yet decided) and
+  // "keep" are different facts, and collapsing them was the whole defect: the
+  // Keep button painted grey on load before any click (looking pre-selected,
+  // or disabled), and `if (!moves[id]) continue` treated an explicit Keep
+  // exactly like an untouched row — so the decision produced no write, and the
+  // ask returned on every visit forever.
+  const [choices, setChoices] = useState<Record<string, "move" | "keep" | undefined>>({});
   const [applying, setApplying] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const moveCount = Object.values(moves).filter(Boolean).length;
+  const moveCount = Object.values(choices).filter((c) => c === "move").length;
+  const keepCount = Object.values(choices).filter((c) => c === "keep").length;
+  const allDecided = bills.every((b) => choices[b.claimId] != null);
 
   const apply = async () => {
     if (!user) return;
@@ -536,7 +551,7 @@ function PlanChangeAskModal({
     try {
       const token = await user.firebaseUser.getIdToken();
       for (const b of bills) {
-        if (!moves[b.claimId]) continue;
+        if (choices[b.claimId] !== "move") continue;
         const res = await fetch(`/api/claims/${b.claimId}/cost-share-override`, {
           method: "POST",
           headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
@@ -602,27 +617,30 @@ function PlanChangeAskModal({
               <div className="mt-2.5 flex gap-2">
                 <button
                   type="button"
-                  onClick={() => setMoves((m) => ({ ...m, [b.claimId]: true }))}
+                  onClick={() => setChoices((c) => ({ ...c, [b.claimId]: "move" }))}
                   className={cn(
                     "flex-1 rounded-lg border px-3 py-2 text-[12.5px] font-semibold transition-colors",
-                    moves[b.claimId]
+                    choices[b.claimId] === "move"
                       ? "border-emerald-300 bg-emerald-50 text-emerald-700"
                       : "border-gray-200 bg-white text-gray-700 hover:border-gray-300",
                   )}
                 >
-                  Move to new plan
+                  Move to current plan
                 </button>
                 <button
                   type="button"
-                  onClick={() => setMoves((m) => ({ ...m, [b.claimId]: false }))}
+                  onClick={() => setChoices((c) => ({ ...c, [b.claimId]: "keep" }))}
                   className={cn(
                     "flex-1 rounded-lg border px-3 py-2 text-[12.5px] font-semibold transition-colors",
-                    moves[b.claimId]
-                      ? "border-gray-200 bg-white text-gray-700 hover:border-gray-300"
-                      : "border-gray-300 bg-gray-50 text-gray-800",
+                    // Amber when CHOSEN, plain white when undecided — never grey,
+                    // which read as disabled on a button that was in fact the
+                    // default outcome (Andrew, S313).
+                    choices[b.claimId] === "keep"
+                      ? "border-amber-300 bg-amber-50 text-amber-800"
+                      : "border-gray-200 bg-white text-gray-700 hover:border-gray-300",
                   )}
                 >
-                  Keep on old plan
+                  Keep on the old plan
                 </button>
               </div>
             </div>
@@ -640,11 +658,18 @@ function PlanChangeAskModal({
           </button>
           <button
             type="button"
-            disabled={applying}
+            disabled={applying || !allDecided}
+            title={allDecided ? undefined : "Choose a plan for each bill first"}
             onClick={() => void apply()}
             className="rounded-lg bg-blue-600 px-3.5 py-2 text-[13px] font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
           >
-            {applying ? "Moving…" : moveCount > 0 ? `Apply changes (${moveCount})` : "Done"}
+            {applying
+              ? "Saving…"
+              : moveCount > 0
+                ? `Apply changes (${moveCount})`
+                : keepCount > 0
+                  ? "Done"
+                  : "Done"}
           </button>
         </div>
       </div>
