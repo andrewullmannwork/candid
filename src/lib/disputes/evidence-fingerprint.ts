@@ -16,7 +16,7 @@ import {
   readUserTotalsSource,
   type UserTotalsSource,
 } from "@/lib/claims/effective-totals";
-import { isLiveDraftStatus } from "./letter-type";
+import { isLiveDraftStatus, LETTER_COMPOSE_VERSION } from "./letter-type";
 import {
   loadPlanCostShareParams,
   loadCostShareOverrides,
@@ -148,6 +148,16 @@ export interface CostShareBasis {
  * inclusive) → the letter rebuilds to current inputs immediately.
  */
 export interface ComposeBasis {
+  /**
+   * S312 (Andrew: "shouldn't the letter auto-redraft?") — the letter-composition
+   * contract's own version (LETTER_COMPOSE_VERSION, letter-type.ts). Bumping it
+   * drifts every UNSENT draft exactly once, so shipped letter improvements
+   * reach live drafts through the same self-heal-on-view machinery data changes
+   * use. Lives ONLY in this compose-inclusive shape — a sent letter's
+   * evidence-only fingerprint can never move on a bump (no false "your numbers
+   * have changed" note on a mailed record).
+   */
+  composeVersion: string;
   attestingName: string | null;
   /** S306 T1 — the identity ANSWER keys the letter's patient name derives from
    *  (letterPatientName). The first hash watched only attestingAsName — a key
@@ -458,6 +468,9 @@ export function composeBasisFrom(
   const col = (dm.collector ?? null) as Record<string, unknown> | null;
   const exhausted = (dm.appealExhausted ?? null) as Record<string, unknown> | null;
   return {
+    // S312 — the compose contract's version: the ONE non-data input, so a
+    // shipped letter improvement drifts live drafts once (see letter-type.ts).
+    composeVersion: LETTER_COMPOSE_VERSION,
     attestingName: composeStr(dm.attestingAsName),
     patientIdentityChoice: composeStr(dm.patientIdentityChoice),
     patientCorrectedName: composeStr(dm.patientCorrectedName),

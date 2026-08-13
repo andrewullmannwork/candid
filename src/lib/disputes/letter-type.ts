@@ -569,6 +569,27 @@ export function isLiveDraftStatus(status: string | null | undefined): boolean {
 }
 
 /**
+ * S312 (Andrew: "shouldn't the letter auto-redraft?") — the letter COMPOSE
+ * VERSION: a stamp for the letter-composition contract itself, hashed into the
+ * UNSENT compose basis (evidence-fingerprint.ts) so that shipping a letter
+ * improvement drifts every live draft exactly once — the same self-heal-on-view
+ * rollout the drift watch already runs for data changes. A user never needs to
+ * know the Re-draft button exists to receive a better letter.
+ *
+ * SENT letters can never see this: their fingerprint is evidence-only by the
+ * standing shape rule, so a bump cannot fire the "your numbers have changed"
+ * note on a mailed record (pinned in draft-live-rebuild).
+ *
+ * ⚠ BUMP DISCIPLINE: bump this in the SAME commit whenever letter compose
+ * OUTPUT changes — the detector is the golden corpus: if golden pins
+ * re-baseline (`golden-corpus.ts --update`), this bumps. Flag states decide
+ * the delivery: live-rebuild ON → silent rebuild on next view; OFF (PROD at
+ * promote) → the stale banner + Refresh consent flow. Value is opaque to the
+ * hash — keep it readable for debugging.
+ */
+export const LETTER_COMPOSE_VERSION = "s312.1";
+
+/**
  * S312 (T4, Andrew's ruling) — the ONE lifecycle word a letter surface may
  * print. The hero's eyebrow had "· DRAFT" BAKED into every letter-type string
  * (no status axis at all), so cancelled letters — and sent ones — wore "DRAFT"
