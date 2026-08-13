@@ -587,7 +587,7 @@ export function isLiveDraftStatus(status: string | null | undefined): boolean {
  * promote) → the stale banner + Refresh consent flow. Value is opaque to the
  * hash — keep it readable for debugging.
  */
-export const LETTER_COMPOSE_VERSION = "s312.1";
+export const LETTER_COMPOSE_VERSION = "s313.1";
 
 /**
  * S312 (T4, Andrew's ruling) — the ONE lifecycle word a letter surface may

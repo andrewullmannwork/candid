@@ -1587,7 +1587,11 @@ function renderLineItemEvidence(
       );
     } else {
       bullets.push(
-        `   - ${prefix}.${li.planBenefit.citation ? ` Source: ${li.planBenefit.citation}.` : ""}`,
+        // S313 — the `Source:` suffix carries the year-stamped booklet, so it is
+        // suppressed on a wrong-year citation exactly as in the sibling branch
+        // above. There are TWO bullet variants; patching only one left half a
+        // citation standing (caught failing-first by plan-year-authority.ts).
+        `   - ${prefix}.${li.planBenefit.citation && !citeYearMismatch ? ` Source: ${li.planBenefit.citation}.` : ""}`,
       );
       if (excerptRenderable) {
         bullets.push(`     Plan language: "${quotableExcerpt}"`);
