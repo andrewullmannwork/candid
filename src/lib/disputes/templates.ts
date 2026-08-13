@@ -452,7 +452,9 @@ function buildClosingArgument(
   // falls to the wrong-year proxy path below, which already existed (S110/S111)
   // and asks the insurer to produce the bill-year SPD under 29 USC §1024(b)(4).
   // `planYearMismatch` is null when the flag is off, so OFF is byte-identical.
-  const hasExactPlan = !!planContext?.plan && planContext.planYearMismatch == null;
+  const hasExactPlan =
+    !!planContext?.plan &&
+    (planContext.serviceYear == null || planContext.plan.planYear === planContext.serviceYear);
   const anyBenefit = hasAnyPlanBenefit(evidence);
   const isERISA = planContext?.planSource === "employer";
 
@@ -1330,18 +1332,18 @@ function renderEvidenceBlock(
   // CLAIM, not per line (evidence-resolver's tier chain stamps one planYear on
   // the whole coverage map) — a letter is all-mismatched or none, never mixed.
   const citeYearGap =
-    planContext?.planYearMismatch != null &&
+    planContext?.serviceYear != null &&
     evidence.claims.some((c) =>
       c.lineItemEvidence.some(
         (li) =>
           li.planBenefit?.sourcedFromYear != null &&
-          li.planBenefit.sourcedFromYear !== planContext.planYearMismatch,
+          li.planBenefit.sourcedFromYear !== planContext.serviceYear,
       ),
     );
   const yearGapNote =
-    citeYearGap && planContext?.planYearMismatch != null
+    citeYearGap && planContext?.serviceYear != null
       ? [
-          `My ${planContext.planYearMismatch} plan documents are not on file; the terms cited below reflect my current coverage under the same plan.`,
+          `My ${planContext.serviceYear} plan documents are not on file; the terms cited below reflect my current coverage under the same plan.`,
           "",
         ]
       : [];
@@ -1463,9 +1465,9 @@ function renderLineItemEvidence(
     // wrong-year: the archive lookup finding the bill-year canonical is a pass,
     // not a bypass. Compared against the source year, never the pinned plan's.
     const citeYearMismatch =
-      planContext?.planYearMismatch != null &&
+      planContext?.serviceYear != null &&
       li.planBenefit.sourcedFromYear != null &&
-      li.planBenefit.sourcedFromYear !== planContext.planYearMismatch;
+      li.planBenefit.sourcedFromYear !== planContext.serviceYear;
     let prefix: string;
     switch (li.planBenefit.sourcedFrom) {
       case "canonical_archive": {

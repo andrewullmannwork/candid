@@ -186,13 +186,20 @@ export interface PlanContext {
   insurer: InsurerContext | null;
   missingForYear: number | null;
   /**
-   * S313 — the DATE-OF-SERVICE year when the pinned plan belongs to a
-   * different year (null when they agree, or `plan_year_authority_v1` is off).
-   * Distinct from `missingForYear`, which also fires when NO plan is on file:
-   * consumers need to tell "you have no 2024 plan" apart from "the plan you
-   * have is your 2026 one", because the ask and the copy differ.
+   * S313 — the year the CARE happened, from the date of service. Null when
+   * unknown or `plan_year_authority_v1` is off (so OFF is byte-identical).
+   *
+   * A FACT, deliberately not a conclusion. Each consumer derives its own
+   * question from it: the letter asks "is the document I'm quoting from this
+   * year?" (`sourcedFromYear !== serviceYear`), the needs panel and the
+   * plan-change modal ask "is the PINNED plan from this year?"
+   * (`plan.planYear !== serviceYear`). Exposing the pinned-plan verdict
+   * instead left a hole: a manually bound canonical (Tier 2) carries its OWN
+   * year, so a right-year pin could still cite a wrong-year document and the
+   * pinned-plan gate would never open. The S110 comment names that exact case
+   * ("user bound a 2026 canonical for a 2023 bill").
    */
-  planYearMismatch: number | null;
+  serviceYear: number | null;
   fallbackPlan: ResolvedPlan | null;
   /**
    * Resolved from the linked claim's `claims.metadata.provider`. Null when
@@ -485,7 +492,6 @@ export async function resolvePlanContext(
       : null;
 
   const hasCitablePlan = !!resolvedPlan && !yearMismatchedPlan;
-  const planYearMismatch = yearMismatchedPlan ? serviceYear : null;
 
   // Fallback plan = any plan on file when no year/window match, so the
   // resolver can still surface *something* useful (e.g., user's 2026 plan
@@ -731,7 +737,7 @@ export async function resolvePlanContext(
     plan: toResolved(resolvedPlan),
     insurer,
     missingForYear,
-    planYearMismatch,
+    serviceYear: yearAuthorityOn ? serviceYear : null,
     fallbackPlan: toResolved(fallbackPlan),
     providerContact,
     collectorContact,
