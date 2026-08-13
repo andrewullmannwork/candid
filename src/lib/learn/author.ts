@@ -20,11 +20,10 @@ export const AUTHOR = {
    */
   bio: "He builds the Candid software that checks medical bills against EOBs, insurance plan documents, and the federal patient protection rules. These guides walk through the same checks, so you can run them yourself.",
   /**
-   * Personal profiles for the Person entity. Deliberately EMPTY for now: the
-   * LinkedIn page on file (linkedin.com/company/candidclaim) is the COMPANY,
-   * and it already sits on the Organization's `sameAs`. Putting an
-   * organization URL on a Person conflates two different entities and weakens
-   * both. Add a personal profile URL here when there is one.
+   * Personal profiles for the Person entity. The company LinkedIn stays on the
+   * Organization's `sameAs` (mixing the two conflates different entities);
+   * this list carries ANDREW's own public profiles. First entry added
+   * 2026-07-31: the Substack profile behind The Candid Chronicle.
    */
-  sameAs: [] as string[],
+  sameAs: ["https://substack.com/@andrewdullmann"] as string[],
 } as const;

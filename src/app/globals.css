@@ -484,3 +484,12 @@ html {
 .learn-authorbox-name a { color: var(--candid-blue-600); text-decoration: none; }
 .learn-authorbox-name a:hover { text-decoration: underline; }
 .learn-authorbox-bio { margin: 0; font-size: var(--text-body); line-height: var(--leading-relaxed); color: var(--fg-3); }
+
+/* ── /learn hub: The Candid Chronicle line (plain link, never an embed) ── */
+.learn-chronicle {
+  margin: calc(var(--space-6) * -1) 0 var(--space-10);
+  font-size: var(--text-body); line-height: var(--leading-normal); color: var(--fg-3);
+}
+.learn-chronicle strong { color: var(--fg-1); font-weight: var(--weight-semibold); }
+.learn-chronicle-link { color: var(--candid-blue-600); font-weight: var(--weight-medium); text-decoration: none; white-space: nowrap; }
+.learn-chronicle-link:hover { text-decoration: underline; }
