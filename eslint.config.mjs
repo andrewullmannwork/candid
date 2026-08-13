@@ -343,9 +343,18 @@ const eslintConfig = defineConfig([
   // `enabled` as false — so this is named debt, not a live defect. Draining
   // the ledger means converting each call to useFeatureFlag(); the entry goes
   // away with the last raw fetch in that file. Empty ledger = class closed.
+  //
+  // Scoped to ALL of src, not just the .tsx files where today's 13 happen to
+  // live: this repo's client hooks live under src/lib (there is no src/hooks),
+  // so a future useSomethingFlag() there — or any .ts helper — would otherwise
+  // slip a guard whose whole promise is that new code is covered by default.
   {
-    files: ["src/app/**/*.tsx", "src/components/**/*.tsx"],
+    files: ["src/**/*.ts", "src/**/*.tsx"],
     ignores: [
+      // THE sanctioned implementation — the hook every other caller must use.
+      // Not debt; this one never leaves the list.
+      "src/lib/config/use-feature-flag.ts",
+      // ── the ledger ──
       "src/app/(app)/plan/page.tsx", // change_plan_v1 + onboarding_simplified_v1
       "src/app/(app)/disputes/page.tsx", // dispute_plan_pinning_v1
       "src/app/(app)/dashboard/page.tsx", // onboarding_simplified_v1 (via SIMPLIFIED_ONBOARDING_FLAG)
