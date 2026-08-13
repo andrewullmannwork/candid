@@ -569,6 +569,25 @@ export function isLiveDraftStatus(status: string | null | undefined): boolean {
 }
 
 /**
+ * S312 (T4, Andrew's ruling) — the ONE lifecycle word a letter surface may
+ * print. The hero's eyebrow had "· DRAFT" BAKED into every letter-type string
+ * (no status axis at all), so cancelled letters — and sent ones — wore "DRAFT"
+ * forever. Vocabulary: DRAFT (live draft) · SENT (mailed — outcome chips
+ * elsewhere carry the rest) · CANCELLED (withdrawn) · CLOSED (the rare
+ * resolved-without-ever-sending exhibit, the S308 void family's other member).
+ * Order matters: a cancelled letter has null sent_at, and a resolved letter
+ * keeps its sent_at — status is the axis sent_at cannot see (S308).
+ */
+export function letterStateWord(
+  status: string | null | undefined,
+  sentAt: string | Date | null | undefined,
+): "DRAFT" | "SENT" | "CANCELLED" | "CLOSED" {
+  if (status === "cancelled") return "CANCELLED";
+  if (sentAt != null) return "SENT";
+  return isLiveDraftStatus(status) ? "DRAFT" : "CLOSED";
+}
+
+/**
  * S312 (F2-S312.1) — should a ROW-reading surface offer the "this letter may no
  * longer be needed" banner (Dismiss / Keep)?
  *
