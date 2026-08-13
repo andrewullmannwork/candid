@@ -446,7 +446,13 @@ function buildClosingArgument(
   evidence: DisputeEvidence | null | undefined,
 ): string {
   if (!evidence) return "";
-  const hasExactPlan = !!planContext?.plan;
+  // S313 — "exact" now means exact FOR THIS CARE, which includes the year. A
+  // plan document is authority only for care delivered in its own plan year, so
+  // a 2024 bill pinned to the member's 2026 plan is NOT an exact-plan cite; it
+  // falls to the wrong-year proxy path below, which already existed (S110/S111)
+  // and asks the insurer to produce the bill-year SPD under 29 USC §1024(b)(4).
+  // `planYearMismatch` is null when the flag is off, so OFF is byte-identical.
+  const hasExactPlan = !!planContext?.plan && planContext.planYearMismatch == null;
   const anyBenefit = hasAnyPlanBenefit(evidence);
   const isERISA = planContext?.planSource === "employer";
 
