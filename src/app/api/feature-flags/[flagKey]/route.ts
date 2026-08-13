@@ -13,17 +13,24 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { getFlags } from "@/lib/config/feature-flags";
-import { EXPOSED_FLAG_SET, EXPOSED_KV_FLAG_SET } from "@/lib/config/exposed-flags";
+import { EXPOSED_FLAG_SET, isExposedKvFlag } from "@/lib/config/exposed-flags";
 
 export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ flagKey: string }> }
 ) {
   const { flagKey } = await params;
-  if (EXPOSED_KV_FLAG_SET.has(flagKey)) {
+  if (isExposedKvFlag(flagKey)) {
     try {
       const kv = await getFlags();
-      return NextResponse.json({ enabled: kv.TEST_PHONE_EXEMPTION_ENABLED });
+      // Indexed by the REQUESTED key. This used to return
+      // `kv.TEST_PHONE_EXEMPTION_ENABLED` for any allowlisted KV key, so the
+      // second KV flag ever added would have silently served the first one's
+      // state (latent, since there is only one today). The EXPOSED_KV_FLAGS
+      // type guarantees this key exists on `kv` AND that its value is a
+      // boolean — `getFlags()` also returns operational numbers, and those
+      // must never be answerable here.
+      return NextResponse.json({ enabled: kv[flagKey] });
     } catch {
       return NextResponse.json({ enabled: false });
     }

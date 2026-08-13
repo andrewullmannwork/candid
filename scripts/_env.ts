@@ -48,6 +48,41 @@ export interface ScriptEnv {
   projectRef: string;
 }
 
+/**
+ * PURE — which database is this URL? Extracted from the IO so the CI fixture
+ * (scripts/calibration/fixtures/ops/script-env.ts) can pin the truth table,
+ * including the fail-closed cases no type can express. A refactor that inverts
+ * the UNKNOWN default would otherwise pass tsc, pass lint, and silently make
+ * every PROD write unguarded.
+ *
+ * PROD is tested FIRST on purpose: if the two env files ever hold the same URL
+ * (a bad copy), the answer must be PROD, not DEV.
+ */
+export function resolveDbTarget(
+  url: string,
+  prodUrl: string | null,
+  devUrl: string | null,
+): DbTarget {
+  if (prodUrl && url === prodUrl) return "PROD";
+  if (devUrl && url === devUrl) return "DEV";
+  return "UNKNOWN";
+}
+
+/**
+ * PURE — may this write proceed? "allow" | "refuse".
+ * A dry run is never gated; DEV is never gated; everything else needs the ack.
+ * UNKNOWN refuses, which is the whole fail-closed contract.
+ */
+export function writeAckVerdict(
+  target: DbTarget,
+  intendsWrite: boolean,
+  hasAck: boolean,
+): "allow" | "refuse" {
+  if (!intendsWrite) return "allow";
+  if (target === "DEV") return "allow";
+  return hasAck ? "allow" : "refuse";
+}
+
 /** Pull NEXT_PUBLIC_SUPABASE_URL out of a named env file without loading it. */
 function urlInEnvFile(fileName: string): string | null {
   try {
@@ -79,10 +114,11 @@ export function loadScriptEnv(): ScriptEnv {
     process.exit(1);
   }
 
-  const prodUrl = urlInEnvFile(".env.local.prod");
-  const devUrl = urlInEnvFile(".env.local.dev");
-  const target: DbTarget =
-    prodUrl && url === prodUrl ? "PROD" : devUrl && url === devUrl ? "DEV" : "UNKNOWN";
+  const target = resolveDbTarget(
+    url,
+    urlInEnvFile(".env.local.prod"),
+    urlInEnvFile(".env.local.dev"),
+  );
 
   const projectRef = url.replace(/^https?:\/\//, "").split(".")[0];
 
@@ -106,10 +142,11 @@ export function loadScriptEnv(): ScriptEnv {
  * against PROD stays frictionless and only real writes are gated.
  */
 export function requireWriteAck(env: ScriptEnv, intendsWrite: boolean): void {
-  if (!intendsWrite) return;
-  if (env.target === "DEV") return;
-  if (process.argv.includes("--prod-write")) {
-    console.log(`✓ --prod-write acknowledged — writing to ${env.target} (${env.projectRef}).`);
+  const hasAck = process.argv.includes("--prod-write");
+  if (writeAckVerdict(env.target, intendsWrite, hasAck) === "allow") {
+    if (intendsWrite && env.target !== "DEV") {
+      console.log(`✓ --prod-write acknowledged — writing to ${env.target} (${env.projectRef}).`);
+    }
     return;
   }
   console.error(

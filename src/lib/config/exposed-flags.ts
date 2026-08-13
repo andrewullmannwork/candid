@@ -15,6 +15,7 @@
  *
  * Adding a client-read flag = add the key here. Nothing else to keep in sync.
  */
+import type { getFlags } from "@/lib/config/feature-flags";
 
 /**
  * `feature_flag_rules` boolean-engine flags (resolved via `isFeatureEnabled`).
@@ -42,15 +43,36 @@ export const EXPOSED_FLAGS = [
 ] as const;
 
 /**
+ * Every key `getFlags()` returns whose value is a BOOLEAN. `getFlags()` mixes
+ * toggles with operational NUMBERS (OCR_MONTHLY_PAGE_LIMIT, UPLOAD_MAX_PER_USER,
+ * COMPARE_FLYWHEEL_MIN_MEMBERS — the k-anon floor). `import type` keeps this a
+ * pure type edge, so no server module reaches the client bundle.
+ */
+type KvFlags = Awaited<ReturnType<typeof getFlags>>;
+type BooleanKvFlag = {
+  [K in keyof KvFlags]: KvFlags[K] extends boolean ? K : never;
+}[keyof KvFlags];
+
+/**
  * KV-store flags exposed through the same endpoint. Two-system note: the keys
  * above live in the `feature_flag_rules` boolean engine (`isFeatureEnabled`);
  * these live in the `feature_flags` KV store behind /admin/settings
  * (`getFlags`). Only the toggle STATE is exposed — never the allowlisted
  * number itself.
+ *
+ * That last sentence used to be enforced by a comment and by the handler
+ * hardcoding ONE key. `BooleanKvFlag` makes it the type: a numeric flag cannot
+ * be added to this list, and neither can a key `getFlags()` does not return.
+ *
+ * `satisfies` (not a type annotation) is deliberate: it CHECKS the constraint
+ * while preserving the narrow literal type, so `ExposedFlag` stays exactly the
+ * exposed keys. A plain `: readonly BooleanKvFlag[]` would widen it to EVERY
+ * boolean KV flag, and `useFeatureFlag("OCR_ENABLED")` would compile against a
+ * route that 404s it — the very bug this file exists to prevent.
  */
 export const EXPOSED_KV_FLAGS = [
   "TEST_PHONE_EXEMPTION_ENABLED", // S288 test-phone exemption kill switch (signup pre-check)
-] as const;
+] as const satisfies readonly BooleanKvFlag[];
 
 /**
  * Every key the browser may ask for — `useFeatureFlag`'s parameter type.
@@ -60,6 +82,18 @@ export type ExposedFlag =
   | (typeof EXPOSED_FLAGS)[number]
   | (typeof EXPOSED_KV_FLAGS)[number];
 
-/** Runtime membership tests for the route. */
+/** Runtime membership test for the route. */
 export const EXPOSED_FLAG_SET: ReadonlySet<string> = new Set(EXPOSED_FLAGS);
-export const EXPOSED_KV_FLAG_SET: ReadonlySet<string> = new Set(EXPOSED_KV_FLAGS);
+
+const KV_SET: ReadonlySet<string> = new Set(EXPOSED_KV_FLAGS);
+
+/**
+ * Type guard, not a bare `.has()` — it NARROWS an arbitrary request path
+ * segment to an exposed KV key, which is what lets the route index `getFlags()`
+ * by the requested key with the boolean-ness guaranteed by the type.
+ */
+export function isExposedKvFlag(
+  flagKey: string,
+): flagKey is (typeof EXPOSED_KV_FLAGS)[number] {
+  return KV_SET.has(flagKey);
+}
