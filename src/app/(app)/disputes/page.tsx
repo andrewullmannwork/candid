@@ -12,7 +12,7 @@ import { disputeUrlForResult } from "@/lib/disputes/url";
 import { letterRecipientKind } from "@/lib/disputes";
 import { RECIPIENT_DEPARTMENT_LINE } from "@/lib/disputes/letter-type";
 import { unsendPayload } from "@/lib/disputes/outcome-actions";
-import { LETTER_TYPE_LABELS, parseLetterDate, type LetterPatientIdentity } from "@/lib/disputes/letter-type";
+import { LETTER_TYPE_LABELS, letterStateWord, parseLetterDate, type LetterPatientIdentity } from "@/lib/disputes/letter-type";
 import { LetterView } from "@/components/disputes/LetterView";
 import { fmtRailDate } from "@/lib/case/rail-steps";
 import { OUTCOME_LABELS } from "@/lib/disputes/outcome-taxonomy";
@@ -264,6 +264,10 @@ function DisputesContent() {
   const [zeroDemandBusy, setZeroDemandBusy] = useState(false);
   // S312 optimistic snapback — the returned banner wears this inline error.
   const [zeroDemandFailed, setZeroDemandFailed] = useState(false);
+  // S312 (T6a, F2-S311.7) — the sent-letter drift note. The server has computed
+  // this signal since PR #71 (decideDriftAction → show_drift_banner_for_sent);
+  // this state is its FIRST on-screen consumer.
+  const [sentDrifted, setSentDrifted] = useState(false);
   // S312 (F2-S311.6) — the cancel stamp for the cancelled band ("cancelled on
   // {date}"). updated_at is stable after cancel: the S311 void guards froze
   // every writer, so the last write IS the cancellation.
@@ -499,6 +503,9 @@ function DisputesContent() {
     // cancel stamp for the cancelled band (F2-S311.6).
     setNoRemainingDemand(data.noRemainingDemand === true);
     setDisputeUpdatedAt(typeof data.updatedAt === "string" ? data.updatedAt : null);
+    // S312 (T6a) — sent-only by construction: the decision fires this action
+    // only for letters with sent_at set; void rows never compute a decision.
+    setSentDrifted(data.driftState?.decision?.action === "show_drift_banner_for_sent");
     if (!opts?.refresh) { setStaleBannerCollapsed(false); setStrengthenCollapsed(false); }
     setPlanContext(data.planContext ?? null);
     setEvidence(data.evidence ?? null);
@@ -1739,6 +1746,9 @@ function DisputesContent() {
   const heroNode = (
     <DisputeLetterHero
       letter={letter}
+      // S312 (T4, Andrew) — the ONE lifecycle word (DRAFT/SENT/CANCELLED/CLOSED);
+      // CANCELLED/CLOSED also retire the hero's recovery pill + redraft link.
+      stateWord={letterStateWord(disputeStatus, disputeSentAt)}
       providerName={providerName}
       serviceDate={serviceDate}
       askSummary={buildAskSummary(letter, potentialRecovery)}
@@ -1882,6 +1892,18 @@ function DisputesContent() {
         </div>
       </div>
     ) : null;
+
+  // S312 (T6a, F2-S311.7 — Andrew-approved copy) — the sent-letter drift note.
+  // Informational only: a sent letter is a record, and the next rung already
+  // composes from fresh data, so nothing is demanded of the user.
+  const sentDriftBannerNode = sentDrifted ? (
+    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+      <p className="text-xs leading-relaxed text-slate-700">
+        Your numbers have changed since this letter was sent. The letter you mailed stays as it
+        was — if the difference matters, your next letter will use the new numbers.
+      </p>
+    </div>
+  ) : null;
 
   // §18.10.D — the "confirm to strengthen + rebuild" prompt. Present only when the deductible-
   // aware letter omitted a precise dollar AND there are user-fixable inputs. Confirming writes
@@ -3176,6 +3198,7 @@ function DisputesContent() {
                 body stays readable below. */}
             {cancelledBandNode}
             {zeroDemandBannerNode}
+            {sentDriftBannerNode}
             {staleBannerNode}
             {strengthenPromptNode}
             {dataTrustBannerNode}
@@ -3208,6 +3231,7 @@ function DisputesContent() {
           {/* S312 (F2-S311.6) — same cancelled-exhibit rule on the legacy layout. */}
           {cancelledBandNode}
           {zeroDemandBannerNode}
+          {sentDriftBannerNode}
           {staleBannerNode}
           {strengthenPromptNode}
           {heroNode}
