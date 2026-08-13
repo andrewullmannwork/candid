@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import type { ExposedFlag } from "@/lib/config/exposed-flags";
 
 /**
  * useFeatureFlag — client-side read of a product flag via the server endpoint.
@@ -11,11 +12,15 @@ import { useEffect, useState } from "react";
  * GET /api/feature-flags/[flagKey], which must whitelist the key in
  * EXPOSED_FLAGS. See [[feedback_candid_client_flag_reads]].
  *
+ * `flagKey` is typed as ExposedFlag — derived from the SAME allowlist the
+ * route enforces — so reading a non-allowlisted flag is a compile error, not a
+ * silent OFF at runtime (S313; the S302 failure below is what it prevents).
+ *
  * Defaults to { enabled: false, loading: true } → callers show today's
  * (flag-OFF) behavior until the read resolves, so a missing/unreadable flag
  * degrades gracefully to the status quo.
  */
-export function useFeatureFlag(flagKey: string): { enabled: boolean; loading: boolean } {
+export function useFeatureFlag(flagKey: ExposedFlag): { enabled: boolean; loading: boolean } {
   const [enabled, setEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
 

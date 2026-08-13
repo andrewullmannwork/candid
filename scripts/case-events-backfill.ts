@@ -15,27 +15,30 @@
  * DRY-RUN by default; pass --write to persist. Writes go through userScoped
  * (per-claim user_id) like every other claim_case_events write.
  *
- * Run:  npx tsx scripts/case-events-backfill.ts            (dry-run)
- *       npx tsx scripts/case-events-backfill.ts --write
+ * ⚠ TARGET: whichever database `.env.local` points at (DEV by default; PROD
+ * after `./scripts/use-db.sh prod`). The banner names it on every run, and a
+ * PROD --write additionally requires --prod-write (S313) — this script writes
+ * real user history rows, so the target must be a decision, not a leftover.
+ *
+ * Run:  npx tsx scripts/case-events-backfill.ts                        (dry-run)
+ *       npx tsx scripts/case-events-backfill.ts --write                (DEV)
+ *       npx tsx scripts/case-events-backfill.ts --write --prod-write   (PROD)
  */
 import { createClient } from "@supabase/supabase-js";
-import { config } from "dotenv";
 import {
   synthesizeCaseEventsFromRows,
   type ProjectorClaimRow,
   type ProjectorDisputeRow,
 } from "../src/lib/case/timeline-projector";
 import { userScoped } from "../src/lib/security/user-scoped";
+import { loadScriptEnv, requireWriteAck } from "./_env";
 
-config({ path: ".env.local" });
-const sb = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-);
+const env = loadScriptEnv();
+const sb = createClient(env.url, env.serviceRoleKey);
 const WRITE = process.argv.includes("--write");
+requireWriteAck(env, WRITE);
 
 (async () => {
-  console.log("PROJECT:", process.env.NEXT_PUBLIC_SUPABASE_URL);
   console.log("MODE:", WRITE ? "WRITE" : "dry-run (pass --write to persist)");
 
   const { data: claims, error: cErr } = await sb
