@@ -1431,6 +1431,15 @@ function renderLineItemEvidence(
         : `${normalizeCoinsurancePct(li.planBenefit.coinsurance)}% coinsurance`
       : "cost-sharing terms";
 
+    // S313 — the CITATION's own year vs the year of the care. `planYearMismatch`
+    // is the service year (null when the flag is off or the years agree), so
+    // this stays FALSE for a right-year cite even when the PINNED plan is
+    // wrong-year: the archive lookup finding the bill-year canonical is a pass,
+    // not a bypass. Compared against the source year, never the pinned plan's.
+    const citeYearMismatch =
+      planContext?.planYearMismatch != null &&
+      li.planBenefit.sourcedFromYear != null &&
+      li.planBenefit.sourcedFromYear !== planContext.planYearMismatch;
     let prefix: string;
     switch (li.planBenefit.sourcedFrom) {
       case "canonical_archive": {
@@ -1452,9 +1461,18 @@ function renderLineItemEvidence(
         const yearClause = li.planBenefit.sourcedFromYear != null
           ? `${li.planBenefit.sourcedFromYear} Summary of Benefits and Coverage (community-verified)`
           : "Summary of Benefits and Coverage (community-verified)";
-        prefix = zeroCopay
-          ? `Per ${insurer} ${planName} ${yearClause}, this service is covered at no cost to me`
-          : `Per ${insurer} ${planName} ${yearClause}, this service is covered with ${costDescriptor}`;
+        // S313 plan-year authority — a plan document is authority only for care
+        // delivered in its own year. When the cited document is from a different
+        // year than the care, the bullet still ASSERTS the plan's benefit (the
+        // member is entitled to argue from their coverage) but stops presenting
+        // a wrong-year booklet AS the citation. Andrew's ruling, S313.
+        prefix = citeYearMismatch
+          ? (zeroCopay
+              ? "Per my plan's benefits for this service, this is covered at no cost to me"
+              : `Per my plan's benefits for this service, this is covered with ${costDescriptor}`)
+          : zeroCopay
+            ? `Per ${insurer} ${planName} ${yearClause}, this service is covered at no cost to me`
+            : `Per ${insurer} ${planName} ${yearClause}, this service is covered with ${costDescriptor}`;
         break;
       }
       case "user_fallback": {
@@ -1511,7 +1529,9 @@ function renderLineItemEvidence(
         quotableExcerpt = prefix.length >= 8 ? `${prefix} …` : "";
       }
     }
-    const excerptRenderable = !!quotableExcerpt && (!gateUnverified || li.planBenefit.sbcExcerptVerified);
+    // Verbatim quotation joins the EXISTING cite-grade gate rather than sitting
+    // beside it: a wrong-year booklet is not quotable authority for this care.
+    const excerptRenderable = !!quotableExcerpt && !citeYearMismatch && (!gateUnverified || li.planBenefit.sbcExcerptVerified);
 
     // S312 — the disputed-line lead (§1 approved bytes): where the old "Expected patient
     // cost per plan / Actual patient responsibility / Discrepancy" bullet fired on a
@@ -1535,7 +1555,7 @@ function renderLineItemEvidence(
             ? "My plan covers it with no copay, as determined by my insurer"
             : `My plan specifies ${costDescriptor} for it, as determined by my insurer`;
       bullets.push(
-        `   - This bill charges me ${formatCurrency(li.actualPatientCost!)} for this service. ${planBasis}.${li.planBenefit.citation ? ` Source: ${li.planBenefit.citation}.` : ""}${excerptRenderable ? ` Plan language: "${quotableExcerpt}"` : ""}`,
+        `   - This bill charges me ${formatCurrency(li.actualPatientCost!)} for this service. ${planBasis}.${li.planBenefit.citation && !citeYearMismatch ? ` Source: ${li.planBenefit.citation}.` : ""}${excerptRenderable ? ` Plan language: "${quotableExcerpt}"` : ""}`,
       );
     } else {
       bullets.push(
