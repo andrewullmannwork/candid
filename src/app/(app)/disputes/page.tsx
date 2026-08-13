@@ -662,7 +662,20 @@ function DisputesContent() {
         subject: `Formal appeal — dispute ${data.id.slice(0, 8)}`,
         body: data.letterContent,
         supportingFacts: [],
-        requestedAction: "Reprocess the claim and issue a refund where applicable.",
+        // S312 T6c (Andrew-approved copy, F2-S311.4) — the card speaks the
+        // recipient's language: a provider CORRECTS A BILL (the letter's own
+        // relief voice since the S312 restructure); only an insurer
+        // reprocesses a claim. Derived from the SAME letterRecipientKind axis
+        // the ADDRESSED-TO card reads (S311 FIX-2), and buildAskSummary reads
+        // this same field, so the card and the hero sub-line move together.
+        // "any difference" is the safety word: correction-only letters (the
+        // zero-demand class) carry no refund ask, and "any" stays honest.
+        // Collector letters keep the legacy sentence pending their own ruling
+        // (tracker-letter candidate at close).
+        requestedAction:
+          letterRecipientKind(resolvedLetterType) === "provider"
+            ? "Correct the bill and refund any difference."
+            : "Reprocess the claim and issue a refund where applicable.",
         status: "draft",
         createdAt: data.filedDate || new Date().toISOString(),
         updatedAt: data.filedDate || new Date().toISOString(),
@@ -1929,7 +1942,16 @@ function DisputesContent() {
   const recipientNode = (
     <DisputeRecipientCard
       recipient={letter.recipient}
-      insurer={planContext?.insurer ?? null}
+      // S312 T6d (Andrew: "only propose when it can be right", F2-S311.5) —
+      // the insurer appeals-address machinery (incl. the "You used this
+      // address for {insurer}…" reuse prompt) renders ONLY on insurer-
+      // recipient letters. It was passed unconditionally, so a provider
+      // envelope wore the insurer's verify strip and offered the insurer's
+      // address for a hospital letter. Gated on the SAME printsInsurerName
+      // predicate that gates the insurer facts line (S310 9.3) — one axis,
+      // every insurer-only surface. The reuse carry itself is already
+      // same-insurer by design (the appeals-address machinery).
+      insurer={printsInsurerName ? planContext?.insurer ?? null : null}
       requestedAction={letter.requestedAction}
       letterTypeLabel={letterTypeLabel}
       planYear={planContext?.plan?.planYear ?? null}
