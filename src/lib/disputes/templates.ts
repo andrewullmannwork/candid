@@ -1319,7 +1319,33 @@ function renderEvidenceBlock(
   // included). Fail-closed: the letter reads as if the section doesn't exist.
   if (bodyLines.length === 0) return "";
 
-  const lines: string[] = [title.toUpperCase(), "", ...bodyLines];
+  // S313 plan-year authority — the year gap, stated ONCE above the evidence.
+  // Placement is the point: the bullets make the case cleanly and this frames
+  // them, rather than repeating "(2026)" inside every claim about 2024 care and
+  // handing a claims examiner the objection in each paragraph. The closing's
+  // 29 USC §1024(b)(4) ask then turns the gap into the insurer's burden.
+  // Andrew's ruling, S313 (copy B').
+  //
+  // Safe as a blanket statement because the benefit SOURCE is chosen ONCE PER
+  // CLAIM, not per line (evidence-resolver's tier chain stamps one planYear on
+  // the whole coverage map) — a letter is all-mismatched or none, never mixed.
+  const citeYearGap =
+    planContext?.planYearMismatch != null &&
+    evidence.claims.some((c) =>
+      c.lineItemEvidence.some(
+        (li) =>
+          li.planBenefit?.sourcedFromYear != null &&
+          li.planBenefit.sourcedFromYear !== planContext.planYearMismatch,
+      ),
+    );
+  const yearGapNote =
+    citeYearGap && planContext?.planYearMismatch != null
+      ? [
+          `My ${planContext.planYearMismatch} plan documents are not on file; the terms cited below reflect my current coverage under the same plan.`,
+          "",
+        ]
+      : [];
+  const lines: string[] = [title.toUpperCase(), "", ...yearGapNote, ...bodyLines];
 
   // S109 PR #2 (Chunk A) — closing argument + escalation paragraph moved out
   // of renderEvidenceBlock and into insuranceAppealTemplate.body directly.
