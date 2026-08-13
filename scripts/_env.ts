@@ -26,11 +26,17 @@
  *   const env = loadScriptEnv();                  // write script:
  *   requireWriteAck(env, WRITE);                  // exits 1 on PROD w/o ack
  */
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { config } from "dotenv";
 
-const REPO_ROOT = join(import.meta.dirname ?? __dirname, "..");
+// Resolved from THIS module's location, not cwd, so a script run from a
+// subdirectory still finds the repo's env files. `new URL("..", …)` is the
+// portable ESM idiom — `import.meta.dirname` needs Node 20.11+, and pairing it
+// with a `?? __dirname` fallback only LOOKS safe: in ESM the fallback throws a
+// ReferenceError rather than falling back.
+const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 export type DbTarget = "DEV" | "PROD" | "UNKNOWN";
 
@@ -44,12 +50,16 @@ export interface ScriptEnv {
 
 /** Pull NEXT_PUBLIC_SUPABASE_URL out of a named env file without loading it. */
 function urlInEnvFile(fileName: string): string | null {
-  const path = join(REPO_ROOT, fileName);
-  if (!existsSync(path)) return null;
-  const match = readFileSync(path, "utf8").match(
-    /^NEXT_PUBLIC_SUPABASE_URL=(.+)$/m,
-  );
-  return match ? match[1].trim() : null;
+  try {
+    const match = readFileSync(join(REPO_ROOT, fileName), "utf8").match(
+      /^NEXT_PUBLIC_SUPABASE_URL=(.+)$/m,
+    );
+    return match ? match[1].trim() : null;
+  } catch {
+    // Absent or unreadable — the caller falls through to UNKNOWN, which is
+    // treated as PROD for writes. Fail-closed by construction.
+    return null;
+  }
 }
 
 /**
@@ -57,7 +67,10 @@ function urlInEnvFile(fileName: string): string | null {
  * Every script that touches Supabase should call this instead of `config()`.
  */
 export function loadScriptEnv(): ScriptEnv {
-  config({ path: join(REPO_ROOT, ".env.local") });
+  // `quiet` suppresses dotenv's own "injecting env (28) … tip:" line. The
+  // banner below is the whole point of this module; a library log printed
+  // immediately above it is what the banner has to compete with.
+  config({ path: join(REPO_ROOT, ".env.local"), quiet: true });
 
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
