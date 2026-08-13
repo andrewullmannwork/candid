@@ -39,6 +39,15 @@ export const CASE_EVENT_KINDS = [
   "letter_unsent",
   "letter_redrafted",
   "letter_downloaded",
+  // S312 (T6b, Andrew: "we absolutely MUST keep track" — the future
+  // subscription-metering signal) — the user pulled the CLAIM's combined
+  // lawyer-ready Case File (the evidence package), from any surface, any
+  // format. CLAIM-level (disputeId null): the case file is an artifact of the
+  // BILL, like the regulator complaint (S303's scoping rule). Payload carries
+  // `format` ("pdf" | "text") only — refs + minimal facts. Emitter: the ONE
+  // download hook (use-case-file-download) via the case-events route, same
+  // change. Count: 22 → 23.
+  "case_file_downloaded",
   // S312 (F2-S312.1) — the user withdrew a never-sent draft (status →
   // "cancelled"; the row becomes a read-only exhibit per the S308 void rule).
   // Its own kind: a dismissal is the user declining the letter, not an

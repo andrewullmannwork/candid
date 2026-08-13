@@ -46,7 +46,22 @@ import { emitCaseEvent, type CaseEventKind } from "@/lib/case/case-events";
 const RAIL_WRITABLE_KINDS: readonly CaseEventKind[] = [
   "collection_resumed_reported",
   "letter_downloaded",
+  // S312 (T6b) — the Case File download, spine-gated only for the SAME reason
+  // as letter_downloaded above: at promote the spine runs ON before the rail
+  // ships, and this event is the future subscription-metering signal — losing
+  // that window would quietly cost the flywheel exactly the usage record the
+  // gate will need.
+  "case_file_downloaded",
 ];
+
+/**
+ * S312 (T6b) — kinds scoped to the CLAIM, never a letter. The case file is the
+ * BILL's artifact (S303's scoping rule: acts against the bill live on the
+ * claim), so a disputeId on these would be a lie on the record.
+ */
+const CLAIM_SCOPED_KINDS: ReadonlySet<CaseEventKind> = new Set([
+  "case_file_downloaded",
+]);
 
 /** Kinds that additionally require the rail SURFACE flag (see above). */
 const RAIL_SURFACE_KINDS: ReadonlySet<CaseEventKind> = new Set([
@@ -94,6 +109,7 @@ export async function POST(
     const body = (await req.json().catch(() => null)) as {
       kind?: unknown;
       disputeId?: unknown;
+      format?: unknown;
     } | null;
     const kind = typeof body?.kind === "string" ? body.kind : null;
     const disputeId = typeof body?.disputeId === "string" ? body.disputeId : null;
@@ -106,7 +122,16 @@ export async function POST(
     ) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
-    if (!disputeId) {
+    // S312 (T6b) — disputeId is kind-aware: letter kinds REQUIRE the letter,
+    // claim-scoped kinds REFUSE one (a lie on the record either way).
+    const claimScoped = CLAIM_SCOPED_KINDS.has(kind as CaseEventKind);
+    if (claimScoped && disputeId) {
+      return NextResponse.json(
+        { error: "disputeId is not allowed for this kind" },
+        { status: 400 },
+      );
+    }
+    if (!claimScoped && !disputeId) {
       return NextResponse.json({ error: "disputeId is required" }, { status: 400 });
     }
 
@@ -119,21 +144,30 @@ export async function POST(
       return NextResponse.json({ error: "Claim not found" }, { status: 404 });
     }
 
-    const { data: dispute } = await userScoped(supabase, user.id)
-      .table("dispute_outcomes")
-      .select("id, claim_id")
-      .eq("id", disputeId)
-      .single();
-    if (!dispute || dispute.claim_id !== claimId) {
-      return NextResponse.json({ error: "Dispute not found" }, { status: 404 });
+    if (!claimScoped) {
+      const { data: dispute } = await userScoped(supabase, user.id)
+        .table("dispute_outcomes")
+        .select("id, claim_id")
+        .eq("id", disputeId as string)
+        .single();
+      if (!dispute || dispute.claim_id !== claimId) {
+        return NextResponse.json({ error: "Dispute not found" }, { status: 404 });
+      }
     }
+
+    // S312 (T6b) — the case-file event's one minimal fact (refs-only rule):
+    // which format was pulled. Anything else is derivable or excluded.
+    const format =
+      kind === "case_file_downloaded" && (body?.format === "pdf" || body?.format === "text")
+        ? body.format
+        : null;
 
     await emitCaseEvent(supabase, user.id, {
       claimId,
       disputeId,
       kind: kind as CaseEventKind,
       // References only (module contract) — the dispute_id column IS the ref.
-      payload: {},
+      payload: format ? { format } : {},
     });
 
     return NextResponse.json({ ok: true });
