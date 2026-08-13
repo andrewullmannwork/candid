@@ -48,6 +48,19 @@ export function useCaseFileDownload(getAuthToken: () => Promise<string | null>) 
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
+        // S312 (T6b, Andrew) — the download lands on the case record. Emitted
+        // HERE because this hook is the ONE implementation every download
+        // surface shares (S305) — a per-surface emit is exactly how a fourth
+        // surface would someday forget. Fire-and-forget: the record never
+        // blocks or fails the artifact the user just received. This event is
+        // the future subscription-metering signal (claim-level, format-only
+        // payload); the eventual gate lives on the evidence-package route
+        // itself — this is the usage record it will read.
+        void fetch(`/api/claims/${claimId}/case-events`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ kind: "case_file_downloaded", format }),
+        }).catch(() => {});
         return true;
       } catch {
         setFailed(true);

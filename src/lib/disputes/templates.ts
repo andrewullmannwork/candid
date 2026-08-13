@@ -1197,12 +1197,29 @@ function planBenefitTrustedFor(li: LineItemEvidence, gateUnverified: boolean): b
  * (the b.coverage rider) carries NO ask — its citation was the insurer-side noise Andrew's
  * §0 ruling removed. Attested lines lead with the attestation instead (existing rule).
  */
+/**
+ * S312 fix (Andrew's letter-paste catch) — the coverage arm requires a REAL
+ * coverage ground. A rider line (plan benefit present, nothing wrong) is
+ * TYPED coverage_contradiction by the classifier↔grounds parity design (the
+ * bare-benefit line carries a $0 coverage ground), so the type alone cannot
+ * distinguish a denial from a rider — the FINDINGS can, exactly how
+ * groundsForLine splits them: a real denial carries a finding from the
+ * catalog's coverage_contradiction family. Sourced from the catalog (the
+ * SoT), never a literal retyped here.
+ */
+const COVERAGE_CONTRA_FINDINGS: ReadonlySet<string> = new Set(
+  DISPUTE_GROUND_CATALOG.coverage_contradiction.fromFindings,
+);
+
 function providerPlanAskLine(li: LineItemEvidence, gateUnverified: boolean): boolean {
   if (li.serviceNotRenderedAttested) return false;
   if (!planBenefitTrustedFor(li, gateUnverified)) return false;
   return (
     (li.disputeType === "cost_share_misapplication" && (li.discrepancyAmount ?? 0) > 0) ||
-    li.disputeType === "coverage_contradiction" ||
+    (li.disputeType === "coverage_contradiction" &&
+      (li.auditFindings ?? []).some(
+        (f) => !f.dismissed && COVERAGE_CONTRA_FINDINGS.has(f.type),
+      )) ||
     li.disputeType === "balance_billing"
   );
 }

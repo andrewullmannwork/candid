@@ -569,6 +569,54 @@ export function isLiveDraftStatus(status: string | null | undefined): boolean {
 }
 
 /**
+ * S312 (Andrew: "shouldn't the letter auto-redraft?") — the letter COMPOSE
+ * VERSION: a stamp for the letter-composition contract itself, hashed into the
+ * UNSENT compose basis (evidence-fingerprint.ts) so that shipping a letter
+ * improvement drifts every live draft exactly once — the same self-heal-on-view
+ * rollout the drift watch already runs for data changes. A user never needs to
+ * know the Re-draft button exists to receive a better letter.
+ *
+ * SENT letters can never see this: their fingerprint is evidence-only by the
+ * standing shape rule, so a bump cannot fire the "your numbers have changed"
+ * note on a mailed record (pinned in draft-live-rebuild).
+ *
+ * ⚠ BUMP DISCIPLINE: bump this in the SAME commit whenever letter compose
+ * OUTPUT changes — the detector is the golden corpus: if golden pins
+ * re-baseline (`golden-corpus.ts --update`), this bumps. Flag states decide
+ * the delivery: live-rebuild ON → silent rebuild on next view; OFF (PROD at
+ * promote) → the stale banner + Refresh consent flow. Value is opaque to the
+ * hash — keep it readable for debugging.
+ */
+export const LETTER_COMPOSE_VERSION = "s312.1";
+
+/**
+ * S312 (T4, Andrew's ruling) — the ONE lifecycle word a letter surface may
+ * print. The hero's eyebrow had "· DRAFT" BAKED into every letter-type string
+ * (no status axis at all), so cancelled letters — and sent ones — wore "DRAFT"
+ * forever. Vocabulary: DRAFT (live draft) · SENT (mailed — outcome chips
+ * elsewhere carry the rest) · CANCELLED (withdrawn) · CLOSED (the rare
+ * resolved-without-ever-sending exhibit, the S308 void family's other member).
+ * Order matters: a cancelled letter has null sent_at, and a resolved letter
+ * keeps its sent_at — status is the axis sent_at cannot see (S308).
+ */
+export function letterStateWord(
+  status: string | null | undefined,
+  sentAt: string | Date | null | undefined,
+): "DRAFT" | "SENT" | "CANCELLED" | "CLOSED" {
+  if (status === "cancelled") return "CANCELLED";
+  if (sentAt != null) return "SENT";
+  // S312 audit — sent-ERA statuses (persist.ts vocabulary: mark-as-sent writes
+  // "filed"; the follow-up era runs "in_progress") with a null sent_at are
+  // LEGACY sent rows from before the stamp existed — the letter page's own
+  // "Sent {date}" readout falls back to filed_date for exactly these rows.
+  // They read SENT, never CLOSED. Outcome statuses (won/lost/settled/withdrawn)
+  // without a send stamp stay CLOSED: an outcome on a never-sent letter is the
+  // resolved-unsent exhibit (S308/FIX-3), not a mailing.
+  if (status === "filed" || status === "in_progress") return "SENT";
+  return isLiveDraftStatus(status) ? "DRAFT" : "CLOSED";
+}
+
+/**
  * S312 (F2-S312.1) — should a ROW-reading surface offer the "this letter may no
  * longer be needed" banner (Dismiss / Keep)?
  *

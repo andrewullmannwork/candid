@@ -20,6 +20,15 @@ import type { StrengthResult, EvidenceBand } from "@/lib/disputes/strength-scori
 
 interface Props {
   letter: DisputeLetter;
+  /**
+   * S312 (T4, Andrew) — the letter's ONE lifecycle word (letterStateWord:
+   * DRAFT / SENT / CANCELLED / CLOSED). REQUIRED, not optional — the S301
+   * lesson: an optional prop is exactly what lets a caller forget it, and this
+   * word is why the eyebrow exists. CANCELLED/CLOSED also retire the hero's
+   * live affordances below (the recovery pill, the redraft link): a record
+   * makes no promises and takes no actions.
+   */
+  stateWord: "DRAFT" | "SENT" | "CANCELLED" | "CLOSED";
   providerName: string | null;
   serviceDate: string | null;
   askSummary: string | null;
@@ -45,20 +54,25 @@ interface Props {
   onBandClick?: () => void;
 }
 
+// S312 (T4, Andrew) — the lifecycle word is NO LONGER baked in: these carry
+// only the letter's identity, and the eyebrow appends the caller-supplied
+// `stateWord` (letterStateWord — status + sent_at, the one derivation). The
+// old strings said "· DRAFT" on cancelled AND sent letters alike.
 const LETTER_TYPE_EYEBROW: Record<DisputeLetter["letterType"], string> = {
-  insurance_appeal: "DISPUTE LETTER · APPEAL · DRAFT",
-  overcharge: "DISPUTE LETTER · OVERCHARGE · DRAFT",
-  balance_billing: "DISPUTE LETTER · BALANCE BILLING · DRAFT",
-  duplicate_charge: "DISPUTE LETTER · DUPLICATE CHARGE · DRAFT",
-  itemized_request: "LETTER · ITEMIZED BILL REQUEST · DRAFT",
-  negotiation: "LETTER · SELF-PAY NEGOTIATION · DRAFT",
-  final_notice: "DISPUTE LETTER · FINAL NOTICE · DRAFT",
-  external_review: "DISPUTE LETTER · EXTERNAL REVIEW · DRAFT",
-  debt_validation: "LETTER · DEBT VALIDATION · DRAFT",
+  insurance_appeal: "DISPUTE LETTER · APPEAL",
+  overcharge: "DISPUTE LETTER · OVERCHARGE",
+  balance_billing: "DISPUTE LETTER · BALANCE BILLING",
+  duplicate_charge: "DISPUTE LETTER · DUPLICATE CHARGE",
+  itemized_request: "LETTER · ITEMIZED BILL REQUEST",
+  negotiation: "LETTER · SELF-PAY NEGOTIATION",
+  final_notice: "DISPUTE LETTER · FINAL NOTICE",
+  external_review: "DISPUTE LETTER · EXTERNAL REVIEW",
+  debt_validation: "LETTER · DEBT VALIDATION",
 };
 
 export function DisputeLetterHero({
   letter,
+  stateWord,
   providerName,
   serviceDate,
   askSummary,
@@ -77,6 +91,9 @@ export function DisputeLetterHero({
     .filter(Boolean)
     .join(" · ");
 
+  // S312 (T4) — a dead letter is a record: no money promise, no live actions.
+  const dead = stateWord === "CANCELLED" || stateWord === "CLOSED";
+
   const qualitySummary = computeQualitySummary(evidence);
   // Block C — evidence-strength band (§1a). Qualitative only; the numeric
   // score is never surfaced (§1f L1 — evidence quality, not odds of winning).
@@ -87,7 +104,7 @@ export function DisputeLetterHero({
       <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
         <div className="min-w-0">
           <p className="text-[0.7rem] font-semibold uppercase tracking-[0.14em] text-blue-700/80">
-            {LETTER_TYPE_EYEBROW[letter.letterType]}
+            {`${LETTER_TYPE_EYEBROW[letter.letterType]} · ${stateWord}`}
           </p>
           <h1 className="mt-2 text-2xl font-bold leading-tight text-slate-900 md:text-[28px]">
             {title || "Draft dispute letter"}
@@ -142,7 +159,7 @@ export function DisputeLetterHero({
                   {qualitySummary.verified} of {qualitySummary.total} citation{qualitySummary.total === 1 ? "" : "s"} verified
                 </span>
               ) : null}
-              {qualitySummary && !qualitySummary.allVerified && onRedraft ? (
+              {qualitySummary && !qualitySummary.allVerified && onRedraft && !dead ? (
                 <button
                   type="button"
                   onClick={onRedraft}
@@ -155,7 +172,7 @@ export function DisputeLetterHero({
             </div>
           ) : null}
         </div>
-        {potentialRecovery != null && potentialRecovery > 0 ? (
+        {potentialRecovery != null && potentialRecovery > 0 && !dead ? (
           <div className="shrink-0">
             <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-sm font-semibold text-emerald-700">
               <span aria-hidden>+</span>

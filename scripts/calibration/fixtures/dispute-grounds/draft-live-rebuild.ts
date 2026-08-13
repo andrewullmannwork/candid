@@ -34,6 +34,7 @@ import {
   letterPatientName,
   letterPatientIdentityFromMeta,
   isLiveDraftStatus,
+  LETTER_COMPOSE_VERSION,
 } from "../../../../src/lib/disputes/letter-type";
 
 let pass = 0;
@@ -50,6 +51,7 @@ const BASE: FingerprintInput = {
 };
 
 const COMPOSE: ComposeBasis = {
+  composeVersion: LETTER_COMPOSE_VERSION,
   attestingName: "Andrew Ullmann",
   patientIdentityChoice: null,
   patientCorrectedName: null,
@@ -100,14 +102,39 @@ const COMPOSE: ComposeBasis = {
   check("drift · provider address alone drifts the hash", addressChanged !== a);
   check("drift · attested name alone drifts the hash", nameChanged !== a);
   check("drift · identical compose hashes identically", same === a);
+
+  // ── S312 (Andrew: "shouldn't the letter auto-redraft?") — the compose-version
+  //    rollout lever: a version bump alone drifts every UNSENT draft (the
+  //    self-heal-on-view rollout), while the SENT shape (composeBasis null —
+  //    the standing shape rule) is structurally blind to it: no compose basis,
+  //    no version, so a bump can never fire the sent-drift note. ──
+  const bumped = computeEvidenceFingerprint({
+    ...BASE,
+    composeBasis: { ...COMPOSE, composeVersion: "s999.next" },
+  });
+  check("S312 · a compose-version bump ALONE drifts an unsent draft", bumped !== a);
+  const sentShapeA = computeEvidenceFingerprint({ ...BASE, composeBasis: null });
+  const sentShapeB = computeEvidenceFingerprint({ ...BASE, composeBasis: null });
+  check(
+    "S312 · the SENT shape (evidence-only) is structurally version-blind — a bump can never move it",
+    sentShapeA === sentShapeB,
+  );
+  check(
+    "S312 · composeBasisFrom stamps the CURRENT contract version (the wire is live)",
+    composeBasisFrom(null, null).composeVersion === LETTER_COMPOSE_VERSION,
+  );
 }
 
 // ── 3. composeBasisFrom — blanks and missing are the same null ──────────────
 {
   const fromEmpty = composeBasisFrom(null, null);
   check(
-    "mapping · fully absent metadata → all-null basis",
-    Object.values(fromEmpty).every((v) => v === null),
+    // S312 — re-pinned (the old all-null pin failed first against the live
+    // wire): the compose VERSION is the one deliberate non-null constant in an
+    // otherwise all-null basis — the compose contract's stamp, not user data.
+    "mapping · fully absent metadata → all-null basis (+ the version stamp)",
+    fromEmpty.composeVersion === LETTER_COMPOSE_VERSION &&
+      Object.entries(fromEmpty).every(([k, v]) => k === "composeVersion" || v === null),
     fromEmpty,
   );
   const blankVsMissing =
