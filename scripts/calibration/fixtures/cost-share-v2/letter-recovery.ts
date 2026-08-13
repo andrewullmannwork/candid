@@ -418,7 +418,12 @@ console.log("\nS312 — the provider letter argues from the bill (evidence restr
   const mammo: LineItemEvidence = {
     ...costShareLine(), lineItemId: "li-mam",
     serviceName: "HC MAMMO DIAG BILAT INCL CAD", billingCode: { value: "77066", type: "CPT" },
-    billedAmount: 147, patientPaid: null, patientOwes: null, disputeType: "other",
+    // S312 fix (Andrew's letter-paste catch) — the rider's REAL live shape: the
+    // classifier types a bare-benefit line "coverage_contradiction" (parity
+    // with the grounds engine's $0 rider ground), with ZERO adjudication
+    // findings. The first cut of this fixture used "other" here, which is why
+    // the plain-rider pin passed while the live letter still cited its riders.
+    billedAmount: 147, patientPaid: null, patientOwes: null, disputeType: "coverage_contradiction",
     planBenefit: {
       ...benefit, copay: null, coinsurance: 0.2,
       citation: "Plan SBC — Advanced Imaging (CT/PET/MRI)", sbcExcerpt: "20% coinsurance",
@@ -506,6 +511,25 @@ console.log("\nS312 — the provider letter argues from the bill (evidence restr
   check("S312 insurer: no bill-view lead sentence", !ins.includes("This bill charges me"));
   check("S312 insurer: no sums block", !ins.includes("Charged to me on this bill:"));
   check("S312 insurer: the F17 overpayment never folds insurer-side", !ins.includes("Refund the $10.00"));
+
+  // The REAL-denial twin — a coverage_contradiction line WITH an adjudication
+  // finding (the catalog's coverage family) keeps its citation on the provider
+  // letter: the correction ask needs it. Only finding-less riders go plain.
+  const denialLine: LineItemEvidence = {
+    ...mammo,
+    lineItemId: "li-den",
+    auditFindings: [{
+      type: "insurance_underpayment", severity: "high", title: "Insurer underpaid this line",
+      description: "", estimatedOvercharge: 50, benchmarkAmount: null, benchmarkSource: null,
+    }],
+  };
+  const denEv = mk312(239.71);
+  denEv.claims = [{ ...denEv.claims[0], lineItemEvidence: [denialLine] }];
+  const denPro = renderFull("overcharge", denEv);
+  check(
+    "S312 fix: a REAL denial line (adjudication finding) keeps its plan citation",
+    denPro.includes("specifies 20% coinsurance for this service. Source:"),
+  );
 
   // ── F2-S312.1 — noRemainingLetterDemand: the "this letter may no longer be
   //    needed" signal reads ONLY the fold (the same object the asks render
