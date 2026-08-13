@@ -193,6 +193,11 @@ check("S312 stateWord · sent (filed) → SENT", letterStateWord("filed", "2026-
 check("S312 stateWord · resolved + was sent → SENT", letterStateWord("resolved_win", "2026-08-05T00:00:00Z") === "SENT");
 check("S312 stateWord · cancelled → CANCELLED (even with a sent stamp)", letterStateWord("cancelled", "2026-08-05T00:00:00Z") === "CANCELLED" && letterStateWord("cancelled", null) === "CANCELLED");
 check("S312 stateWord · resolved never-sent → CLOSED (the void exhibit)", letterStateWord("resolved_win", null) === "CLOSED");
+// S312 quality audit — the legacy-sent class: sent-ERA statuses (filed /
+// in_progress) predate the sent_at stamp on old rows; the page's own "Sent
+// {date}" readout falls back to filed_date for exactly these. SENT, not CLOSED.
+check("S312 stateWord · legacy sent (filed, null stamp) → SENT", letterStateWord("filed", null) === "SENT");
+check("S312 stateWord · legacy follow-up era (in_progress, null stamp) → SENT", letterStateWord("in_progress", null) === "SENT");
 
 console.log(`\nletter-tracks fixture: ${pass} passed, ${fails.length} failed`);
 if (fails.length) {

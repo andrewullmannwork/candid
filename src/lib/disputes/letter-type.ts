@@ -584,6 +584,14 @@ export function letterStateWord(
 ): "DRAFT" | "SENT" | "CANCELLED" | "CLOSED" {
   if (status === "cancelled") return "CANCELLED";
   if (sentAt != null) return "SENT";
+  // S312 audit — sent-ERA statuses (persist.ts vocabulary: mark-as-sent writes
+  // "filed"; the follow-up era runs "in_progress") with a null sent_at are
+  // LEGACY sent rows from before the stamp existed — the letter page's own
+  // "Sent {date}" readout falls back to filed_date for exactly these rows.
+  // They read SENT, never CLOSED. Outcome statuses (won/lost/settled/withdrawn)
+  // without a send stamp stay CLOSED: an outcome on a never-sent letter is the
+  // resolved-unsent exhibit (S308/FIX-3), not a mailing.
+  if (status === "filed" || status === "in_progress") return "SENT";
   return isLiveDraftStatus(status) ? "DRAFT" : "CLOSED";
 }
 
