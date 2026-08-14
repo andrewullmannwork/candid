@@ -70,7 +70,10 @@ export interface LetterViewProps {
     collector?: { name?: string; address?: string | null } | null;
   }>;
   /** Present while stage `awaiting` — drives the pointer card's deadline line. */
+  /** A REAL engine deadline only (S314). Never a sent+30d estimate. */
   waitingDueLabel: string | null;
+  /** S314 — when to chase, shown only when there is no engine deadline. */
+  waitingFollowUpLabel?: string | null;
   /**
    * S301 — the logged response, when there is one. Drives the unsend confirm.
    * Replaces `canUnlock`: unsend is no longer withheld, it is confirmed.
@@ -182,9 +185,17 @@ export function LetterView(p: LetterViewProps) {
         <div className="flex flex-wrap items-center justify-between gap-3 text-[13px]">
           <div>
             <b>What happens next lives on your claim</b>
+            {/* S314 (Andrew) — "deadline" is reserved for a window the engine
+                established (ERISA filing, or the plan's 60d/30d response). With
+                none, this said "deadline <sent+30d>" — an estimate, wearing a
+                legal word, on a date nothing was scheduled against. The
+                follow-up date is still shown, because it IS useful: it is when
+                the letter itself asked them to reply by. */}
             {p.waitingDueLabel
               ? ` — waiting on ${counterparty ?? "a response"} · deadline ${p.waitingDueLabel}`
-              : ""}
+              : p.waitingFollowUpLabel
+                ? ` — waiting on ${counterparty ?? "a response"} · follow up after ${p.waitingFollowUpLabel}`
+                : ""}
           </div>
           <button
             type="button"

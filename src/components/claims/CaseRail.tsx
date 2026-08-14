@@ -229,12 +229,24 @@ function WaitCardBody({
             {card.chipDeadline}
           </span>
         )}
+        {/* S314 (Andrew) — the follow-up prompt for a sent letter with no
+            engine deadline. Slate, not amber: nothing is at risk, this is just
+            when to chase. Never rendered alongside chipDeadline (the composer
+            emits one or the other). */}
+        {card.chipFollowUp && (
+          <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-[3px] text-[12px] font-semibold text-slate-600 ring-1 ring-inset ring-slate-200">
+            {card.chipFollowUp}
+          </span>
+        )}
         {card.chipPause && (
           <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-[3px] text-[12px] font-semibold text-slate-600 ring-1 ring-inset ring-slate-200">
             {card.chipPause}
           </span>
         )}
       </div>
+      {card.followUpSub && (
+        <div className="mt-1.5 text-[12px] text-gray-500">{card.followUpSub}</div>
+      )}
       {/* S302 — the elapsed-% countdown BAR is gone in EVERY state (Andrew:
           "the number is enough if it updates daily"; and on round 2, "keep the
           bar away"). Urgency is the chip's colour alone. mt-3.5 keeps the

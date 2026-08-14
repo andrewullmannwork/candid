@@ -40,7 +40,9 @@ import { ExhaustionAttestModal } from "@/components/disputes/ExhaustionAttestMod
 import { isOutcomeDetail, mapOutcomeToStatus, nextRungStillOpen, type NextStepSuggestion } from "@/lib/disputes/outcome-taxonomy";
 import {
   CaseNeedsPanel,
+  buildClaimDetailsNeeds,
   isClaimDetailsConfirmed,
+  openImportantNeeds,
   type PlanCostService,
 } from "@/components/disputes/CaseNeedsPanel";
 import { UnifiedTodo, type CaseLetterSummary } from "@/components/disputes/UnifiedTodo";
@@ -2285,6 +2287,20 @@ function DisputesContent() {
       }
     }
 
+    // S314 — what answering each open coverage question is worth, per service.
+    // A service can span several lines, so the projections sum. Only lines
+    // carrying an UNCONFIRMED category match have one (the resolver leaves
+    // `projectedDiscrepancy` off confirmed and rejected lines), so this is
+    // exactly the money the letter is currently withholding pending an answer.
+    const projectedBySlug = new Map<string, number>();
+    for (const c of evidence?.claims ?? []) {
+      for (const li of c.lineItemEvidence ?? []) {
+        const projected = li.secondaryCoverageVerify?.projectedDiscrepancy;
+        if (!li.serviceSlug || projected == null || projected <= 0) continue;
+        projectedBySlug.set(li.serviceSlug, (projectedBySlug.get(li.serviceSlug) ?? 0) + projected);
+      }
+    }
+
     if (lineCostShare.length > 0) {
       const bySlug = new Map<string, LineCostShareRow[]>();
       for (const r of lineCostShare) {
@@ -2318,6 +2334,7 @@ function DisputesContent() {
           claimId: letter?.auditReportId ?? null,
           secondaryMatchedSlug: knownRow?.secondaryMatchedSlug ?? null,
           billedAmount: rows.reduce((s, r) => s + (billedByLineId.get(r.lineItemId) ?? 0), 0),
+          projectedDiscrepancy: projectedBySlug.get(slug) ?? null,
         });
       }
       return out;
@@ -2343,6 +2360,7 @@ function DisputesContent() {
               ? Math.round(pb.coinsurance * 100)
               : null,
           source: pending ? "manual" : pb?.source ?? null,
+          projectedDiscrepancy: projectedBySlug.get(li.serviceSlug) ?? null,
         });
       }
     }
@@ -2380,6 +2398,25 @@ function DisputesContent() {
   const auditFindingsMissing = (evidence?.gaps ?? []).some(
     (g) => g.kind === "audit_findings_missing",
   );
+
+  // S314 — the claim-details completeness input, built by CaseNeedsPanel's OWN
+  // exported builder from the same values passed to it as props. The page never
+  // re-derives insurer-track or the collector questions from letterType; that
+  // mapping lives in one place (letterNeeds) with one reader.
+  const claimDetailsNeeds = buildClaimDetailsNeeds({
+    letterType: letter?.letterType ?? "",
+    letterRequirementsOn,
+    planServices: zone1Services,
+    attestationReviewed: serviceAttestationReviewed,
+    denialNoticeDate: deadlineInputs.denialNoticeDate,
+    userPatientPaid,
+    collectorAddressOnFile: !!planContext?.collectorContact?.address,
+    accountNumberOnFile: !!planContext?.collectorContact?.accountNumber,
+    coverageVerifyGaps,
+    // v3 always supplies the one-block confirm inputs, so the parsed set is
+    // covered there rather than by standalone coverage-verify rows.
+    parsedConfirmActive: v3DesignOn,
+  });
 
   // ── Surface 4 (clarity redesign) — node consts shared by both layouts ─────
   // Zone-1 panel: standalone card in the legacy layout; embedded (chromeless,
@@ -2798,10 +2835,11 @@ function DisputesContent() {
       // isn't rendering (same gate as its claimFacts / onAttest props), which
       // leaves the row on its persisted check rather than inventing a verdict.
       detailsConfirmed={
-        v3DesignOn && disputeId
-          ? isClaimDetailsConfirmed(zone1Services, serviceAttestationReviewed)
-          : null
+        v3DesignOn && disputeId ? isClaimDetailsConfirmed(claimDetailsNeeds) : null
       }
+      // S314 — the count behind the check, so the row can NAME the gap instead
+      // of silently going un-green (the phone pack's amber open-steps idiom).
+      detailsOpenNeeds={v3DesignOn && disputeId ? openImportantNeeds(claimDetailsNeeds).length : 0}
       onOpenLetter={() =>
         document
           .getElementById("dispute-letter-article")
@@ -2911,9 +2949,20 @@ function DisputesContent() {
           strengthBand={strength?.evidenceStrength.band ?? null}
           appealsAddress={planContext?.insurer?.appealsAddress ?? null}
           versions={sentVersions}
+          // S314 (Andrew) — was `entry.responseDueDate`, which silently holds
+          // EITHER the engine's legal deadline OR a sent+30d estimate, and
+          // printed both under the word "deadline". On a post-service appeal
+          // with no engine deadline that produced "deadline Aug 29" — an
+          // estimate, using the wrong window (the plan's is 60 days), for a
+          // date nothing was scheduled against. Each half now has its own name.
           waitingDueLabel={
-            entry?.stage === "awaiting" && entry.responseDueDate
-              ? fmtRailDate(entry.responseDueDate)
+            entry?.stage === "awaiting" && entry.engineDueDate
+              ? fmtRailDate(entry.engineDueDate)
+              : null
+          }
+          waitingFollowUpLabel={
+            entry?.stage === "awaiting" && !entry.engineDueDate && entry.followUpDate
+              ? fmtRailDate(entry.followUpDate)
               : null
           }
           // S301 — unsend is confirmed, not withheld. The facts drive the

@@ -426,7 +426,86 @@ export interface LineItemEvidence {
     matchedSlug: string;
     matchedServiceName: string;
     costShareLabel: string;
+    /**
+     * S314 (Andrew) — what this ANSWER is worth, in dollars.
+     *
+     * The line is correctly withheld from the letter while the category match
+     * is unconfirmed: we do not demand money on a guess. But the user was never
+     * told what the open question costs them — the claim page promised $131.21
+     * recoverable, the letter demanded $87.25, and nothing on screen explained
+     * the $43.96 between them. The ask itself read "Add plan cost", an abstract
+     * chore with no stated stakes, sitting behind a green checkmark that said it
+     * was already handled.
+     *
+     * This is the same three calls the CONFIRMED branch above already makes;
+     * the undecided branch simply never made them despite holding every input.
+     *
+     * ⚠ IT LIVES ON THE ASK, NEVER ON THE LINE. `ev.discrepancyAmount` stays
+     * null while unconfirmed, which is what keeps this projection out of
+     * `sumEvidenceTotals` — and therefore out of the letter's demand. Moving it
+     * onto the line would make us demand money on an assumption, the exact
+     * failure this whole design exists to prevent.
+     *
+     * Null when it cannot be computed (no actual patient cost on the line); the
+     * copy drops the sentence rather than printing a placeholder.
+     */
+    projectedDiscrepancy: number | null;
   } | null;
+}
+
+/**
+ * S314 (Andrew, from a letter paste) — the evidence totals, DERIVED from the
+ * line evidence rather than accumulated while building it.
+ *
+ * THE BUG THIS REPLACES. `totalBilled` / `totalDiscrepancy` were running tallies
+ * incremented inside the FIRST resolution pass. A SECOND pass
+ * (`secondary_coverage_v2`) then goes back for the lines the exact-slug lookup
+ * missed, matches them by category, and MUTATES `ev.discrepancyAmount` on those
+ * same evidence objects — long after the tallies were finished. Nothing
+ * re-summed them, so `totals.totalDiscrepancy` only ever knew about pass-1
+ * lines, while the letter BODY (which reads `claims[].lineItemEvidence`) knew
+ * about all of them.
+ *
+ * Live consequence: a PROD letter printed `Total Disputed: $33.25` in its
+ * header above a body enumerating $33.25 + $39.12 + $14.88 = $87.25 — the two
+ * missing lines being immunizations, which is exactly the class that resolves
+ * by category rather than exact slug. Preventive care and immunizations make
+ * this the common case, not a corner.
+ *
+ * WHY DERIVE RATHER THAN RE-SUM. Re-summing after pass 2 fixes today and
+ * re-arms the identical trap for whoever adds a pass 3. The total is not a
+ * fact of its own — it is a projection of the lines, and the lines are already
+ * the single source of truth every other consumer reads (the body, persist's
+ * `amount_disputed`, strength scoring). Computing it FROM them, once, after all
+ * passes have run, makes the invariant structural: it cannot disagree with the
+ * body, and a future mutation pass is included with nothing to remember.
+ *
+ * `totalBilled` is derived here too. It is not mutated by pass 2 *today*, so it
+ * is not currently wrong — but it had the identical fragile shape, and fixing
+ * the class is the point.
+ *
+ * ⚠ One deliberate behavior change: the old tallies incremented for EVERY
+ * filtered line, including any whose `claim_id` matched no fetched claim (the
+ * `if (claimEvidence)` push is conditional). Those lines could never reach the
+ * body, so counting them was itself a defect; deriving from the claims drops
+ * them.
+ *
+ * `lineItemCount` deliberately keeps its own meaning (how many lines were
+ * examined) and is not derived here.
+ */
+export function sumEvidenceTotals(claims: ClaimEvidence[]): {
+  totalBilled: number;
+  totalDiscrepancy: number;
+} {
+  let totalBilled = 0;
+  let totalDiscrepancy = 0;
+  for (const c of claims) {
+    for (const li of c.lineItemEvidence) {
+      totalBilled += li.billedAmount;
+      totalDiscrepancy += li.discrepancyAmount ?? 0;
+    }
+  }
+  return { totalBilled, totalDiscrepancy };
 }
 
 export interface ClaimEvidence {
@@ -948,9 +1027,6 @@ export async function resolveEvidence(
     }
   }
 
-  let totalDiscrepancy = 0;
-  let totalBilled = 0;
-
   for (const li of filteredLineItems) {
     // S309 F12b — the claim's money context feeds the classifier's derived
     // actual-cost (shared proration when raw per-line money is null).
@@ -970,8 +1046,6 @@ export async function resolveEvidence(
         ? { totalBilled: claimEvidence.totalBilled, effectiveTotals: claimEvidence.effectiveTotals }
         : undefined,
     );
-    totalBilled += evidence.billedAmount;
-    totalDiscrepancy += evidence.discrepancyAmount ?? 0;
     if (claimEvidence) claimEvidence.lineItemEvidence.push(evidence);
   }
 
@@ -1074,12 +1148,25 @@ export async function resolveEvidence(
           }
         } else {
           // undecided → required verification gate (no citation until confirmed).
+          //
+          // S314 — price the question. Same derivation the confirmed branch
+          // runs, computed WITHOUT writing planBenefit/discrepancyAmount, so
+          // the line stays uncited and uncounted (see projectedDiscrepancy).
+          const projectedBenefit = buildSecondaryPlanBenefit(sec, planYear);
+          const projectedExpected = computeExpectedPatientCost(
+            projectedBenefit,
+            ev.billedAmount,
+          );
           ev.secondaryCoverageVerify = {
             matchedSlug: sec.matchedSlug ?? "preventive_care",
             matchedServiceName: sec.matchedSlug
               ? humanizeSlug(sec.matchedSlug)
               : "preventive care (ACA $0)",
             costShareLabel: secondaryCostShareLabel(sec.coverage),
+            projectedDiscrepancy:
+              projectedExpected != null && ev.actualPatientCost != null
+                ? Math.max(0, ev.actualPatientCost - projectedExpected)
+                : null,
           };
         }
       }
@@ -1099,6 +1186,10 @@ export async function resolveEvidence(
     canonicalPlanIdForBillYear,
     await isFeatureEnabled("letter_requirements_v1"),
   );
+
+  // S314 — derived HERE, after every pass (including secondary-coverage) has
+  // finished writing to the line evidence. See sumEvidenceTotals.
+  const { totalBilled, totalDiscrepancy } = sumEvidenceTotals(claimsArr);
 
   return {
     claims: claimsArr,

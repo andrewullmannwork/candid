@@ -120,6 +120,14 @@ export interface RailWaitCard {
   chipSentAgo: string | null;
   /** Amber pill — only with a real engine deadline (deadlineType != null). */
   chipDeadline: string | null;
+  /**
+   * S314 — slate pill: "Follow up after Aug 29 · 15 days away". Shown for a
+   * sent letter with NO engine deadline; never called a deadline. Null when a
+   * real deadline is present (that chip answers the question) or unsent.
+   */
+  chipFollowUp: string | null;
+  /** S314 — "You asked them to reply within 30 days." Pairs with chipFollowUp. */
+  followUpSub: string | null;
   /** Slate pill — undated §1692g wait ("Collection must pause…"). */
   chipPause: string | null;
   ctaLogResponse: string;
@@ -596,13 +604,20 @@ function buildWaitCard(
   now: Date,
 ): RailWaitCard {
   const daysSinceSent = l.latestSendAt != null ? daysSinceLocal(l.latestSendAt, now) : null;
+  // S314 — `engineDueDate` IS the guarded field now (null unless the engine
+  // established a deadline), so the guard no longer has to be re-stated here.
   const daysRemaining =
-    l.deadlineType != null && l.responseDueDate != null
-      ? daysUntilLocal(l.responseDueDate, now)
-      : null;
+    l.engineDueDate != null ? daysUntilLocal(l.engineDueDate, now) : null;
   const dated = daysRemaining != null;
-  const dateLabel = dated ? fmtRailDate(l.responseDueDate!) : null;
+  const dateLabel = dated ? fmtRailDate(l.engineDueDate!) : null;
   const overdue = dated && daysRemaining < 0;
+  // S314 (Andrew) — the follow-up prompt, for sent letters with NO engine
+  // deadline. Previously the rail showed no dated furniture at all in this
+  // case (correctly refusing to call an estimate a deadline) — which meant the
+  // genuinely useful signal, "when should I chase this", went with it. It is
+  // shown as what it is: the date the letter asked them to reply by.
+  const followUpDays =
+    !dated && l.followUpDate != null ? daysUntilLocal(l.followUpDate, now) : null;
   // S302 (Andrew) — the elapsed-% BAR is GONE, in every state. The number in
   // the chip is the whole signal.
   //
@@ -620,6 +635,11 @@ function buildWaitCard(
     disputeId: l.disputeId,
     chipSentAgo: daysSinceSent != null ? CASE_RAIL.chipSentAgo(daysSinceSent) : null,
     chipDeadline: dated ? CASE_RAIL.chipDeadline(dateLabel!, daysRemaining) : null,
+    chipFollowUp:
+      followUpDays != null
+        ? CASE_RAIL.chipFollowUp(fmtRailDate(l.followUpDate!), followUpDays)
+        : null,
+    followUpSub: followUpDays != null ? CASE_RAIL.followUpSub : null,
     chipPause:
       !dated && l.letterType === "debt_validation" ? CASE_RAIL.chipCollectionPause : null,
     ctaLogResponse: CASE_RAIL.ctaLogResponse,
