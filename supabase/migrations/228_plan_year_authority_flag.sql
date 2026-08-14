@@ -29,16 +29,25 @@
 --      service year no longer satisfies "exact", and sets `missingForYear`. The
 --      EXISTING reverse-burden letter clause + evidence gap light up on their
 --      own — no new letter copy.
---   2. The plan-change ask warns before a year-mismatched move, and its choice
---      persists (plan-pair scoped, user-scoped) so the ask retires.
+--   2. The plan-change ask warns before a year-mismatched move, and a "Keep on
+--      the old plan" choice PERSISTS (plan-pair scoped, user-scoped) so the ask
+--      retires instead of returning every visit.
+--
+-- NOT GATED, and deliberately so: the same PR corrects the ask's three-valued
+-- choice, its button copy, and Done-gating. Those are fixes to a reported
+-- defect (a boolean could not tell "undecided" from "explicitly keep", so the
+-- Keep button painted grey before any click and an explicit Keep was skipped by
+-- the apply loop). Hiding a bug fix behind a flag would keep the broken modal
+-- alive as a maintained code path.
 --
 -- ⚠ LETTER OUTPUT CHANGES for wrong-year-pinned claims: the verbatim wrong-year
 -- citation is replaced by the reverse-burden ask. Goldens re-baselined and
 -- LETTER_COMPOSE_VERSION bumped in the same commit (standing discipline). With
 -- `dispute_draft_live_rebuild_v1` ON, live drafts rebuild silently.
 --
--- OFF = byte-identical: resolution keeps today's year-blind behaviour, the
--- modal renders today's two buttons, no warning, no stored answer read.
+-- OFF = year-blind resolution exactly as today, no year warning, no stored
+-- answer written or read. NOT byte-identical on the /plan modal, by the design
+-- note above: its corrected choice model and copy ship un-gated.
 --
 -- ROLLOUT: merge OFF → PROD Studio-apply → prod flag-OFF smoke → separate
 -- Andrew go for the flip.
@@ -52,7 +61,7 @@ INSERT INTO feature_flag_rules (flag_key, enabled, description, target_type, con
 VALUES (
   'plan_year_authority_v1',
   false,
-  'S313 (2026-08-13). Plan-year authority — a plan document is authority only for care delivered in its own plan year. ON: a resolved plan whose year differs from the service year stops satisfying the exact-plan test and sets missingForYear, so the EXISTING S110/S111 reverse-burden clause (produce the bill-year SPD under 29 USC 1024(b)(4)) and the existing "Upload your <year> plan" evidence gap fire on wrong-year PINNED claims, not just on no-plan-for-that-year claims; and the accumulator plan-change ask warns before a year-mismatched move, persisting the member''s plan-identity answer (plan-pair scoped, user-scoped) so the ask retires. No new letter copy — the wrong-year language already existed and was unreachable. OFF = byte-identical year-blind resolution and today''s modal.',
+  'S313 (2026-08-13). Plan-year authority — a plan document is authority only for care delivered in its own plan year. ON: a resolved plan whose year differs from the service year stops satisfying the exact-plan test and sets missingForYear, so the EXISTING S110/S111 reverse-burden clause (produce the bill-year SPD under 29 USC 1024(b)(4)) and the existing "Upload your <year> plan" evidence gap fire on wrong-year PINNED claims, not just on no-plan-for-that-year claims; and the accumulator plan-change ask warns before a year-mismatched move and persists the member''s plan-identity answer (plan-pair scoped, user-scoped) so the ask retires. The same PR''s modal corrections (three-valued choice, button copy, Done-gating) are defect fixes and ship UN-gated. No new letter copy — the wrong-year language already existed and was unreachable. OFF = byte-identical year-blind resolution and today''s modal.',
   'global',
   '{}'::jsonb
 )

@@ -34,7 +34,15 @@
  * a parse). Stored with `answeredAt` so a later calibration pass can measure
  * the resolver against real answers.
  *
- * Body: { planId, otherPlanId, answer: "same" | "different" }
+ * Body: { planId, otherPlanId, answer: "different" }
+ *
+ * ONLY "different" is accepted today, deliberately. "same" is a coherent answer
+ * and the loader could honour it as `carry` — but nothing sends it, and S311's
+ * lesson was that a route half rots silently (`show_drift_banner_for_sent`
+ * shipped server-side in PR #71 and no client consumer was EVER written). In
+ * THIS surface "same" is also redundant: "Move to current plan" already says
+ * "this care belongs here" by re-pinning. Widen the union when a caller needs
+ * it — the needs-panel "My plan didn't change" affordance is the likely one.
  * Auth: Firebase bearer token; userScoped enforces ownership of BOTH rows.
  */
 import { NextRequest, NextResponse } from "next/server";
@@ -53,7 +61,7 @@ async function getAuthUser(req: NextRequest) {
 }
 
 export interface PlanIdentityAnswer {
-  answer: "same" | "different";
+  answer: "different";
   answeredAt: string;
   /** Both canonical ids AS ANSWERED — the reset gate. Null is a real value. */
   selfCanonicalId: string | null;
@@ -75,8 +83,8 @@ export async function POST(req: NextRequest) {
   if (typeof body.otherPlanId !== "string" || !body.otherPlanId) {
     return NextResponse.json({ error: "otherPlanId required" }, { status: 400 });
   }
-  if (body.answer !== "same" && body.answer !== "different") {
-    return NextResponse.json({ error: "answer must be 'same' or 'different'" }, { status: 400 });
+  if (body.answer !== "different") {
+    return NextResponse.json({ error: "answer must be 'different'" }, { status: 400 });
   }
   if (body.planId === body.otherPlanId) {
     return NextResponse.json({ error: "A plan cannot be answered against itself" }, { status: 400 });
@@ -101,7 +109,7 @@ export async function POST(req: NextRequest) {
   if (!self || !other) return NextResponse.json({ error: "Plan not found" }, { status: 404 });
 
   const entry: PlanIdentityAnswer = {
-    answer: body.answer,
+    answer: "different",
     answeredAt: new Date().toISOString(),
     selfCanonicalId: (self.canonical_plan_id as string | null) ?? null,
     otherCanonicalId: (other.canonical_plan_id as string | null) ?? null,

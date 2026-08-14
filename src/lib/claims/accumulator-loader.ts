@@ -242,9 +242,9 @@ export async function loadAccumulatorLedger(
           selfCanonicalId?: string | null;
           otherCanonicalId?: string | null;
         }>;
-      const answeredVerdict = (otherPlanId: string): "carry" | "exclude" | null => {
+      const answeredVerdict = (otherPlanId: string): "exclude" | null => {
         const a = identityAnswers[otherPlanId];
-        if (!a || (a.answer !== "same" && a.answer !== "different")) return null;
+        if (!a || a.answer !== "different") return null;
         const otherRow = (otherPlans ?? []).find(
           (p) => (p as Record<string, unknown>).id === otherPlanId,
         ) as Record<string, unknown> | undefined;
@@ -252,7 +252,7 @@ export async function loadAccumulatorLedger(
         const otherNow = (otherRow?.canonical_plan_id as string | null) ?? null;
         if ((a.selfCanonicalId ?? null) !== selfNow) return null;
         if ((a.otherCanonicalId ?? null) !== otherNow) return null;
-        return a.answer === "same" ? "carry" : "exclude";
+        return "exclude";
       };
 
       for (const c of sameYearElsewhere) {
@@ -430,6 +430,7 @@ export async function loadAccumulatorLedger(
   return {
     ...ledger,
     sameYearAsk,
+    planYearAuthorityOn: await isFeatureEnabled("plan_year_authority_v1"),
     promptNewYearPlan,
     planId,
     planName: (ownedPlan.plan_name as string | null) ?? null,

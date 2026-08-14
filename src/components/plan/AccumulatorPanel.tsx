@@ -410,6 +410,7 @@ export function AccumulatorPanelView({ ledger, insurer, className, defaultCollap
       {askOpen && ledger.planId && (
         <PlanChangeAskModal
           bills={ledger.sameYearAsk ?? []}
+          yearAuthorityOn={ledger.planYearAuthorityOn === true}
           planYear={ledger.planYear}
           planId={ledger.planId}
           planName={ledger.planName ?? null}
@@ -517,6 +518,7 @@ export function AccumulatorPanel({ insurancePlanId, planYear, insurer, className
  */
 function PlanChangeAskModal({
   bills,
+  yearAuthorityOn,
   planYear,
   planId,
   planName,
@@ -524,6 +526,8 @@ function PlanChangeAskModal({
   onApplied,
 }: {
   bills: SameYearAskBill[];
+  /** S313 — gates the NEW behaviour only (warning + persisting the answer). */
+  yearAuthorityOn: boolean;
   planYear: number;
   planId: string;
   planName: string | null;
@@ -554,7 +558,7 @@ function PlanChangeAskModal({
       // S313 — a Keep is an ANSWER, not a no-op. Recorded once per plan PAIR
       // (deduped: several bills can sit on the same old plan), so the ask
       // retires for every bill on that pair instead of returning next visit.
-      const keptPlanIds = Array.from(
+      const keptPlanIds = !yearAuthorityOn ? [] : Array.from(
         new Set(
           bills
             .filter((b) => choices[b.claimId] === "keep" && b.currentPlanId)
@@ -667,7 +671,8 @@ function PlanChangeAskModal({
                   produces a letter citing the wrong year's benefits, so the
                   warning belongs at the doorway, not only in the letter. Shown
                   only once the member has actually chosen to move. */}
-              {choices[b.claimId] === "move" &&
+              {yearAuthorityOn &&
+                choices[b.claimId] === "move" &&
                 b.dateOfService != null &&
                 Number(b.dateOfService.slice(0, 4)) !== planYear && (
                   <p className="mt-2 rounded-lg bg-amber-50 px-2.5 py-2 text-[12px] leading-relaxed text-amber-800 ring-1 ring-inset ring-amber-200">

@@ -219,6 +219,13 @@ export interface AccumulatorLedger {
    *  plan-change modal from these; the member's `claim_plan` re-pin is the
    *  answer and flows back in on the next load. */
   sameYearAsk?: SameYearAskBill[];
+  /** S313 — `plan_year_authority_v1`, resolved server-side and passed down so
+   *  the modal never needs an EXPOSED_FLAGS entry. Gates the NEW behaviour (the
+   *  year-mismatch warning + persisting the member's identity answer). The UI
+   *  corrections it ships beside — three-valued choice, the approved copy,
+   *  Done-gating — are fixes to a reported defect and are NOT gated: hiding
+   *  them behind a flag would keep the broken modal alive as a code path. */
+  planYearAuthorityOn?: boolean;
   /** S294 model — the tallied plan's row id + display name (the modal's re-pin
    *  target and the "under your new {plan}" copy). */
   planId?: string;
