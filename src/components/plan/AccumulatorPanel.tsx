@@ -550,6 +550,26 @@ function PlanChangeAskModal({
     setError(null);
     try {
       const token = await user.firebaseUser.getIdToken();
+
+      // S313 — a Keep is an ANSWER, not a no-op. Recorded once per plan PAIR
+      // (deduped: several bills can sit on the same old plan), so the ask
+      // retires for every bill on that pair instead of returning next visit.
+      const keptPlanIds = Array.from(
+        new Set(
+          bills
+            .filter((b) => choices[b.claimId] === "keep" && b.currentPlanId)
+            .map((b) => b.currentPlanId as string),
+        ),
+      );
+      for (const otherPlanId of keptPlanIds) {
+        const res = await fetch("/api/plan/identity-answer", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ planId, otherPlanId, answer: "different" }),
+        });
+        if (!res.ok) throw new Error(`Couldn't save your answer (${res.status}). Try again.`);
+      }
+
       for (const b of bills) {
         if (choices[b.claimId] !== "move") continue;
         const res = await fetch(`/api/claims/${b.claimId}/cost-share-override`, {
@@ -643,6 +663,18 @@ function PlanChangeAskModal({
                   Keep on the old plan
                 </button>
               </div>
+              {/* S313 — moving a bill onto a plan from a different year is what
+                  produces a letter citing the wrong year's benefits, so the
+                  warning belongs at the doorway, not only in the letter. Shown
+                  only once the member has actually chosen to move. */}
+              {choices[b.claimId] === "move" &&
+                b.dateOfService != null &&
+                Number(b.dateOfService.slice(0, 4)) !== planYear && (
+                  <p className="mt-2 rounded-lg bg-amber-50 px-2.5 py-2 text-[12px] leading-relaxed text-amber-800 ring-1 ring-inset ring-amber-200">
+                    This bill is from {b.dateOfService.slice(0, 4)} and this plan is for {planYear}.
+                    Your letter will say so, and ask your insurer for the {b.dateOfService.slice(0, 4)} plan terms.
+                  </p>
+                )}
             </div>
           ))}
         </div>

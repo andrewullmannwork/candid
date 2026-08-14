@@ -205,6 +205,11 @@ export interface SameYearAskBill {
   totalBilled: number | null;
   /** where the bill currently sits — named in the modal, no silent moves. */
   currentPlanName: string | null;
+  /** S313 — the plan row the bill sits on. The identity answer is about this
+   *  PAIR (this plan vs the tallied one), so the modal must name it. */
+  currentPlanId: string | null;
+  /** S313 — that plan's year, for the year-mismatch warning before a move. */
+  currentPlanYear: number | null;
 }
 
 export interface AccumulatorLedger {
