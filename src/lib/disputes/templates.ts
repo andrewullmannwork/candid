@@ -358,23 +358,7 @@ function buildClaimIdHeader(params: {
   // (proxy citation), use "Current plan (cited as proxy):" framing instead
   // of "Plan:" — saying "Plan: Anthem 2026" on a 2023 dispute falsely
   // implies the claim was processed under that 2026 plan.
-  const exactPlanLabel = params.planContext?.plan?.planName
-    ? `${params.planContext.plan.planName}${params.planContext.plan.planYear ? `, plan year ${params.planContext.plan.planYear}` : ""}`
-    : null;
-  const boundPlanLabel = params.planContext?.boundCanonicalPlan?.planName
-    ? `${params.planContext.boundCanonicalPlan.planName}${params.planContext.boundCanonicalPlan.planYear ? `, plan year ${params.planContext.boundCanonicalPlan.planYear}` : ""}`
-    : null;
-  const planLabel = exactPlanLabel ?? boundPlanLabel;
-  const billYear =
-    params.planContext?.plan?.planYear ??
-    params.planContext?.missingForYear ??
-    null;
-  const planLabelYear =
-    params.planContext?.plan?.planYear ??
-    params.planContext?.boundCanonicalPlan?.planYear ??
-    null;
-  const planLabelIsProxy =
-    billYear != null && planLabelYear != null && planLabelYear !== billYear;
+  const { label: planLabel, isProxy: planLabelIsProxy } = resolvePlanLabel(params.planContext);
   const totalDisputed = params.evidence?.totals?.totalDiscrepancy ?? 0;
 
   // S109 PR #2 (Chunk A fix) — plain "Label: value" format (no markdown bold
@@ -1372,6 +1356,48 @@ function hasAnyPlanBenefit(evidence: DisputeEvidence): boolean {
 }
 
 /**
+ * S313 — the plan label a letter prints, and whether it is a PROXY cite.
+ *
+ * ONE derivation for what were two byte-identical copies (the Re: header block
+ * and the letter body), which is how S111's proxy framing came to be half-live:
+ * fixing one copy would have left the other saying "Plan: <plan> 2026" on 2023
+ * care.
+ *
+ * ⚠ `isProxy` compares the label's year against the year the CARE happened.
+ * Both copies previously derived the bill year as
+ * `plan.planYear ?? missingForYear`, which prefers the PINNED plan's year — the
+ * same value the label itself uses — so the comparison was the plan against
+ * itself and `isProxy` was permanently false whenever a plan was pinned. S111
+ * wrote the proxy framing precisely because "Plan: Anthem 2026" on a 2023
+ * dispute falsely implies the claim was processed under that plan; the framing
+ * shipped and never once fired.
+ *
+ * `serviceYear` is null when `plan_year_authority_v1` is off, so this falls back
+ * to the previous derivation and OFF stays byte-identical.
+ */
+export function resolvePlanLabel(planContext: PlanContext | null | undefined): {
+  label: string | null;
+  isProxy: boolean;
+} {
+  const withYear = (name: string | null | undefined, year: number | null | undefined) =>
+    name ? `${name}${year ? `, plan year ${year}` : ""}` : null;
+  const label =
+    withYear(planContext?.plan?.planName, planContext?.plan?.planYear) ??
+    withYear(planContext?.boundCanonicalPlan?.planName, planContext?.boundCanonicalPlan?.planYear);
+  const labelYear =
+    planContext?.plan?.planYear ?? planContext?.boundCanonicalPlan?.planYear ?? null;
+  const careYear =
+    planContext?.serviceYear ??
+    planContext?.plan?.planYear ??
+    planContext?.missingForYear ??
+    null;
+  return {
+    label,
+    isProxy: careYear != null && labelYear != null && labelYear !== careYear,
+  };
+}
+
+/**
  * S313 — the plan year a per-line bullet would NAME, whichever prefix case it
  * takes. canonical_archive / user_fallback name `sourcedFromYear`; user_exact
  * names the pinned plan's year. Both are "the year this letter is holding out
@@ -2077,23 +2103,7 @@ const insuranceAppealTemplate: LetterTemplate = {
     // claim was processed under" the wrong-year plan (smoke #6 fix —
     // saying "processed under 2026" on a 2023 dispute is factually wrong
     // and weakens the dispute).
-    const exactPlanLabel = planContext?.plan?.planName
-      ? `${planContext.plan.planName}${planContext.plan.planYear ? `, plan year ${planContext.plan.planYear}` : ""}`
-      : null;
-    const boundPlanLabel = planContext?.boundCanonicalPlan?.planName
-      ? `${planContext.boundCanonicalPlan.planName}${planContext.boundCanonicalPlan.planYear ? `, plan year ${planContext.boundCanonicalPlan.planYear}` : ""}`
-      : null;
-    const planLabel = exactPlanLabel ?? boundPlanLabel;
-    const billYearForLetter =
-      planContext?.plan?.planYear ?? planContext?.missingForYear ?? null;
-    const planLabelYear =
-      planContext?.plan?.planYear ??
-      planContext?.boundCanonicalPlan?.planYear ??
-      null;
-    const planLabelIsProxy =
-      billYearForLetter != null &&
-      planLabelYear != null &&
-      planLabelYear !== billYearForLetter;
+    const { label: planLabel, isProxy: planLabelIsProxy } = resolvePlanLabel(planContext);
     const planLabelSentence = planLabel
       ? planLabelIsProxy
         ? ` I am citing my current ${planLabel} as evidence of present coverage under this insurer; the plan in effect on the date of service is the subject of the request below.`

@@ -118,6 +118,11 @@ function render(serviceYear: number | null, sourcedFromYear: number | null, sour
 }
 
 const NOTE = "plan documents are not on file";
+/** Only the per-line evidence bullets — the header and body legitimately name
+ *  the pinned plan's year in the S111 proxy framing, which is a DIFFERENT
+ *  question from what the citation may claim as authority. */
+const bulletsOf = (body: string) =>
+  body.split("\n").filter((l) => l.trimStart().startsWith("- ")).join("\n");
 const YEAR_STAMPED = "2026 Summary of Benefits and Coverage";
 const SOURCE_SUFFIX = "Source: Summary of Benefits and Coverage";
 const QUOTE = `Plan language: "`;
@@ -157,7 +162,7 @@ check("NO year-gap note (nothing to disclose)", !okYear.includes(NOTE), okYear);
 console.log("\nflag ON, care 2024, every sourcedFrom case:");
 for (const src of ["canonical_archive", "user_exact", "user_fallback"] as const) {
   const body = render(2024, 2026, src);
-  check(`${src}: no 2026 stamp anywhere in the bullets`, !body.includes("2026 "), body);
+  check(`${src}: no 2026 stamp in the BULLETS`, !bulletsOf(body).includes("2026"), body);
   check(`${src}: asserts without citing`, body.includes("Per my plan's benefits for this service"), body);
   check(`${src}: the year-gap note renders`, body.includes(NOTE), body);
 }
@@ -172,6 +177,36 @@ const nullYear = render(2024, null, "user_exact");
 check("no 2026 stamp from the PINNED plan", !nullYear.includes("2026 specifies"), nullYear);
 check("asserts without citing", nullYear.includes("Per my plan's benefits for this service"), nullYear);
 check("the year-gap note still renders", nullYear.includes(NOTE), nullYear);
+
+// ── 6. The PLAN LABEL — S111's proxy framing, which never once fired ────────
+// Both the Re: header and the body derived the bill year as
+// `plan.planYear ?? missingForYear` — the same value the label prints — so the
+// proxy test compared the plan against itself and was permanently false
+// whenever a plan was pinned. Two byte-identical copies of that derivation, so
+// fixing one would have left the other lying.
+console.log("\nflag ON, care 2024, pinned plan 2026 — the plan label:");
+const lbl = render(2024, 2026, "user_exact");
+check("header uses the PROXY framing", lbl.includes("Current plan (cited as proxy):"), lbl);
+check('header no longer says plain "Plan: …, plan year 2026"', !lbl.includes("\nPlan: "), lbl);
+check("the false 'This claim was processed under' sentence is GONE",
+  !lbl.includes("This claim was processed under"), lbl);
+check("body says it is citing CURRENT coverage as evidence",
+  lbl.includes("as evidence of present coverage under this insurer"), lbl);
+check("and points at the date-of-service plan as the subject",
+  lbl.includes("the plan in effect on the date of service is the subject"), lbl);
+
+// The LABEL and the CITATION answer different questions, and can legitimately
+// disagree. Here the bill-year archive supplied a correct 2024 cite while the
+// PINNED plan is still 2026 — so the bullet keeps its citation AND the header
+// still says "proxy", because "Plan: … 2026" on 2024 care is misleading no
+// matter where the coverage terms came from. Pinned so a later "simplification"
+// cannot collapse the two into one test.
+const lblOk = render(2024, 2024, "canonical_archive");
+check("right-year cite SURVIVES in the bullet",
+  bulletsOf(lblOk).includes("2024 Summary of Benefits and Coverage"), lblOk);
+check("but the header still flags the 2026 PINNED plan as a proxy",
+  lblOk.includes("Current plan (cited as proxy):"), lblOk);
+check("no year-gap note (the citation itself is the right year)", !lblOk.includes(NOTE), lblOk);
 
 if (failures > 0) {
   console.error(`\n✗ plan-year-authority FAILED — ${failures} check(s).`);
