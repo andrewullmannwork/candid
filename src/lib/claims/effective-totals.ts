@@ -224,6 +224,27 @@ export function resolveEffectiveClaimTotals(args: {
   let sumPatientResp = 0;
   // S304 — presence is tracked alongside the sum, because null and 0 sum
   // identically and the two mean opposite things.
+  //
+  // S314 (Andrew) — presence means the lines CARRY INFORMATION, so a column of
+  // literal zeros is an absence too. S304 taught this code that a BLANK column
+  // is not an opinion; it never taught it that an ALL-ZERO column isn't one
+  // either, and real bills write `0.00` rather than leaving the field null. The
+  // result was the totals-source question firing on nearly every bill: "the
+  // lines say $0.00 paid, the summary says $264.68 — which is right?", when a
+  // bill cannot have $264.68 paid with every line at zero. That is an
+  // unpopulated field, not a competing opinion.
+  //
+  // This COMPLETES S304's rule rather than reversing it. S304 drew the line
+  // between a blank column and "per-line values that happen to sum to zero" —
+  // i.e. OFFSETTING values. `!== 0` per line keeps those present (a +100/-100
+  // pair still carries information); only a column of literal zeros drops out,
+  // which is what "no per-line values" always meant.
+  //
+  // It also closes a second hole of the same shape in `decideField` below: a
+  // stored `line_items` answer is honored only when per-line values are
+  // present, so on a zero-filled bill the old predicate would have reported
+  // $0.00 for money the bill plainly states — exactly the failure S304's
+  // comment describes for header-only bills.
   let anyPatientPaid = false;
   let anyInsurancePaid = false;
   let anyInsuranceAdjusted = false;
@@ -233,10 +254,10 @@ export function resolveEffectiveClaimTotals(args: {
     sumInsurancePaid += toNumber(li.insurance_paid);
     sumInsuranceAdjusted += toNumber(li.insurance_adjusted_amount);
     sumPatientResp += toNumber(li.patient_owes);
-    if (li.patient_paid_amount != null) anyPatientPaid = true;
-    if (li.insurance_paid != null) anyInsurancePaid = true;
-    if (li.insurance_adjusted_amount != null) anyInsuranceAdjusted = true;
-    if (li.patient_owes != null) anyPatientResp = true;
+    if (toNumber(li.patient_paid_amount) !== 0) anyPatientPaid = true;
+    if (toNumber(li.insurance_paid) !== 0) anyInsurancePaid = true;
+    if (toNumber(li.insurance_adjusted_amount) !== 0) anyInsuranceAdjusted = true;
+    if (toNumber(li.patient_owes) !== 0) anyPatientResp = true;
   }
 
   // Header values. patient_responsibility cascades through

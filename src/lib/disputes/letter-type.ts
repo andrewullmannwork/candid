@@ -587,7 +587,11 @@ export function isLiveDraftStatus(status: string | null | undefined): boolean {
  * promote) → the stale banner + Refresh consent flow. Value is opaque to the
  * hash — keep it readable for debugging.
  */
-export const LETTER_COMPOSE_VERSION = "s313.4";
+// S314 — bumped WITH the header-total fix in the same commit (the one-shot
+// lever rule). `Total Disputed:` was summed before the secondary-coverage pass
+// finished writing, so live drafts carry an understated header; the bump is
+// what re-drafts them, once, on next view. Sent letters stay pinned.
+export const LETTER_COMPOSE_VERSION = "s314.1";
 
 /**
  * S312 (T4, Andrew's ruling) — the ONE lifecycle word a letter surface may

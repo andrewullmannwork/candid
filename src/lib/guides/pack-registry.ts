@@ -942,6 +942,17 @@ export const CASE_RAIL = {
           ? `Their deadline: ${dateLabel} · 1 day left`
           : `Their deadline: ${dateLabel} · ${daysRemaining} days left`,
   chipCollectionPause: "Collection must pause until they prove the debt",
+  // S314 (Andrew, approved copy) — the follow-up prompt. NOT a deadline: this
+  // is the date the letter itself asked them to reply by, so it is shown for
+  // every sent letter, including the many with no engine deadline where the
+  // rail previously showed no dated furniture at all. Andrew: "though not a
+  // real deadline, it is VERY useful for the user to have a countdown to the
+  // number of days before they need to send the follow-up."
+  chipFollowUp: (dateLabel: string, daysUntil: number): string =>
+    daysUntil > 0
+      ? `Follow up after ${dateLabel} · ${daysUntil} day${daysUntil === 1 ? "" : "s"} away`
+      : `Follow up now — no reply yet`,
+  followUpSub: "You asked them to reply within 30 days.",
 
   // Card actions + doors.
   ctaLogResponse: "Log their response",

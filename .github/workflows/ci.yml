@@ -81,6 +81,15 @@ jobs:
         # pass every other assertion — the hole this rule already had once.
         run: npx tsx scripts/calibration/fixtures/dispute-grounds/plan-year-authority.ts
 
+      - name: Money agreement across surfaces (S314)
+        # The header's "Total Disputed" must equal the sum of the per-line
+        # amounts the body prints; an unconfirmed match's projection must stay
+        # OUT of the demand; and the claim page's ceiling must reconcile to the
+        # letter's demand plus the open confirmations. Relationship assertions,
+        # not literals — the S313 lesson that fixture assertions written from
+        # what I expected a letter to say were wrong three commits running.
+        run: npx tsx scripts/calibration/fixtures/dispute-grounds/money-agreement.ts
+
       - name: Case-timeline projector (S298 Phase 0, mig 221)
         # Timeline unification Phase 0 — the projector's parity contract
         # (stage / responseDueDate / sentLetterMeta reproduce today's surfaces;

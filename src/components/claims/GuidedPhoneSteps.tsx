@@ -55,6 +55,33 @@ export interface PhonePackState {
   concluded: boolean;
 }
 
+/**
+ * S314 F2 — are two derived pack states the same answer?
+ *
+ * `persist` emits twice per click (optimistic paint, then server adopt) and the
+ * two almost always derive identically — the optimistic row already carries the
+ * only fields this state reads. The parent uses this to hand React back the
+ * SAME object on the second emit, so it bails out of the render instead of
+ * re-rendering the claim tree for a state that did not move.
+ *
+ * Field-by-field on purpose: every field of PhonePackState is a primitive, so
+ * this is total, and adding a field to the state without adding it here is a
+ * compile error rather than a silently-missed re-render.
+ */
+export function samePhonePackState(
+  a: PhonePackState | null,
+  b: PhonePackState | null,
+): boolean {
+  if (a == null || b == null) return a === b;
+  return (
+    a.done === b.done &&
+    a.total === b.total &&
+    a.outcome === b.outcome &&
+    a.outcomeAt === b.outcomeAt &&
+    a.concluded === b.concluded
+  );
+}
+
 export function derivePhonePackState(
   track: "insurer" | "provider",
   stepsState: Record<string, GuideStepState>,
@@ -373,7 +400,17 @@ export function GuidedPhoneSteps({
               )}
 
               {scriptSegs && (
-                <details className="mt-2" open={isCurrent}>
+                // S314 F2 (Andrew) — `open={isCurrent}` alone was the flicker's
+                // second, smaller cause: attesting a step moves "current" to the
+                // NEXT step, so THIS step's script collapsed — and the script
+                // renders directly ABOVE this step's own attest button. The
+                // button rose under the cursor mid-click, on top of the math
+                // panel's larger collapse. Keeping an attested step's script
+                // open means nothing above a click ever disappears because of
+                // that click. The trade (a finished step keeps its script
+                // expanded rather than tidying itself away) is Andrew's call,
+                // taken: a stable click target beats a shorter column.
+                <details className="mt-2" open={isCurrent || checked}>
                   <summary className="cursor-pointer text-[12px] font-semibold text-blue-700 hover:underline">
                     Show the script
                   </summary>

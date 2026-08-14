@@ -79,6 +79,21 @@ export interface PlanCostService {
   /** S293 (#5) — the service's billed total on this claim, for the one-block
    *  claim-details list. Absent (legacy callers) → the line renders without it. */
   billedAmount?: number | null;
+  /**
+   * S314 (Andrew) — what ANSWERING this ask is worth, in dollars, when the
+   * platform has a category match it isn't confident enough to claim.
+   *
+   * Sourced from evidence `secondaryCoverageVerify.projectedDiscrepancy`, summed
+   * across the service's lines. Null when there is no projection to make.
+   *
+   * ⚠ Phrase it as what the ANSWER decides, never as what CONFIRMING earns. A
+   * user's confirm/reject is the precision oracle behind canonical promotion;
+   * copy that pays for one answer buys agreement and then counts it as
+   * evidence. The delta is identical either way — confirm and the letter gains
+   * it, reject and it does not — so "your answer decides" is both the honest
+   * framing and the accurate one.
+   */
+  projectedDiscrepancy?: number | null;
 }
 
 /**
@@ -93,17 +108,135 @@ export function unconfirmedParsedServices(
 }
 
 /**
+ * S314 (Andrew) — everything this panel marks IMPORTANT and still open.
+ *
+ * THE BUG THIS CLOSES. `isClaimDetailsConfirmed` asked a narrower question than
+ * the panel it speaks for: "has the attestation been reviewed, and is every
+ * parser-extracted plan cost confirmed?" It never looked at the missing plan
+ * cost, the missing denial date, or any other row the panel itself renders with
+ * an IMPORTANT badge. So the "Confirm the claim details" step showed a green
+ * check while, one click inside, two IMPORTANT items sat empty.
+ *
+ * That is the S308 amber-honesty shape again — a step declaring itself done on
+ * a narrower question than the panel beneath it is asking — and it had a money
+ * consequence, not a cosmetic one: an unanswered coverage question keeps its
+ * line OUT of the letter, so a PROD letter demanded $87.25 while the bill's own
+ * math showed $131.21 recoverable. The green check is why the question was
+ * never answered.
+ *
+ * WHY THIS SHAPE. The function was already the single derivation — the panel
+ * (its `detailsDone`) and the page (the UnifiedTodo row's state) both call it.
+ * It did not need unifying; it needed to ask enough. Widening the input is a
+ * COMPILE ERROR at both call sites by design (the S302 lesson: an optional
+ * param lets one site silently keep the old answer).
+ *
+ * Helpful-only rows (the EOB upload) are deliberately excluded — they never
+ * hold the step open, and never turn it amber.
+ */
+export interface ClaimDetailsNeedsInput {
+  planServices: PlanCostService[];
+  attestationReviewed: boolean;
+  /** Insurer-track letters ask for the denial date; it sets the appeal deadline. */
+  insurerTrack: boolean;
+  denialNoticeDate: string | null;
+  /** The amount-paid ask — null while unanswered. */
+  userPatientPaid: number | null;
+  /** Collections track only. */
+  wantsCollectorDetails: boolean;
+  collectorAddressOnFile: boolean;
+  accountNumberOnFile: boolean;
+  /**
+   * Category-coverage confirmations still open and NOT folded into the
+   * aggregate confirm row (the panel's own fold rule).
+   */
+  openCoverageVerifyCount: number;
+}
+
+/**
+ * S314 — build the completeness input from the panel's own raw props.
+ *
+ * Exported so the PAGE does not re-derive `insurerTrack` or the collector-track
+ * question from `letterType` on its own: those come from `letterNeeds`, and a
+ * second copy of that mapping is exactly the drift the widened predicate exists
+ * to end. The panel calls this with its props; the page calls it with the same
+ * values it passes as props.
+ */
+export function buildClaimDetailsNeeds(input: {
+  letterType: string;
+  letterRequirementsOn: boolean;
+  planServices: PlanCostService[];
+  attestationReviewed: boolean;
+  denialNoticeDate: string | null;
+  userPatientPaid: number | null;
+  collectorAddressOnFile: boolean;
+  accountNumberOnFile: boolean;
+  coverageVerifyGaps: ReadonlyArray<{ lineItemId: string }>;
+  /**
+   * True when an aggregate/one-block confirm is already covering the parsed
+   * services — a coverage-verify gap on one of those lines is folded into it,
+   * not a separate open item (the panel's own fold rule).
+   */
+  parsedConfirmActive: boolean;
+}): ClaimDetailsNeedsInput {
+  const needs = letterNeeds(input.letterType);
+  const asks = (key: LetterNeedKey): boolean => needs.needs.includes(key);
+  const insurerTrack = input.letterRequirementsOn
+    ? asks("denial_date")
+    : INSURER_TRACK.has(input.letterType);
+  const wantsCollectorDetails =
+    input.letterRequirementsOn && (asks("collector_address") || asks("account_number"));
+  const parsedLineIds = new Set(
+    input.parsedConfirmActive
+      ? unconfirmedParsedServices(input.planServices).flatMap((s) => s.lineItemIds ?? [])
+      : [],
+  );
+  return {
+    planServices: input.planServices,
+    attestationReviewed: input.attestationReviewed,
+    insurerTrack,
+    denialNoticeDate: input.denialNoticeDate,
+    userPatientPaid: input.userPatientPaid,
+    wantsCollectorDetails,
+    collectorAddressOnFile: input.collectorAddressOnFile,
+    accountNumberOnFile: input.accountNumberOnFile,
+    openCoverageVerifyCount: input.coverageVerifyGaps.filter(
+      (g) => !parsedLineIds.has(g.lineItemId),
+    ).length,
+  };
+}
+
+/** Short labels for the open items, in the panel's own words. */
+export function openImportantNeeds(input: ClaimDetailsNeedsInput): string[] {
+  const open: string[] = [];
+  for (const svc of input.planServices) {
+    if (!svc.known) open.push(`Plan cost — ${svc.serviceLabel}`);
+  }
+  if (unconfirmedParsedServices(input.planServices).length > 0) {
+    open.push("Plan costs from your documents");
+  }
+  if (input.openCoverageVerifyCount > 0) open.push("Coverage to verify");
+  if (input.userPatientPaid == null) open.push("Amount you paid");
+  if (input.insurerTrack && input.denialNoticeDate == null) open.push("Denial date");
+  if (
+    input.wantsCollectorDetails &&
+    !(input.collectorAddressOnFile && input.accountNumberOnFile)
+  ) {
+    open.push("Collection agency details");
+  }
+  return open;
+}
+
+/**
  * S295 — the claim-details block's confirmation predicate, exported so the
  * UnifiedTodo row's done-state and the block's own rendering read the SAME
  * derivation rather than two that can drift (the S292 one-derivation
- * invariant). True once the services attestation has been reviewed AND no
- * parser-extracted plan cost is still awaiting a human confirmation.
+ * invariant).
+ *
+ * S314 — now true only when the attestation has been reviewed AND nothing the
+ * panel calls important is still open. See openImportantNeeds.
  */
-export function isClaimDetailsConfirmed(
-  planServices: PlanCostService[],
-  attestationReviewed: boolean,
-): boolean {
-  return attestationReviewed && unconfirmedParsedServices(planServices).length === 0;
+export function isClaimDetailsConfirmed(input: ClaimDetailsNeedsInput): boolean {
+  return input.attestationReviewed && openImportantNeeds(input).length === 0;
 }
 
 export interface CaseNeedsPanelProps {
@@ -659,6 +792,31 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
   const aggregateActive =
     !detailsBlockActive && parsedSvcs.length > 0 && onConfirmParsedCosts != null;
 
+  // S314 — line ids the aggregate/one-block confirm already covers, so a
+  // coverage-verify gap on one of them is not a SEPARATE open item (the panel's
+  // own fold rule, hoisted here so the completeness count and the row loop
+  // below share it rather than each applying their own version).
+  const parsedLineIds = new Set(
+    aggregateActive || detailsBlockActive ? parsedSvcs.flatMap((s) => s.lineItemIds ?? []) : [],
+  );
+
+  // S314 — the ONE completeness input, built by the SAME exported builder the
+  // page uses, and read by this panel's own `detailsDone` below as well as by
+  // the UnifiedTodo row's green check. The fixture pins that the panel's
+  // rendered important-and-open rows match what this list says is open.
+  const claimDetailsNeeds = buildClaimDetailsNeeds({
+    letterType,
+    letterRequirementsOn,
+    planServices,
+    attestationReviewed,
+    denialNoticeDate,
+    userPatientPaid,
+    collectorAddressOnFile,
+    accountNumberOnFile,
+    coverageVerifyGaps,
+    parsedConfirmActive: aggregateActive || detailsBlockActive,
+  });
+
   // Plan details — one row per disputed, slug'd service (done + unknown buckets).
   for (const svc of planServices) {
     if (detailsBlockActive && svc.known) continue; // → the one claim-details block
@@ -689,7 +847,24 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
           badge={ImportantBadge}
           control={<AddButton label="Add" onClick={() => onAddPlanDetails(svc)} />}
         >
-          Your plan&apos;s cost-share for this service — lets the letter quote your exact benefit.
+          {/* S314 (Andrew, approved copy) — when the platform HAS a category
+              match it isn't confident enough to claim, say what the open
+              question is worth. The line is correctly withheld from the letter
+              meanwhile; what was missing is any way for the user to know that
+              cost them $X. Graceful drop to the generic line when there is no
+              projection — the same rule the letter header follows. */}
+          {svc.projectedDiscrepancy != null && svc.projectedDiscrepancy > 0 ? (
+            <>
+              Your plan may cover this as preventive care, at no cost to you — but we&apos;re
+              not certain. Your answer decides whether your letter asks for{" "}
+              {money(svc.projectedDiscrepancy)} more.
+            </>
+          ) : (
+            <>
+              Your plan&apos;s cost-share for this service — lets the letter quote your exact
+              benefit.
+            </>
+          )}
         </Row>
       ),
     });
@@ -787,7 +962,7 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
   // "These look right" fans out the SAME writes the two rows it replaces made:
   // the per-line confirm-coverage marks + the services-performed attestation.
   if (detailsBlockActive && claimFacts && attestationLines && onAttest) {
-    const detailsDone = isClaimDetailsConfirmed(planServices, attestationReviewed);
+    const detailsDone = isClaimDetailsConfirmed(claimDetailsNeeds);
     const factsLine = [
       claimFacts.patientName ? `Patient: ${claimFacts.patientName}` : null,
       claimFacts.providerName ? `Provider: ${claimFacts.providerName}` : null,
@@ -1190,11 +1365,6 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
   // folded into it (same per-line confirm, one glance) instead of double-asking.
   // Folds ONLY when the aggregate row actually renders (else the gap stays standalone).
   // S293 (#5) — the one-block confirm covers the same line ids, so it folds too.
-  const parsedLineIds = new Set(
-    aggregateActive || detailsBlockActive
-      ? parsedSvcs.flatMap((s) => s.lineItemIds ?? [])
-      : [],
-  );
   for (const g of coverageVerifyGaps) {
     if (parsedLineIds.has(g.lineItemId)) continue;
     descs.push({

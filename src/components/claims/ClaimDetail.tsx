@@ -23,7 +23,7 @@ import { AddPlanDetailsModal } from "@/components/claims/AddPlanDetailsModal";
 import type { CostShareAssumption, CostShareOverrides } from "@/lib/claims/recovery-math";
 import { hasPendingAssumption } from "@/lib/claims/recovery-math";
 import { useFeatureFlag } from "@/lib/config/use-feature-flag";
-import { GuidedPhoneSteps, ShowFullStepButton, derivePhonePackState, type GuideStepState, type PhonePackState } from "@/components/claims/GuidedPhoneSteps";
+import { GuidedPhoneSteps, ShowFullStepButton, derivePhonePackState, samePhonePackState, type GuideStepState, type PhonePackState } from "@/components/claims/GuidedPhoneSteps";
 import { CaseRail, CaseResolvedFold, RailStep } from "@/components/claims/CaseRail";
 import { CaseFileBlock } from "@/components/claims/CaseFileBlock";
 import { OutcomeReportingModal } from "@/components/disputes/OutcomeReportingModal";
@@ -1495,7 +1495,24 @@ export function ClaimDetail({
           forgiveness: li.recovery?.forgivenessComponent ?? 0,
           // S308 (tracker AU) — ANSWERED service-cost rows now emit (reason
           // user_override); only a PENDING one means the rate is unknown.
-          rateKnown: !hasPendingAssumption(li.costShareAssumptions, "service_cost"),
+          //
+          // S314 (Andrew) — an UNCONFIRMED category match is not a known rate
+          // either. `coverageNeedsConfirmation` is already on the wire from the
+          // claim GET, computed from exactly the state the dispute pipeline uses
+          // to withhold a line from the letter ("secondary match, ambiguous
+          // cost-share, user has neither confirmed nor rejected"). This panel
+          // simply ignored it — so it showed "Annual Physical Exam · no copay ·
+          // $0.00" as settled fact for a line the letter would not cite, and
+          // promised a recovery the letter could not demand.
+          //
+          // Reading it costs one clause and makes the panel's EXISTING
+          // machinery correct on its own: the row renders the "Confirm your
+          // rate →" chip that already exists, and the plan card picks up its
+          // own honesty marker (", so far") because not every charged line is
+          // priced. Same field, same question, same answer as the letter.
+          rateKnown:
+            !hasPendingAssumption(li.costShareAssumptions, "service_cost") &&
+            li.coverageNeedsConfirmation !== true,
           copay: li.planCoverage?.copay ?? null,
           coinsurance: pct != null ? pct / 100 : null,
           covered: li.planCoverage?.covered ?? null,
@@ -4366,11 +4383,36 @@ export function ClaimDetail({
                     // Collapse ONLY on the not-concluded → concluded TRANSITION;
                     // collapsing on every emit while concluded slammed the panel
                     // shut on any in-panel click (the un-check bug).
-                    if (s.concluded && !guidedPack.concluded) setPhoneFullOpen(false);
-                    setGuidedPackLive(s);
-                    // S309 (Andrew) — interacting with the phone step means the
-                    // math above has been read; collapse it.
-                    setShowMath(false);
+                    //
+                    // S314 F2 (Andrew) — `setShowMath(false)` used to live BELOW
+                    // this guard, unguarded, and was the flicker's larger half:
+                    // `showMath` defaults to TRUE, so the FIRST attest collapsed
+                    // the whole math block — plan card, bill card, derivation
+                    // strip — which sits directly ABOVE the button being
+                    // clicked. The button rose ~400px past the cursor mid-click,
+                    // leaving the NEXT step's un-attested button under the
+                    // pointer: the click landed, but the thing under the cursor
+                    // afterwards was un-selected, which reads as "it didn't
+                    // take". It also fired on the Undo-Skip path, where the user
+                    // never touched the math at all.
+                    //
+                    // Andrew's S309 intent ("interacting with the phone step
+                    // means the math above has been read; collapse it") is
+                    // preserved — it now runs on the SAME conclusion transition
+                    // the sibling collapse uses, a moment the layout is already
+                    // changing on purpose and no click target is in flight.
+                    if (s.concluded && !guidedPack.concluded) {
+                      setPhoneFullOpen(false);
+                      setShowMath(false);
+                    }
+                    // S314 F2 — `persist` emits TWICE per click (optimistic
+                    // paint, then server adopt) and the second is almost always
+                    // state-identical. Handing back the SAME object lets React
+                    // bail out of the render entirely, instead of re-rendering
+                    // this whole (very large) tree for nothing — the flicker's
+                    // smaller half. Guarding here rather than at the child's
+                    // emit sites covers every emitter, present and future.
+                    setGuidedPackLive((prev) => (samePhonePackState(prev, s) ? prev : s));
                   }}
                 />
               </div>

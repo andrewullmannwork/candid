@@ -208,6 +208,18 @@ export interface UnifiedTodoProps {
    * falls back to the persisted check, so nothing regresses.
    */
   detailsConfirmed?: boolean | null;
+  /**
+   * S314 (Andrew) — how many IMPORTANT items are still open inside the
+   * claim-details expansion.
+   *
+   * Widening `detailsConfirmed` (S314) means this row correctly stops going
+   * green while a plan cost or denial date is missing — but a row that simply
+   * un-greens tells the user nothing about why. This is the count behind the
+   * check, rendered as the amber gap chip the phone pack's rail step already
+   * uses ("N steps still open"), so the same visual language answers the same
+   * question in both places. 0 → no chip.
+   */
+  detailsOpenNeeds?: number;
 
   // Optional read-through
   onOpenLetter: () => void;
@@ -425,6 +437,7 @@ export function UnifiedTodo({
   onResolvePatient,
   children,
   detailsConfirmed = null,
+  detailsOpenNeeds = 0,
   onOpenLetter,
   onDownload,
   onMarkSent,
@@ -1050,6 +1063,19 @@ export function UnifiedTodo({
                       {!row.required && row.state === "todo" && (
                         <span className="rounded-full border border-gray-200 bg-gray-100 px-1.5 py-px text-[9px] font-bold uppercase tracking-[0.07em] text-gray-400 no-underline">
                           Optional
+                        </span>
+                      )}
+                      {/* S314 (Andrew) — the gap chip. `detailsConfirmed` now
+                          accounts for every IMPORTANT open item, so this row
+                          correctly stays un-green while a plan cost or denial
+                          date is missing; without a count the user is told
+                          something is wrong but not what. Same amber chip the
+                          phone pack's rail step uses for the same job. */}
+                      {row.id === "details" && row.state !== "done" && detailsOpenNeeds > 0 && (
+                        <span className="rounded-full bg-amber-50 px-2 py-px text-[10.5px] font-semibold text-amber-800 ring-1 ring-inset ring-amber-200">
+                          {detailsOpenNeeds === 1
+                            ? "1 thing still needed"
+                            : `${detailsOpenNeeds} things still needed`}
                         </span>
                       )}
                     </div>

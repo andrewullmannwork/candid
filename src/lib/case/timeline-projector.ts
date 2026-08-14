@@ -119,8 +119,16 @@ export interface ProjectedLetterStep {
   sendCount: number;
   unsendCount: number;
   redraftCount: number;
-  /** Parity-exact responseDueDate (governing ?? sent+30d, date-only). */
+  /**
+   * Parity-exact responseDueDate (governing ?? sent+30d, date-only).
+   * ⚠ Ambiguous by construction — see `deriveResponseDueDate`. New readers want
+   * `engineDueDate` (a real deadline) or `followUpDate` (when to chase).
+   */
   responseDueDate: string | null;
+  /** S314 — the engine's legal deadline, or null. Never an estimate. */
+  engineDueDate: string | null;
+  /** S314 — when to chase, from the letter's own 30-day ask. Not a deadline. */
+  followUpDate: string | null;
   deadlineType: string | null;
   // ── S299 phase-1a additive display fields. Deliberately NO day-counts here:
   // the projector runs server-side (UTC on Vercel), and calendars belong to
@@ -435,9 +443,62 @@ export function synthesizeCaseEventsFromRows(
 
 // ── Parity-exact per-letter derivations ─────────────────────────────────────
 
-/** persist.ts getUserDisputes responseDueDate, verbatim semantics. */
+/**
+ * persist.ts getUserDisputes responseDueDate, verbatim semantics.
+ *
+ * ⚠ S314 — this field means TWO DIFFERENT THINGS and no reader can tell which
+ * it is holding: a real deadline the engine established, or a sent+30d
+ * estimate. That ambiguity is the defect, not the fallback. Prefer
+ * `deriveEngineDueDate` (legal deadline, or null) and `deriveFollowUpDate`
+ * (when to chase, always available once sent) — each says what it is.
+ *
+ * Kept because the parity contract with persist.ts is byte-exact and other
+ * readers still consume it; the two derivations below are expressed in terms of
+ * it so there is still one arithmetic.
+ */
 export function deriveResponseDueDate(d: ProjectorDisputeRow): string | null {
   if (d.governing_deadline_date) return d.governing_deadline_date;
+  if (!d.sent_at) return null;
+  const t = Date.parse(d.sent_at);
+  if (Number.isNaN(t)) return null;
+  return new Date(t + 30 * 86_400_000).toISOString().slice(0, 10);
+}
+
+/**
+ * S314 (Andrew) — the deadline the ENGINE established, or null. Never an
+ * estimate.
+ *
+ * A deadline in this product is a legal window: the ERISA 180-day filing
+ * window, or the plan's response window (60 days post-service / 30 pre-service,
+ * from the deadline engine's own config). `deadline_type` is the engine saying
+ * it computed one; without it there is no deadline, and nothing may call the
+ * sent+30d estimate by that name.
+ *
+ * The rail already applied this rule; the letter page did not, and printed
+ * "deadline Aug 29" — a sent+30d estimate — for a post-service appeal whose
+ * real window is 60 days, on a letter for which the engine had established
+ * nothing at all (and therefore scheduled no follow-ups). Reading this field
+ * makes that mistake unreachable rather than merely discouraged.
+ */
+export function deriveEngineDueDate(d: ProjectorDisputeRow): string | null {
+  return d.deadline_type != null && d.governing_deadline_date != null
+    ? d.governing_deadline_date
+    : null;
+}
+
+/**
+ * S314 (Andrew) — when to chase, available for every sent letter.
+ *
+ * NOT a deadline, and never labelled as one: this is the date the letter itself
+ * asked them to reply by ("respond in writing within 30 days of receipt"), so
+ * it is a real, user-facing fact worth a countdown — Andrew's point that the
+ * follow-up prompt is the genuinely useful half of what the old field carried.
+ *
+ * Deliberately independent of the engine deadline: a letter can have both (chase
+ * at 30 days, the plan's window closes at 60) and they answer different
+ * questions. Null until the letter is sent, because there is nothing to chase.
+ */
+export function deriveFollowUpDate(d: ProjectorDisputeRow): string | null {
   if (!d.sent_at) return null;
   const t = Date.parse(d.sent_at);
   if (Number.isNaN(t)) return null;
@@ -485,6 +546,10 @@ function projectLetterStep(
     unsendCount: 0,
     redraftCount: 0,
     responseDueDate: deriveResponseDueDate(d),
+    // S314 — the two unambiguous halves of the field above. See their doc
+    // comments; readers that mean "a legal deadline" must use engineDueDate.
+    engineDueDate: deriveEngineDueDate(d),
+    followUpDate: deriveFollowUpDate(d),
     deadlineType: d.deadline_type,
     counterpartyName:
       recipientKind === "collector" &&
