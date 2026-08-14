@@ -692,6 +692,11 @@ export function buildRequestSection(params: {
   // Item A — set when the no-plan coverage hold (below) already requested a collections hold, so
   // the standing collections-hold doesn't render twice.
   let collectionsHoldRequested = false;
+  // S313 — set when an ask already demands the governing plan document, so the
+  // year-gap ask below cannot make the same demand twice (mirrors
+  // collectionsHoldRequested). Both are insurer plan-document asks and they can
+  // co-occur: a coverage line with no citable benefit AND a wrong-year pin.
+  let planDocumentRequested = false;
   // S310 (Andrew-approved fold) — when both the cost-share correction ask and
   // the coverage-track correction ask would render on a provider letter, they
   // fold into ONE sentence (the write-off clause carried along). These track
@@ -789,6 +794,7 @@ export function buildRequestSection(params: {
     // line-by-line adjudication, and ask the provider to hold collections pending it.
     const noPlanToCite = !!noPlanCoverageRequestOn && !b.coverage.some((li) => li.planBenefit);
     if (isInsurer) {
+      if (noPlanToCite) planDocumentRequested = true;
       asks.push(
         noPlanToCite
           // S295 (Andrew-approved) — the §2560.503-1 entitlement attaches to the
@@ -1063,9 +1069,10 @@ export function buildRequestSection(params: {
   // Insurer-only: a provider holds no plan document. Reuses resolvePlanLabel —
   // its third consumer, so the header framing, the bullet suppression and this
   // ask can never disagree about whether a year gap exists.
-  const yearGapAsk = isInsurer && planContext?.serviceYear != null
-    ? resolvePlanLabel(planContext).isProxy
-    : false;
+  const yearGapAsk =
+    isInsurer && !planDocumentRequested && planContext?.serviceYear != null
+      ? resolvePlanLabel(planContext).isProxy
+      : false;
   if (yearGapAsk) {
     asks.push(
       `Produce my plan documents for ${planContext!.serviceYear} — the Summary Plan Description or Evidence of Coverage in effect on the date of service — and reprocess this claim against those terms. To the extent they differ from the current terms cited above, please identify the difference.`,
@@ -1396,7 +1403,7 @@ function hasAnyPlanBenefit(evidence: DisputeEvidence): boolean {
  * `serviceYear` is null when `plan_year_authority_v1` is off, so this falls back
  * to the previous derivation and OFF stays byte-identical.
  */
-export function resolvePlanLabel(planContext: PlanContext | null | undefined): {
+function resolvePlanLabel(planContext: PlanContext | null | undefined): {
   label: string | null;
   isProxy: boolean;
 } {

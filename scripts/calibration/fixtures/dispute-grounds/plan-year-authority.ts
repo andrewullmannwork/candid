@@ -234,6 +234,24 @@ check("NO-GAP letter keeps the plain 'Plan:' framing",
   !noGap.includes("Current plan (cited as proxy):"), noGap);
 check("NO-GAP letter has no year-gap note", !noGap.includes(NOTE), noGap);
 
+// ── 8. The plan-document ask must not DOUBLE ────────────────────────────────
+// Two insurer asks demand the governing plan document: the no-plan-to-cite
+// branch and the year-gap ask. They can co-occur (a coverage line with no
+// citable benefit AND a wrong-year pin), which would ask the same insurer for
+// the same document twice in one letter.
+console.log("\nflag ON — the plan-document ask is never doubled:");
+const dbl = render(2024, 2026, "user_exact");
+// Count the ASKS, not every mention: B' also says "plan documents", and the
+// year-gap ask names both "plan documents" and "Summary Plan Description" in
+// one sentence. A naive substring count reads 3 on a correct letter.
+const yearGapAsks = (dbl.match(/Produce my plan documents for/g) ?? []).length;
+const noPlanAsks = (dbl.match(/produce the governing plan document/g) ?? []).length;
+check(
+  `the plan-document ask appears at most once (year-gap ${yearGapAsks} + no-plan ${noPlanAsks})`,
+  yearGapAsks + noPlanAsks <= 1,
+  dbl,
+);
+
 if (failures > 0) {
   console.error(`\n✗ plan-year-authority FAILED — ${failures} check(s).`);
   process.exit(1);
