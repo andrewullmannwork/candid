@@ -208,6 +208,32 @@ check("but the header still flags the 2026 PINNED plan as a proxy",
   lblOk.includes("Current plan (cited as proxy):"), lblOk);
 check("no year-gap note (the citation itself is the right year)", !lblOk.includes(NOTE), lblOk);
 
+// ── 7. The letter must ASK for what its opening promises ────────────────────
+// The proxy intro says "the plan in effect on the date of service is the
+// subject of the request below". Until S313 the request below never asked for
+// it — an insurer could answer both existing items as written and never produce
+// the governing year.
+console.log("\nflag ON, care 2024, pinned plan 2026 — the relief section:");
+const ask = render(2024, 2026, "user_exact");
+check("asks the insurer to produce the DATE-OF-SERVICE year's plan documents",
+  ask.includes("Produce my plan documents for 2024"), ask);
+check("names SPD / Evidence of Coverage",
+  ask.includes("Summary Plan Description or Evidence of Coverage in effect on the date of service"), ask);
+check("puts the difference on the insurer",
+  ask.includes("please identify the difference"), ask);
+// The ask keys on the LABEL being a proxy — i.e. we do not hold the member's
+// own year-correct plan document — which stays true even when the bill-year
+// archive supplied correct TERMS. So the right-year-citation letter still
+// carries it; the true control is a letter with NO year gap at all.
+check("right-year CITATION still asks (we still lack the member's 2024 document)",
+  render(2024, 2024, "canonical_archive").includes("Produce my plan documents for 2024"), lblOk);
+const noGap = render(2026, 2026, "user_exact"); // care 2026, pinned plan 2026
+check("NO-GAP letter does not ask for plan documents",
+  !noGap.includes("Produce my plan documents for"), noGap);
+check("NO-GAP letter keeps the plain 'Plan:' framing",
+  !noGap.includes("Current plan (cited as proxy):"), noGap);
+check("NO-GAP letter has no year-gap note", !noGap.includes(NOTE), noGap);
+
 if (failures > 0) {
   console.error(`\n✗ plan-year-authority FAILED — ${failures} check(s).`);
   process.exit(1);

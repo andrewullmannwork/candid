@@ -1051,6 +1051,27 @@ export function buildRequestSection(params: {
   // request the letter did not make. Patient-driven + provider-agnostic (charity care + for-profit
   // programs); asserts no statute (the §501(r) obligation-demand version is the deferred upgrade) →
   // counsel pass before the activation flip.
+  // S313 plan-year authority — the ask the letter's own opening PROMISES.
+  //
+  // With a wrong-year plan pinned, the intro now says "the plan in effect on the
+  // date of service is the subject of the request below" — and until this, the
+  // request below never asked for it. An insurer could answer both existing
+  // items as written and never produce the year that governs. The disclosure
+  // (B' note) and the proxy framing put the gap on the record; this is what
+  // turns it into their obligation.
+  //
+  // Insurer-only: a provider holds no plan document. Reuses resolvePlanLabel —
+  // its third consumer, so the header framing, the bullet suppression and this
+  // ask can never disagree about whether a year gap exists.
+  const yearGapAsk = isInsurer && planContext?.serviceYear != null
+    ? resolvePlanLabel(planContext).isProxy
+    : false;
+  if (yearGapAsk) {
+    asks.push(
+      `Produce my plan documents for ${planContext!.serviceYear} — the Summary Plan Description or Evidence of Coverage in effect on the date of service — and reprocess this claim against those terms. To the extent they differ from the current terms cited above, please identify the difference.`,
+    );
+  }
+
   const faActive =
     !isInsurer &&
     (finAssistContext ?? false) &&
