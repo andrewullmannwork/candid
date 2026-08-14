@@ -1469,6 +1469,24 @@ function renderLineItemEvidence(
       li.planBenefit.sourcedFromYear != null &&
       li.planBenefit.sourcedFromYear !== planContext.serviceYear;
     let prefix: string;
+    // S313 plan-year authority — decided ONCE, above the switch, because all
+    // THREE sourcedFrom cases stamp a year into their own prefix in their own
+    // way (canonical_archive: "<insurer> <plan> 2026 Summary of Benefits…";
+    // user_fallback: "My current plan (2026)…"; user_exact/default:
+    // "<planName>, 2026 specifies…"). Patching the case I happened to be
+    // looking at fixed one third of the defect and Andrew's letter paste caught
+    // the rest: a claim resolved user_exact still read "BlueSelect Gold Core
+    // for Individuals, 2026 specifies a $30.00 copay" for 2023 care.
+    //
+    // The bullet still ASSERTS the benefit — the member is entitled to argue
+    // from their coverage — it just stops naming a wrong-year document as the
+    // authority. The year is disclosed ONCE by the B' note above the bullets,
+    // not repeated in every one.
+    if (citeYearMismatch) {
+      prefix = zeroCopay
+        ? "Per my plan's benefits for this service, this is covered at no cost to me"
+        : `Per my plan's benefits for this service, this is covered with ${costDescriptor}`;
+    } else
     switch (li.planBenefit.sourcedFrom) {
       case "canonical_archive": {
         // S111 D1/D2 refactor — read from `boundCanonicalPlan` (the canonical
@@ -1489,18 +1507,9 @@ function renderLineItemEvidence(
         const yearClause = li.planBenefit.sourcedFromYear != null
           ? `${li.planBenefit.sourcedFromYear} Summary of Benefits and Coverage (community-verified)`
           : "Summary of Benefits and Coverage (community-verified)";
-        // S313 plan-year authority — a plan document is authority only for care
-        // delivered in its own year. When the cited document is from a different
-        // year than the care, the bullet still ASSERTS the plan's benefit (the
-        // member is entitled to argue from their coverage) but stops presenting
-        // a wrong-year booklet AS the citation. Andrew's ruling, S313.
-        prefix = citeYearMismatch
-          ? (zeroCopay
-              ? "Per my plan's benefits for this service, this is covered at no cost to me"
-              : `Per my plan's benefits for this service, this is covered with ${costDescriptor}`)
-          : zeroCopay
-            ? `Per ${insurer} ${planName} ${yearClause}, this service is covered at no cost to me`
-            : `Per ${insurer} ${planName} ${yearClause}, this service is covered with ${costDescriptor}`;
+        prefix = zeroCopay
+          ? `Per ${insurer} ${planName} ${yearClause}, this service is covered at no cost to me`
+          : `Per ${insurer} ${planName} ${yearClause}, this service is covered with ${costDescriptor}`;
         break;
       }
       case "user_fallback": {

@@ -48,7 +48,7 @@ const bill = {
   totalBilled: 372,
 } as unknown as ParsedBill;
 
-function evidenceWith(sourcedFromYear: number): DisputeEvidence {
+function evidenceWith(sourcedFromYear: number, sourcedFrom: "canonical_archive" | "user_exact" | "user_fallback" = "canonical_archive"): DisputeEvidence {
   return {
     claims: [
       {
@@ -80,8 +80,8 @@ function evidenceWith(sourcedFromYear: number): DisputeEvidence {
               covered: true,
               copay: 0,
               coinsurance: null,
-              source: "canonical_archive",
-              sourcedFrom: "canonical_archive",
+              source: sourcedFrom,
+              sourcedFrom,
               sourcedFromYear,
               confidence: 1,
               citation: "Summary of Benefits and Coverage — Primary Care Visit",
@@ -97,7 +97,7 @@ function evidenceWith(sourcedFromYear: number): DisputeEvidence {
   } as unknown as DisputeEvidence;
 }
 
-function render(serviceYear: number | null, sourcedFromYear: number): string {
+function render(serviceYear: number | null, sourcedFromYear: number, sourcedFrom: "canonical_archive" | "user_exact" | "user_fallback" = "canonical_archive"): string {
   return LETTER_TEMPLATES["insurance_appeal"].body({
     patientName: "Test Patient",
     providerName: "SWEDISH PRIMARY CARE SAND POINT",
@@ -111,7 +111,7 @@ function render(serviceYear: number | null, sourcedFromYear: number): string {
       missingForYear: serviceYear,
       planSource: null,
     } as unknown as PlanContext,
-    evidence: evidenceWith(sourcedFromYear),
+    evidence: evidenceWith(sourcedFromYear, sourcedFrom),
     gateUnverified: false,
     v3DesignOn: true,
   } as never);
@@ -148,6 +148,19 @@ check("the cite SURVIVES (compares the citation's year, not the pinned plan's)",
   okYear.includes("2024 Summary of Benefits and Coverage"), okYear);
 check("the verbatim quote survives", okYear.includes(QUOTE), okYear);
 check("NO year-gap note (nothing to disclose)", !okYear.includes(NOTE), okYear);
+
+// ── 4. EVERY sourcedFrom case obeys the rule ────────────────────────────────
+// Each of the three builds its own year-stamped prefix in its own words, so a
+// fix applied to one of them looks complete and is not. Andrew's letter paste
+// found user_exact still reading "<plan>, 2026 specifies …" for 2023 care after
+// canonical_archive had been fixed.
+console.log("\nflag ON, care 2024, every sourcedFrom case:");
+for (const src of ["canonical_archive", "user_exact", "user_fallback"] as const) {
+  const body = render(2024, 2026, src);
+  check(`${src}: no 2026 stamp anywhere in the bullets`, !body.includes("2026 "), body);
+  check(`${src}: asserts without citing`, body.includes("Per my plan's benefits for this service"), body);
+  check(`${src}: the year-gap note renders`, body.includes(NOTE), body);
+}
 
 if (failures > 0) {
   console.error(`\n✗ plan-year-authority FAILED — ${failures} check(s).`);
