@@ -587,11 +587,17 @@ export function isLiveDraftStatus(status: string | null | undefined): boolean {
  * promote) → the stale banner + Refresh consent flow. Value is opaque to the
  * hash — keep it readable for debugging.
  */
-// S314 — bumped WITH the header-total fix in the same commit (the one-shot
-// lever rule). `Total Disputed:` was summed before the secondary-coverage pass
-// finished writing, so live drafts carry an understated header; the bump is
-// what re-drafts them, once, on next view. Sent letters stay pinned.
-export const LETTER_COMPOSE_VERSION = "s314.1";
+// S314 — bumped WITH the letter-output changes in the same commit (the one-shot
+// lever rule): the header total that was summed before the secondary-coverage
+// pass finished writing, and the coverage arm's missing refund ask. The bump is
+// what re-drafts live drafts, once, on next view. Sent letters stay pinned.
+//
+// s314.1 → s314.2 because s314.1 was already CONSUMED in dev: Andrew's draft
+// rebuilt at s314.1 to verify the header, so the refund clause added after that
+// would have reached no stored draft — the exact one-shot trap that cost three
+// review rounds at S313. Production has seen neither value, so this is still a
+// single re-draft there.
+export const LETTER_COMPOSE_VERSION = "s314.2";
 
 /**
  * S312 (T4, Andrew's ruling) — the ONE lifecycle word a letter surface may

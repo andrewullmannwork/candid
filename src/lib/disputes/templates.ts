@@ -793,6 +793,40 @@ export function buildRequestSection(params: {
     // Instead compel the insurer to justify the denial + produce the plan document +
     // line-by-line adjudication, and ask the provider to hold collections pending it.
     const noPlanToCite = !!noPlanCoverageRequestOn && !b.coverage.some((li) => li.planBenefit);
+    // S314 (Andrew, from a letter paste) — the coverage arm never asked for the
+    // money back. Its relief says "pay the provider ... so that I am not
+    // balance-billed", which assumes the balance is STILL OWED; when the user
+    // has already paid, that leaves the provider holding both payments and the
+    // user with nothing. The letter that surfaced this demanded
+    // "Total Disputed: $97.96" and asked for none of it.
+    //
+    // Pre-existing, and hidden until now BY the bug 5a fixed: these lines are
+    // category matches resolved in the second pass, so the stale header tally
+    // was $0 and the `totalDisputed > 0` guard suppressed the line entirely.
+    // The letter was consistent by being silent about the money.
+    //
+    // The cost-share arm above already solves this — same buckets, same inputs,
+    // same S310 F18 party-scoping (the insurer letter claims the refund, the
+    // provider letter the write-off). This is that overlay adopted by a third
+    // bucket, not a new derivation: reusing `sumAssertable` inherits the
+    // paid-vs-unpaid split, so a line that was never paid yields nothing here
+    // rather than a refund demand for money that never moved, and the amount
+    // stays on the ONE letter-money basis (S309).
+    //
+    // Not offered on the noPlanToCite branch: that branch deliberately asserts
+    // no coverage at all, so it cannot claim an overpayment either.
+    const coverageRefund = letterRecovery
+      ? sumAssertable(b.coverage, letterRecovery, "refund")
+      : b.coverage.reduce((s, li) => s + Math.min(li.discrepancyAmount ?? 0, li.patientPaid ?? 0), 0);
+    // Andrew-approved copy. "already paid toward" rather than the cost-share
+    // arm's "overpaid": overpaid implies a correct amount that was exceeded,
+    // but a covered-at-no-cost service has no correct amount above zero — every
+    // dollar is refundable. $0 → the clause drops and the sentence is
+    // byte-identical to its predecessor (the goldens hold).
+    const coverageRefundClause =
+      isInsurer && !noPlanToCite && coverageRefund > 0
+        ? `, and refund the ${formatCurrency(coverageRefund)} I already paid toward ${many ? "these services" : "this service"}`
+        : "";
     if (isInsurer) {
       if (noPlanToCite) planDocumentRequested = true;
       asks.push(
@@ -801,7 +835,10 @@ export function buildRequestSection(params: {
           // CLAIM, so the sentence holds either way; saying "this denial" asserted
           // an adverse determination the evidence may not contain. Withdraw-only.
           ? `State, in writing, the specific plan provision and any clinical criteria on which this claim's processing rests, and produce the governing plan document — the Summary Plan Description or Evidence of Coverage — together with the line-by-line adjudication of the claim. I am entitled to a full and fair review of this claim; furnish these records so it can be reviewed against the plan's actual terms, and reprocess the claim if those terms require payment.`
-          : `Cover ${many ? "these services" : "this service"} under the plan terms cited above, reprocess the claim, and pay the provider the plan-allowed ${many ? "amounts" : "amount"} so that I am not balance-billed; for any continued denial, issue a written determination identifying the specific plan provision relied upon.`,
+          // The "and" before "pay the provider" moves to the refund clause when
+          // one renders, so the list reads as a list; with no refund the string
+          // is byte-identical to its predecessor.
+          : `Cover ${many ? "these services" : "this service"} under the plan terms cited above, reprocess the claim, ${coverageRefundClause ? "" : "and "}pay the provider the plan-allowed ${many ? "amounts" : "amount"} so that I am not balance-billed${coverageRefundClause}; for any continued denial, issue a written determination identifying the specific plan provision relied upon.`,
       );
     } else {
       // Provider can't decide coverage — bill only per the EOB, or hold pending it.

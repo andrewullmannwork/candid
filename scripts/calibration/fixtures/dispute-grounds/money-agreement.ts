@@ -45,8 +45,10 @@
 import {
   sumEvidenceTotals,
   type ClaimEvidence,
+  type DisputeEvidence,
   type LineItemEvidence,
 } from "../../../../src/lib/disputes/evidence-resolver";
+import { buildRequestSection } from "../../../../src/lib/disputes/templates";
 
 let pass = 0;
 const fails: string[] = [];
@@ -191,6 +193,66 @@ function claim(lines: LineItemEvidence[]): ClaimEvidence {
         .reduce((s, li) => s + (li.secondaryCoverageVerify?.projectedDiscrepancy ?? 0), 0);
       return d === 33.25 && p === 0;
     })(),
+  );
+}
+
+// ── 4 · A DEMAND THE LETTER NAMES, THE LETTER ASKS FOR ─────────────────────
+// Andrew's second paste: "Total Disputed: $97.96" above relief that asked for
+// none of it. The coverage arm's remedy ("pay the provider ... so that I am not
+// balance-billed") assumes the balance is STILL OWED; with the money already
+// paid it leaves the provider holding both payments. The cost-share arm had
+// solved this two buckets over; this asserts the third adopted it.
+//
+// Hidden until 5a: these lines resolve in pass 2, so the stale tally was $0 and
+// the `totalDisputed > 0` guard suppressed the header — the letter was
+// consistent by being silent about the money.
+{
+  const coverageLine = (paid: number): LineItemEvidence =>
+    ({
+      lineItemId: `cov-${paid}`,
+      serviceName: "PREV VISIT EST AGE 18-39",
+      billingCode: "99395",
+      billedAmount: 390,
+      discrepancyAmount: 43.96,
+      patientPaid: paid,
+      disputeType: "coverage_contradiction",
+      planBenefit: { covered: true, copay: 0, coinsurance: null, sourcedFrom: "user_exact" },
+    }) as unknown as LineItemEvidence;
+
+  const sectionFor = (paid: number) =>
+    buildRequestSection({
+      evidence: {
+        claims: [claim([coverageLine(paid)])],
+        totals: { claimCount: 1, lineItemCount: 1, totalBilled: 390, totalDiscrepancy: 43.96 },
+        legalBasis: [],
+        gaps: [],
+      } as unknown as DisputeEvidence,
+      planContext: null,
+      recipient: "insurer",
+    });
+
+  const paidSection = sectionFor(43.96);
+  const unpaidSection = sectionFor(0);
+
+  check(
+    "coverage ground + money already paid → the letter asks for it back",
+    paidSection.includes("refund the $43.96 I already paid toward this service"),
+  );
+  check(
+    "coverage ground + nothing paid → no refund demand for money that never moved",
+    !unpaidSection.includes("refund the"),
+  );
+  check(
+    "the unpaid sentence is byte-identical to its predecessor",
+    unpaidSection.includes(
+      "reprocess the claim, and pay the provider the plan-allowed amount so that I am not balance-billed;",
+    ),
+  );
+  check(
+    "the paid sentence reads as a list, not a doubled 'and'",
+    paidSection.includes(
+      "reprocess the claim, pay the provider the plan-allowed amount so that I am not balance-billed, and refund the",
+    ),
   );
 }
 
