@@ -358,23 +358,7 @@ function buildClaimIdHeader(params: {
   // (proxy citation), use "Current plan (cited as proxy):" framing instead
   // of "Plan:" — saying "Plan: Anthem 2026" on a 2023 dispute falsely
   // implies the claim was processed under that 2026 plan.
-  const exactPlanLabel = params.planContext?.plan?.planName
-    ? `${params.planContext.plan.planName}${params.planContext.plan.planYear ? `, plan year ${params.planContext.plan.planYear}` : ""}`
-    : null;
-  const boundPlanLabel = params.planContext?.boundCanonicalPlan?.planName
-    ? `${params.planContext.boundCanonicalPlan.planName}${params.planContext.boundCanonicalPlan.planYear ? `, plan year ${params.planContext.boundCanonicalPlan.planYear}` : ""}`
-    : null;
-  const planLabel = exactPlanLabel ?? boundPlanLabel;
-  const billYear =
-    params.planContext?.plan?.planYear ??
-    params.planContext?.missingForYear ??
-    null;
-  const planLabelYear =
-    params.planContext?.plan?.planYear ??
-    params.planContext?.boundCanonicalPlan?.planYear ??
-    null;
-  const planLabelIsProxy =
-    billYear != null && planLabelYear != null && planLabelYear !== billYear;
+  const { label: planLabel, isProxy: planLabelIsProxy } = resolvePlanLabel(params.planContext);
   const totalDisputed = params.evidence?.totals?.totalDiscrepancy ?? 0;
 
   // S109 PR #2 (Chunk A fix) — plain "Label: value" format (no markdown bold
@@ -446,7 +430,15 @@ function buildClosingArgument(
   evidence: DisputeEvidence | null | undefined,
 ): string {
   if (!evidence) return "";
-  const hasExactPlan = !!planContext?.plan;
+  // S313 — "exact" now means exact FOR THIS CARE, which includes the year. A
+  // plan document is authority only for care delivered in its own plan year, so
+  // a 2024 bill pinned to the member's 2026 plan is NOT an exact-plan cite; it
+  // falls to the wrong-year proxy path below, which already existed (S110/S111)
+  // and asks the insurer to produce the bill-year SPD under 29 USC §1024(b)(4).
+  // `planYearMismatch` is null when the flag is off, so OFF is byte-identical.
+  const hasExactPlan =
+    !!planContext?.plan &&
+    (planContext.serviceYear == null || planContext.plan.planYear === planContext.serviceYear);
   const anyBenefit = hasAnyPlanBenefit(evidence);
   const isERISA = planContext?.planSource === "employer";
 
@@ -700,6 +692,11 @@ export function buildRequestSection(params: {
   // Item A — set when the no-plan coverage hold (below) already requested a collections hold, so
   // the standing collections-hold doesn't render twice.
   let collectionsHoldRequested = false;
+  // S313 — set when an ask already demands the governing plan document, so the
+  // year-gap ask below cannot make the same demand twice (mirrors
+  // collectionsHoldRequested). Both are insurer plan-document asks and they can
+  // co-occur: a coverage line with no citable benefit AND a wrong-year pin.
+  let planDocumentRequested = false;
   // S310 (Andrew-approved fold) — when both the cost-share correction ask and
   // the coverage-track correction ask would render on a provider letter, they
   // fold into ONE sentence (the write-off clause carried along). These track
@@ -797,6 +794,7 @@ export function buildRequestSection(params: {
     // line-by-line adjudication, and ask the provider to hold collections pending it.
     const noPlanToCite = !!noPlanCoverageRequestOn && !b.coverage.some((li) => li.planBenefit);
     if (isInsurer) {
+      if (noPlanToCite) planDocumentRequested = true;
       asks.push(
         noPlanToCite
           // S295 (Andrew-approved) — the §2560.503-1 entitlement attaches to the
@@ -1059,6 +1057,28 @@ export function buildRequestSection(params: {
   // request the letter did not make. Patient-driven + provider-agnostic (charity care + for-profit
   // programs); asserts no statute (the §501(r) obligation-demand version is the deferred upgrade) →
   // counsel pass before the activation flip.
+  // S313 plan-year authority — the ask the letter's own opening PROMISES.
+  //
+  // With a wrong-year plan pinned, the intro now says "the plan in effect on the
+  // date of service is the subject of the request below" — and until this, the
+  // request below never asked for it. An insurer could answer both existing
+  // items as written and never produce the year that governs. The disclosure
+  // (B' note) and the proxy framing put the gap on the record; this is what
+  // turns it into their obligation.
+  //
+  // Insurer-only: a provider holds no plan document. Reuses resolvePlanLabel —
+  // its third consumer, so the header framing, the bullet suppression and this
+  // ask can never disagree about whether a year gap exists.
+  const yearGapAsk =
+    isInsurer && !planDocumentRequested && planContext?.serviceYear != null
+      ? resolvePlanLabel(planContext).isProxy
+      : false;
+  if (yearGapAsk) {
+    asks.push(
+      `Produce my plan documents for ${planContext!.serviceYear} — the Summary Plan Description or Evidence of Coverage in effect on the date of service — and reprocess this claim against those terms. To the extent they differ from the current terms cited above, please identify the difference.`,
+    );
+  }
+
   const faActive =
     !isInsurer &&
     (finAssistContext ?? false) &&
@@ -1313,7 +1333,32 @@ function renderEvidenceBlock(
   // included). Fail-closed: the letter reads as if the section doesn't exist.
   if (bodyLines.length === 0) return "";
 
-  const lines: string[] = [title.toUpperCase(), "", ...bodyLines];
+  // S313 plan-year authority — the year gap, stated ONCE above the evidence.
+  // Placement is the point: the bullets make the case cleanly and this frames
+  // them, rather than repeating "(2026)" inside every claim about 2024 care and
+  // handing a claims examiner the objection in each paragraph. The closing's
+  // 29 USC §1024(b)(4) ask then turns the gap into the insurer's burden.
+  // Andrew's ruling, S313 (copy B').
+  //
+  // Safe as a blanket statement because the benefit SOURCE is chosen ONCE PER
+  // CLAIM, not per line (evidence-resolver's tier chain stamps one planYear on
+  // the whole coverage map) — a letter is all-mismatched or none, never mixed.
+  const citeYearGap =
+    planContext?.serviceYear != null &&
+    evidence.claims.some((c) =>
+      c.lineItemEvidence.some((li) => {
+        const y = citedYearForBullet(li, planContext);
+        return y != null && y !== planContext.serviceYear;
+      }),
+    );
+  const yearGapNote =
+    citeYearGap && planContext?.serviceYear != null
+      ? [
+          `My ${planContext.serviceYear} plan documents are not on file; the terms cited below reflect my current coverage under the same plan.`,
+          "",
+        ]
+      : [];
+  const lines: string[] = [title.toUpperCase(), "", ...yearGapNote, ...bodyLines];
 
   // S109 PR #2 (Chunk A) — closing argument + escalation paragraph moved out
   // of renderEvidenceBlock and into insuranceAppealTemplate.body directly.
@@ -1336,6 +1381,64 @@ function renderEvidenceBlock(
 
 function hasAnyPlanBenefit(evidence: DisputeEvidence): boolean {
   return evidence.claims.some((c) => c.lineItemEvidence.some((li) => li.planBenefit));
+}
+
+/**
+ * S313 — the plan label a letter prints, and whether it is a PROXY cite.
+ *
+ * ONE derivation for what were two byte-identical copies (the Re: header block
+ * and the letter body), which is how S111's proxy framing came to be half-live:
+ * fixing one copy would have left the other saying "Plan: <plan> 2026" on 2023
+ * care.
+ *
+ * ⚠ `isProxy` compares the label's year against the year the CARE happened.
+ * Both copies previously derived the bill year as
+ * `plan.planYear ?? missingForYear`, which prefers the PINNED plan's year — the
+ * same value the label itself uses — so the comparison was the plan against
+ * itself and `isProxy` was permanently false whenever a plan was pinned. S111
+ * wrote the proxy framing precisely because "Plan: Anthem 2026" on a 2023
+ * dispute falsely implies the claim was processed under that plan; the framing
+ * shipped and never once fired.
+ *
+ * `serviceYear` is null when `plan_year_authority_v1` is off, so this falls back
+ * to the previous derivation and OFF stays byte-identical.
+ */
+function resolvePlanLabel(planContext: PlanContext | null | undefined): {
+  label: string | null;
+  isProxy: boolean;
+} {
+  const withYear = (name: string | null | undefined, year: number | null | undefined) =>
+    name ? `${name}${year ? `, plan year ${year}` : ""}` : null;
+  const label =
+    withYear(planContext?.plan?.planName, planContext?.plan?.planYear) ??
+    withYear(planContext?.boundCanonicalPlan?.planName, planContext?.boundCanonicalPlan?.planYear);
+  const labelYear =
+    planContext?.plan?.planYear ?? planContext?.boundCanonicalPlan?.planYear ?? null;
+  const careYear =
+    planContext?.serviceYear ??
+    planContext?.plan?.planYear ??
+    planContext?.missingForYear ??
+    null;
+  return {
+    label,
+    isProxy: careYear != null && labelYear != null && labelYear !== careYear,
+  };
+}
+
+/**
+ * S313 — the plan year a per-line bullet would NAME, whichever prefix case it
+ * takes. canonical_archive / user_fallback name `sourcedFromYear`; user_exact
+ * names the pinned plan's year. Both are "the year this letter is holding out
+ * as the authority", which is the only thing the plan-year rule cares about.
+ */
+function citedYearForBullet(
+  li: LineItemEvidence,
+  planContext: PlanContext | null | undefined,
+): number | null {
+  if (!li.planBenefit) return null;
+  if (li.planBenefit.sourcedFromYear != null) return li.planBenefit.sourcedFromYear;
+  if (li.planBenefit.sourcedFrom === "user_exact") return planContext?.plan?.planYear ?? null;
+  return null;
 }
 
 function renderLineItemEvidence(
@@ -1425,7 +1528,44 @@ function renderLineItemEvidence(
         : `${normalizeCoinsurancePct(li.planBenefit.coinsurance)}% coinsurance`
       : "cost-sharing terms";
 
+    // S313 — the year THIS BULLET WOULD NAME, vs the year of the care.
+    //
+    // Not simply `sourcedFromYear`: the three prefix cases take their year from
+    // two DIFFERENT places. canonical_archive and user_fallback print
+    // `sourcedFromYear`; user_exact prints `planContext.plan.planYear` — the
+    // PINNED plan's year, which owes nothing to the citation. So a benefit with
+    // a null sourcedFromYear still printed "BlueSelect Gold Core for
+    // Individuals, 2026 specifies …" over 2023 care while a check keyed only on
+    // sourcedFromYear sat false. That is the letter Andrew pasted twice.
+    //
+    // `citedYear` is the ONE answer both this and the B' note read, so the
+    // bullet and the disclosure above it can never disagree — they did while
+    // each derived its own (B' scans every line, the bullet is per-line, and a
+    // line whose sourcedFromYear was null satisfied one and not the other).
+    const citedYear = citedYearForBullet(li, planContext);
+    const citeYearMismatch =
+      planContext?.serviceYear != null &&
+      citedYear != null &&
+      citedYear !== planContext.serviceYear;
     let prefix: string;
+    // S313 plan-year authority — decided ONCE, above the switch, because all
+    // THREE sourcedFrom cases stamp a year into their own prefix in their own
+    // way (canonical_archive: "<insurer> <plan> 2026 Summary of Benefits…";
+    // user_fallback: "My current plan (2026)…"; user_exact/default:
+    // "<planName>, 2026 specifies…"). Patching the case I happened to be
+    // looking at fixed one third of the defect and Andrew's letter paste caught
+    // the rest: a claim resolved user_exact still read "BlueSelect Gold Core
+    // for Individuals, 2026 specifies a $30.00 copay" for 2023 care.
+    //
+    // The bullet still ASSERTS the benefit — the member is entitled to argue
+    // from their coverage — it just stops naming a wrong-year document as the
+    // authority. The year is disclosed ONCE by the B' note above the bullets,
+    // not repeated in every one.
+    if (citeYearMismatch) {
+      prefix = zeroCopay
+        ? "Per my plan's benefits for this service, this is covered at no cost to me"
+        : `Per my plan's benefits for this service, this is covered with ${costDescriptor}`;
+    } else
     switch (li.planBenefit.sourcedFrom) {
       case "canonical_archive": {
         // S111 D1/D2 refactor — read from `boundCanonicalPlan` (the canonical
@@ -1505,7 +1645,9 @@ function renderLineItemEvidence(
         quotableExcerpt = prefix.length >= 8 ? `${prefix} …` : "";
       }
     }
-    const excerptRenderable = !!quotableExcerpt && (!gateUnverified || li.planBenefit.sbcExcerptVerified);
+    // Verbatim quotation joins the EXISTING cite-grade gate rather than sitting
+    // beside it: a wrong-year booklet is not quotable authority for this care.
+    const excerptRenderable = !!quotableExcerpt && !citeYearMismatch && (!gateUnverified || li.planBenefit.sbcExcerptVerified);
 
     // S312 — the disputed-line lead (§1 approved bytes): where the old "Expected patient
     // cost per plan / Actual patient responsibility / Discrepancy" bullet fired on a
@@ -1529,11 +1671,15 @@ function renderLineItemEvidence(
             ? "My plan covers it with no copay, as determined by my insurer"
             : `My plan specifies ${costDescriptor} for it, as determined by my insurer`;
       bullets.push(
-        `   - This bill charges me ${formatCurrency(li.actualPatientCost!)} for this service. ${planBasis}.${li.planBenefit.citation ? ` Source: ${li.planBenefit.citation}.` : ""}${excerptRenderable ? ` Plan language: "${quotableExcerpt}"` : ""}`,
+        `   - This bill charges me ${formatCurrency(li.actualPatientCost!)} for this service. ${planBasis}.${li.planBenefit.citation && !citeYearMismatch ? ` Source: ${li.planBenefit.citation}.` : ""}${excerptRenderable ? ` Plan language: "${quotableExcerpt}"` : ""}`,
       );
     } else {
       bullets.push(
-        `   - ${prefix}.${li.planBenefit.citation ? ` Source: ${li.planBenefit.citation}.` : ""}`,
+        // S313 — the `Source:` suffix carries the year-stamped booklet, so it is
+        // suppressed on a wrong-year citation exactly as in the sibling branch
+        // above. There are TWO bullet variants; patching only one left half a
+        // citation standing (caught failing-first by plan-year-authority.ts).
+        `   - ${prefix}.${li.planBenefit.citation && !citeYearMismatch ? ` Source: ${li.planBenefit.citation}.` : ""}`,
       );
       if (excerptRenderable) {
         bullets.push(`     Plan language: "${quotableExcerpt}"`);
@@ -1985,23 +2131,7 @@ const insuranceAppealTemplate: LetterTemplate = {
     // claim was processed under" the wrong-year plan (smoke #6 fix —
     // saying "processed under 2026" on a 2023 dispute is factually wrong
     // and weakens the dispute).
-    const exactPlanLabel = planContext?.plan?.planName
-      ? `${planContext.plan.planName}${planContext.plan.planYear ? `, plan year ${planContext.plan.planYear}` : ""}`
-      : null;
-    const boundPlanLabel = planContext?.boundCanonicalPlan?.planName
-      ? `${planContext.boundCanonicalPlan.planName}${planContext.boundCanonicalPlan.planYear ? `, plan year ${planContext.boundCanonicalPlan.planYear}` : ""}`
-      : null;
-    const planLabel = exactPlanLabel ?? boundPlanLabel;
-    const billYearForLetter =
-      planContext?.plan?.planYear ?? planContext?.missingForYear ?? null;
-    const planLabelYear =
-      planContext?.plan?.planYear ??
-      planContext?.boundCanonicalPlan?.planYear ??
-      null;
-    const planLabelIsProxy =
-      billYearForLetter != null &&
-      planLabelYear != null &&
-      planLabelYear !== billYearForLetter;
+    const { label: planLabel, isProxy: planLabelIsProxy } = resolvePlanLabel(planContext);
     const planLabelSentence = planLabel
       ? planLabelIsProxy
         ? ` I am citing my current ${planLabel} as evidence of present coverage under this insurer; the plan in effect on the date of service is the subject of the request below.`

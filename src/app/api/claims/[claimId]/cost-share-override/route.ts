@@ -284,6 +284,14 @@ export async function POST(
       .update({ insurance_plan_id: ov.insurancePlanId })
       .eq("id", claimId);
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    // S313 — the Rule #10 emit this branch was missing. `plan_repinned` already
+    // existed as a kind and was emitted ONLY from the disputes repin route, so a
+    // re-pin made from the plan-change ask (the path the accumulator modal uses)
+    // wrote no history at all — while the sibling branch in this same file emits
+    // and quotes Rule #10. Fail-soft, references only: which plan, never money.
+    await emitCaseEvents(supabase, user.id, [
+      { claimId, kind: "plan_repinned", payload: { toPlanId: ov.insurancePlanId } },
+    ]);
     return NextResponse.json({ ok: true, field: ov.field, applied: true });
   }
 

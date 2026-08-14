@@ -156,7 +156,7 @@ export async function loadAccumulatorLedger(
   // plan_year + the canonical pair (the carry ladder's identity oracle).
   const { data: ownedPlan } = await userScoped(supabase, userId)
     .table("insurance_plans")
-    .select("id, plan_year, plan_name, canonical_plan_id, canonical_match_confidence")
+    .select("id, plan_year, plan_name, canonical_plan_id, canonical_match_confidence, metadata")
     .eq("id", planId)
     .maybeSingle();
   if (!ownedPlan) return null;
@@ -195,7 +195,7 @@ export async function loadAccumulatorLedger(
       );
       const { data: otherPlans } = await userScoped(supabase, userId)
         .table("insurance_plans")
-        .select("id, plan_name, canonical_plan_id, canonical_match_confidence")
+        .select("id, plan_name, plan_year, canonical_plan_id, canonical_match_confidence")
         .in("id", otherPlanIds);
       const verdictByPlan = new Map<string, "carry" | "exclude" | "ask">();
       for (const p of otherPlans ?? []) {
@@ -215,13 +215,51 @@ export async function loadAccumulatorLedger(
           ),
         );
       }
+      const planYearById = new Map<string, number | null>();
+      for (const p of otherPlans ?? []) {
+        planYearById.set(
+          (p as Record<string, unknown>).id as string,
+          ((p as Record<string, unknown>).plan_year as number | null) ?? null,
+        );
+      }
       const planNameById = new Map<string, string | null>();
       for (const p of otherPlans ?? []) {
         planNameById.set((p as Record<string, unknown>).id as string, ((p as Record<string, unknown>).plan_name as string | null) ?? null);
       }
+      // S313 — the member's own answer to the identity question, when they have
+      // given one. `ask` exists ONLY because the canonical pair could not decide;
+      // a human who did decide outranks a ladder that abstained. Honoured per
+      // PLAN PAIR (not per bill), so one answer covers every bill on that pair —
+      // including ones uploaded later, which is what stops the ask recurring.
+      //
+      // The answer is valid only while BOTH canonical ids still match the ones
+      // recorded when it was given: re-matching either side to a different
+      // canonical makes it a stale answer to a question nobody asked (the
+      // wrongYearBannerDismissed reset lesson, derived rather than stamped).
+      const identityAnswers = (((ownedPlan.metadata ?? {}) as Record<string, unknown>)
+        .planIdentityAnswers ?? {}) as Record<string, {
+          answer?: string;
+          selfCanonicalId?: string | null;
+          otherCanonicalId?: string | null;
+        }>;
+      const answeredVerdict = (otherPlanId: string): "exclude" | null => {
+        const a = identityAnswers[otherPlanId];
+        if (!a || a.answer !== "different") return null;
+        const otherRow = (otherPlans ?? []).find(
+          (p) => (p as Record<string, unknown>).id === otherPlanId,
+        ) as Record<string, unknown> | undefined;
+        const selfNow = (ownedPlan.canonical_plan_id as string | null) ?? null;
+        const otherNow = (otherRow?.canonical_plan_id as string | null) ?? null;
+        if ((a.selfCanonicalId ?? null) !== selfNow) return null;
+        if ((a.otherCanonicalId ?? null) !== otherNow) return null;
+        return "exclude";
+      };
+
       for (const c of sameYearElsewhere) {
         const row = c as Record<string, unknown>;
-        const verdict = verdictByPlan.get(row.insurance_plan_id as string) ?? "ask";
+        const otherPlanId = row.insurance_plan_id as string;
+        const verdict =
+          answeredVerdict(otherPlanId) ?? verdictByPlan.get(otherPlanId) ?? "ask";
         if (verdict === "carry") claimsForYear.push(c);
         else if (verdict === "ask") {
           const meta = (row.metadata ?? {}) as Record<string, unknown>;
@@ -233,6 +271,8 @@ export async function loadAccumulatorLedger(
             dateOfService: (row.date_of_service as string | null) ?? null,
             totalBilled: row.total_billed == null ? null : Number(row.total_billed),
             currentPlanName: planNameById.get(row.insurance_plan_id as string) ?? null,
+            currentPlanId: otherPlanId,
+            currentPlanYear: planYearById.get(otherPlanId) ?? null,
           });
         }
       }
@@ -390,6 +430,7 @@ export async function loadAccumulatorLedger(
   return {
     ...ledger,
     sameYearAsk,
+    planYearAuthorityOn: await isFeatureEnabled("plan_year_authority_v1"),
     promptNewYearPlan,
     planId,
     planName: (ownedPlan.plan_name as string | null) ?? null,

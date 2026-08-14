@@ -23,6 +23,7 @@
  * evidence-resolver.ts, DisputeRecipientCard.
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { isFeatureEnabled } from "@/lib/config/product-flags";
 
 export interface AppealsAddress {
   line1: string;
@@ -184,6 +185,21 @@ export interface PlanContext {
   plan: ResolvedPlan | null;
   insurer: InsurerContext | null;
   missingForYear: number | null;
+  /**
+   * S313 — the year the CARE happened, from the date of service. Null when
+   * unknown or `plan_year_authority_v1` is off (so OFF is byte-identical).
+   *
+   * A FACT, deliberately not a conclusion. Each consumer derives its own
+   * question from it: the letter asks "is the document I'm quoting from this
+   * year?" (`sourcedFromYear !== serviceYear`), the needs panel and the
+   * plan-change modal ask "is the PINNED plan from this year?"
+   * (`plan.planYear !== serviceYear`). Exposing the pinned-plan verdict
+   * instead left a hole: a manually bound canonical (Tier 2) carries its OWN
+   * year, so a right-year pin could still cite a wrong-year document and the
+   * pinned-plan gate would never open. The S110 comment names that exact case
+   * ("user bound a 2026 canonical for a 2023 bill").
+   */
+  serviceYear: number | null;
   fallbackPlan: ResolvedPlan | null;
   /**
    * Resolved from the linked claim's `claims.metadata.provider`. Null when
@@ -441,16 +457,55 @@ export async function resolvePlanContext(
     yearMatch ??
     null;
 
+  // ── S313 plan-year authority (`plan_year_authority_v1`) ──────────────────
+  // A plan document is authority only for care delivered in ITS OWN year.
+  //
+  // ⚠ The comparison is against the DATE OF SERVICE year, never `planYear`
+  // above: `planYear` prefers `claims.plan_year`, which S291 established is the
+  // LINKED PLAN's year, not a parsed fact about the care. Comparing against it
+  // would compare the pinned plan to itself and never mismatch — which is
+  // exactly why this went unnoticed (PROD claim 046f64cd: DOS 2024-07-01,
+  // claims.plan_year 2026, pinned to the 2026 plan, cited verbatim for 2024).
+  //
+  // A year-mismatched resolution is DEMOTED to `fallbackPlan` rather than
+  // dropped: that is precisely what fallbackPlan already means ("user's 2026
+  // plan when claim is 2025"), so the existing S110/S111 machinery — the
+  // reverse-burden 29 USC §1024(b)(4) clause and the "Upload your <year> plan"
+  // evidence gap — lights up through wiring that already exists. No new letter
+  // copy, and `hasExactPlan` falls to false on its own.
+  const yearAuthorityOn = await isFeatureEnabled("plan_year_authority_v1");
+  const serviceYear = ((): number | null => {
+    const m = dateOfService?.match(/^(\d{4})/);
+    return m ? parseInt(m[1], 10) : null;
+  })();
+  // The AUTHORITY answer, named once. Distinct from `plan`, which stays the
+  // PINNED plan (identity: the label, the insurer-name fix, the plan id every
+  // write uses, and `zone1ShowInsuranceRow`). Conflating the two would delete
+  // the "Insurance for this claim" row on exactly the claims that most need
+  // it to speak up.
+  const yearMismatchedPlan =
+    yearAuthorityOn &&
+    resolvedPlan?.plan_year != null &&
+    serviceYear != null &&
+    resolvedPlan.plan_year !== serviceYear
+      ? resolvedPlan
+      : null;
+
+  const hasCitablePlan = !!resolvedPlan && !yearMismatchedPlan;
+
   // Fallback plan = any plan on file when no year/window match, so the
   // resolver can still surface *something* useful (e.g., user's 2026 plan
   // when claim is 2025 but no 2025 plan on file yet). Prefer the active
   // row over the most-recently-created so we don't surface a stale or
-  // duplicate row.
-  const fallbackPlan = !resolvedPlan && plans.length > 0
+  // duplicate row. A year-mismatched plan is its OWN fallback — the member
+  // pinned it, and its terms remain evidence of CURRENT coverage.
+  const fallbackPlan = yearMismatchedPlan ?? (!resolvedPlan && plans.length > 0
     ? (plans.find((p) => p.is_active) ?? plans[0])
-    : null;
+    : null);
 
-  const missingForYear = planYear != null && !resolvedPlan ? planYear : null;
+  const missingForYear = yearMismatchedPlan
+    ? serviceYear
+    : planYear != null && !resolvedPlan ? planYear : null;
 
   const toResolved = (p: typeof plans[number] | null): ResolvedPlan | null =>
     p ? {
@@ -670,7 +725,7 @@ export async function resolvePlanContext(
   // citations require explicit user binding.
   let archiveCanonicalPlan: ResolvedPlan | null = null;
   const fallbackAnchorId = fallbackPlan?.canonical_plan_id ?? null;
-  if (!resolvedPlan && fallbackAnchorId && missingForYear != null) {
+  if (!hasCitablePlan && fallbackAnchorId && missingForYear != null) {
     archiveCanonicalPlan = await lookupArchiveCanonical(
       supabase,
       fallbackAnchorId,
@@ -682,6 +737,7 @@ export async function resolvePlanContext(
     plan: toResolved(resolvedPlan),
     insurer,
     missingForYear,
+    serviceYear: yearAuthorityOn ? serviceYear : null,
     fallbackPlan: toResolved(fallbackPlan),
     providerContact,
     collectorContact,
