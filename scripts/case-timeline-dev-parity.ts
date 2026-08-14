@@ -39,7 +39,7 @@
  * Run:  NODE_PATH=node_modules npx tsx scripts/case-timeline-dev-parity.ts
  */
 import { createClient } from "@supabase/supabase-js";
-import { config } from "dotenv";
+import { loadScriptEnv } from "./_env";
 import {
   projectCaseTimeline,
   type ProjectorClaimRow,
@@ -55,11 +55,8 @@ import { getUserDisputes } from "../src/lib/disputes/persist";
 import { deriveSentLetterMeta } from "../src/lib/claims/use-claim-pipeline";
 import type { DisputeLetterType } from "../src/lib/billing/types";
 
-config({ path: ".env.local" });
-const sb = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-);
+const env = loadScriptEnv();
+const sb = createClient(env.url, env.serviceRoleKey);
 
 // letterType: since the S298 consolidation the display path and the projector
 // IMPORT THE SAME resolver (src/lib/disputes/letter-type.ts), so this input is
@@ -69,7 +66,6 @@ const sb = createClient(
 import { resolveLetterTypeFromDispute as todayLetterType } from "../src/lib/disputes/letter-type";
 
 (async () => {
-  console.log("PROJECT:", process.env.NEXT_PUBLIC_SUPABASE_URL);
 
   // amberDays exactly as the outcome route reads it (config key, default 7).
   const { data: flagRow } = await sb
