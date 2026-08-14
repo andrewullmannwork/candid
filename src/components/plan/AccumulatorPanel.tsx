@@ -627,18 +627,28 @@ function PlanChangeAskModal({
 
         <div className="mt-4 max-h-[46vh] space-y-2.5 overflow-y-auto">
           {bills.map((b) => (
-            <div key={b.claimId} className="rounded-xl border border-gray-200 p-3.5">
-              <p className="text-[14px] font-semibold text-gray-900">{b.providerName ?? "Provider"}</p>
-              <p className="mt-0.5 text-[12.5px] text-gray-500">
-                {[
-                  fmtDate(b.dateOfService),
-                  b.totalBilled != null ? usd.format(b.totalBilled) : null,
-                  b.currentPlanName ? `now on: ${b.currentPlanName}` : null,
-                ]
-                  .filter(Boolean)
-                  .join(" · ")}
-              </p>
-              <div className="mt-2.5 flex gap-2">
+            <div key={b.claimId} className="rounded-xl border border-gray-200 p-4">
+              {/* S313 — the date + amount identify the bill and stay on one line;
+                  the plan name is long enough to wrap to three (Andrew's
+                  screenshot), so it gets its own muted row and truncates rather
+                  than pushing the buttons down the card. */}
+              <div className="flex items-baseline justify-between gap-3">
+                <p className="text-[14px] font-semibold text-gray-900">
+                  {b.providerName ?? "This bill"}
+                </p>
+                {b.totalBilled != null && (
+                  <p className="shrink-0 text-[13px] font-semibold tabular-nums text-gray-700">
+                    {usd.format(b.totalBilled)}
+                  </p>
+                )}
+              </div>
+              <p className="mt-0.5 text-[12.5px] text-gray-500">{fmtDate(b.dateOfService)}</p>
+              {b.currentPlanName && (
+                <p className="mt-1.5 truncate text-[12px] text-gray-400" title={b.currentPlanName}>
+                  Currently on {b.currentPlanName}
+                </p>
+              )}
+              <div className="mt-3 flex gap-2">
                 <button
                   type="button"
                   onClick={() => setChoices((c) => ({ ...c, [b.claimId]: "move" }))}
@@ -649,7 +659,7 @@ function PlanChangeAskModal({
                       : "border-gray-200 bg-white text-gray-700 hover:border-gray-300",
                   )}
                 >
-                  Move to current plan
+                  Move to this plan
                 </button>
                 <button
                   type="button"
