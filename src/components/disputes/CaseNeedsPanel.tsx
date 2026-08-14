@@ -205,14 +205,45 @@ export function buildClaimDetailsNeeds(input: {
   };
 }
 
+/**
+ * S314 hotfix (Andrew) — the claim-details ROW's own truth: has the user
+ * attested the facts in front of them, and is every parser-extracted plan cost
+ * shown inside that block confirmed?
+ *
+ * Kept SEPARATE from the aggregate below, deliberately. This is what turns the
+ * "These look right" row green, and it must go green the moment the user clicks
+ * it — even while a denial date is still missing elsewhere in the panel. Wiring
+ * the row to the aggregate instead would mean clicking it changed nothing
+ * visible, which is the "Done does nothing" recurrence (S294/S295).
+ */
+export function isDetailsAttestationConfirmed(
+  planServices: PlanCostService[],
+  attestationReviewed: boolean,
+): boolean {
+  return attestationReviewed && unconfirmedParsedServices(planServices).length === 0;
+}
+
 /** Short labels for the open items, in the panel's own words. */
 export function openImportantNeeds(input: ClaimDetailsNeedsInput): string[] {
   const open: string[] = [];
   for (const svc of input.planServices) {
     if (!svc.known) open.push(`Plan cost — ${svc.serviceLabel}`);
   }
-  if (unconfirmedParsedServices(input.planServices).length > 0) {
-    open.push("Plan costs from your documents");
+  // S314 hotfix (Andrew, counting his own screenshot) — the claim-details
+  // attestation is an IMPORTANT row of its own, and the count was blind to it:
+  // `attestationReviewed` was read as a GATE on the answer rather than as one of
+  // the things being counted. A panel showing three open important rows
+  // reported "2 things still needed". Counting it here, through the row's own
+  // predicate, means there is one definition of "attested" and the aggregate
+  // cannot disagree with the row it summarises.
+  //
+  // This also subsumes the old standalone "Plan costs from your documents"
+  // entry: `isDetailsAttestationConfirmed` already covers unconfirmed parsed
+  // services, and the two rows are mutually exclusive in the panel
+  // (detailsBlockActive vs aggregateActive), so counting both would
+  // double-count the legacy path.
+  if (!isDetailsAttestationConfirmed(input.planServices, input.attestationReviewed)) {
+    open.push("Claim details");
   }
   if (input.openCoverageVerifyCount > 0) open.push("Coverage to verify");
   if (input.userPatientPaid == null) open.push("Amount you paid");
@@ -232,11 +263,16 @@ export function openImportantNeeds(input: ClaimDetailsNeedsInput): string[] {
  * derivation rather than two that can drift (the S292 one-derivation
  * invariant).
  *
- * S314 — now true only when the attestation has been reviewed AND nothing the
- * panel calls important is still open. See openImportantNeeds.
+ * S314 — now true only when nothing the panel calls important is still open.
+ *
+ * The separate `attestationReviewed &&` clause is GONE, not lost: the
+ * attestation is now one of the counted items, so the conjunction is inside the
+ * list. One question ("is anything important open?"), one answer, and the count
+ * the user sees is the same list that decides the check — they cannot say
+ * different numbers.
  */
 export function isClaimDetailsConfirmed(input: ClaimDetailsNeedsInput): boolean {
-  return input.attestationReviewed && openImportantNeeds(input).length === 0;
+  return openImportantNeeds(input).length === 0;
 }
 
 export interface CaseNeedsPanelProps {
@@ -800,22 +836,30 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
     aggregateActive || detailsBlockActive ? parsedSvcs.flatMap((s) => s.lineItemIds ?? []) : [],
   );
 
-  // S314 — the ONE completeness input, built by the SAME exported builder the
-  // page uses, and read by this panel's own `detailsDone` below as well as by
-  // the UnifiedTodo row's green check. The fixture pins that the panel's
-  // rendered important-and-open rows match what this list says is open.
-  const claimDetailsNeeds = buildClaimDetailsNeeds({
-    letterType,
-    letterRequirementsOn,
-    planServices,
-    attestationReviewed,
-    denialNoticeDate,
-    userPatientPaid,
-    collectorAddressOnFile,
-    accountNumberOnFile,
-    coverageVerifyGaps,
-    parsedConfirmActive: aggregateActive || detailsBlockActive,
-  });
+  // S314 hotfix — the panel no longer builds the aggregate completeness object.
+  // It renders ROWS; each row knows its own done-ness, and the one that needed a
+  // shared predicate (claim details) calls `isDetailsAttestationConfirmed`
+  // directly. The AGGREGATE is the page's question — it decides the UnifiedTodo
+  // check and the pill — and the page builds it from `buildClaimDetailsNeeds`.
+  //
+  // Keeping an unused copy here was the giveaway that the two questions had been
+  // conflated: the panel was computing "is everything important done?" to answer
+  // "did the user attest these facts?". They are different questions with
+  // different right answers, which is exactly why clicking "These look right"
+  // must turn its row green while a missing denial date still holds the step
+  // open. `money-agreement` pins both directions.
+  //
+  // ⚠ WHAT KEEPS THE TWO IN STEP, honestly stated: the fixture asserts
+  // `openImportantNeeds` directly — it does not render this panel, so it cannot
+  // prove the ROW SET matches the list. What it does remove is the failure that
+  // actually bit: the attestation is now counted through the very predicate the
+  // row uses, so those two can no longer disagree. Adding an `importance:
+  // "important"` row below therefore means adding it to `openImportantNeeds` —
+  // there is no test that will catch you.
+  //
+  // Known and deliberate: `rerun-audit` is important but uncounted. It is
+  // gated on `rerunAuditEnabled`, hard-wired `false` at the call site, so it
+  // cannot render today. Whoever enables it owns adding it to the count.
 
   // Plan details — one row per disputed, slug'd service (done + unknown buckets).
   for (const svc of planServices) {
@@ -962,7 +1006,14 @@ export function CaseNeedsPanel(props: CaseNeedsPanelProps) {
   // "These look right" fans out the SAME writes the two rows it replaces made:
   // the per-line confirm-coverage marks + the services-performed attestation.
   if (detailsBlockActive && claimFacts && attestationLines && onAttest) {
-    const detailsDone = isClaimDetailsConfirmed(claimDetailsNeeds);
+    // S314 hotfix — the ROW's own truth, not the aggregate. Wiring this to
+    // `isClaimDetailsConfirmed` (which now counts every important item) would
+    // leave this row grey after the user clicks "These look right" whenever a
+    // denial date is still missing elsewhere in the panel — a click that
+    // changes nothing visible, which is the "Done does nothing" recurrence.
+    // The aggregate counts this row via the SAME predicate, so the two can
+    // never disagree about whether the attestation happened.
+    const detailsDone = isDetailsAttestationConfirmed(planServices, attestationReviewed);
     const factsLine = [
       claimFacts.patientName ? `Patient: ${claimFacts.patientName}` : null,
       claimFacts.providerName ? `Provider: ${claimFacts.providerName}` : null,
