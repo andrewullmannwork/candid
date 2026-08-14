@@ -1,22 +1,28 @@
 /**
- * Flip a feature flag's `enabled` state in PROD. Service-role (bypasses RLS). Reversible + verifiable:
+ * Flip a feature flag's `enabled` state. Service-role (bypasses RLS). Reversible + verifiable:
  * reads BEFORE, updates, reads AFTER, prints the exact revert command. Mirrors flag-state.ts.
  * Usage:  cd /Users/andrewullmann/Desktop/candid && npx tsx scripts/flags/flag-set.ts <flag_key> <true|false>
+ *
+ * ⚠ Writes to whichever database `.env.local` points at — DEV by default,
+ * PROD after `./scripts/use-db.sh prod`. The banner names it on every run and
+ * a PROD flip requires `--prod-write` (S313). This script used to claim "in
+ * PROD" in its own first line while reading DEV.
  */
 import { createClient } from "@supabase/supabase-js";
-import { config } from "dotenv";
-config({ path: "/Users/andrewullmann/Desktop/candid/.env.local" });
+import { loadScriptEnv, requireWriteAck } from "../_env";
 
-const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
+const env = loadScriptEnv();
+const supabase = createClient(env.url, env.serviceRoleKey);
 
 async function main() {
   const flagKey = process.argv[2];
   const arg = process.argv[3];
   if (!flagKey || (arg !== "true" && arg !== "false")) {
-    console.log("Usage: npx tsx scripts/flags/flag-set.ts <flag_key> <true|false>");
+    console.log("Usage: npx tsx scripts/flags/flag-set.ts <flag_key> <true|false> [--prod-write]");
     process.exit(1);
   }
   const enabled = arg === "true";
+  requireWriteAck(env, true);
 
   const before = await supabase
     .from("feature_flag_rules")

@@ -140,10 +140,60 @@ const noDirectPromotionRpc = {
   },
 };
 
+// ── S313: client flag reads go through the typed hook ──────────────────────
+// `useFeatureFlag` takes an `ExposedFlag`, so an un-allowlisted key is a
+// compile error. A raw `fetch("/api/feature-flags/<key>")` sidesteps that type
+// entirely and reads as OFF forever if the key was never allowlisted — the
+// S302 failure (`bill_totals_source_v1` ON in the database, built, tested,
+// rendering nowhere) cost a full E2E round. The type guards the hook; this
+// rule guards the bypass.
+const noRawFeatureFlagFetch = {
+  meta: {
+    type: "problem",
+    docs: {
+      description:
+        "Ban raw fetch('/api/feature-flags/...') in client code — use the typed useFeatureFlag hook so an un-allowlisted key fails at compile time (S313).",
+    },
+    schema: [],
+    messages: {
+      banned:
+        "Raw fetch(\"/api/feature-flags/…\") is banned — call useFeatureFlag() from @/lib/config/use-feature-flag. Its ExposedFlag parameter type is derived from the endpoint's own allowlist, so a key missing from EXPOSED_FLAGS is a compile error instead of a permanent silent OFF (S302/S313).",
+    },
+  },
+  create(context) {
+    const FLAG_ROUTE = "/api/feature-flags/";
+    // Matches both fetch("/api/feature-flags/x") and the template form
+    // fetch(`/api/feature-flags/${CONST}`) — the constant-indirection shape is
+    // exactly what static key-checking cannot resolve, so ban the shape.
+    const hitsFlagRoute = (arg) => {
+      if (!arg) return false;
+      if (arg.type === "Literal" && typeof arg.value === "string") {
+        return arg.value.includes(FLAG_ROUTE);
+      }
+      if (arg.type === "TemplateLiteral") {
+        return arg.quasis.some((q) => (q.value.cooked ?? "").includes(FLAG_ROUTE));
+      }
+      return false;
+    };
+    return {
+      CallExpression(node) {
+        if (
+          node.callee.type === "Identifier" &&
+          node.callee.name === "fetch" &&
+          hitsFlagRoute(node.arguments[0])
+        ) {
+          context.report({ node, messageId: "banned" });
+        }
+      },
+    };
+  },
+};
+
 const candidSecurityPlugin = {
   rules: {
     "no-raw-user-table-from": noRawUserTableFrom,
     "no-direct-promotion-rpc": noDirectPromotionRpc,
+    "no-raw-feature-flag-fetch": noRawFeatureFlagFetch,
   },
 };
 
@@ -284,6 +334,39 @@ const eslintConfig = defineConfig([
     ignores: ["src/lib/parser/promotion-event.ts"],
     plugins: { "candid-security": candidSecurityPlugin },
     rules: { "candid-security/no-direct-promotion-rpc": "error" },
+  },
+  // ── S313: one way to read a flag from the browser ──────────────────────────
+  // Covers the client surface BY DEFAULT, so new code is guarded from birth.
+  // `ignores` is the SHRINKING migration ledger: the 9 files holding the 13
+  // pre-existing raw fetches. Every one of them is SAFE today — audited at
+  // S313, all 13 keys are in EXPOSED_FLAGS and all 13 treat a missing
+  // `enabled` as false — so this is named debt, not a live defect. Draining
+  // the ledger means converting each call to useFeatureFlag(); the entry goes
+  // away with the last raw fetch in that file. Empty ledger = class closed.
+  //
+  // Scoped to ALL of src, not just the .tsx files where today's 13 happen to
+  // live: this repo's client hooks live under src/lib (there is no src/hooks),
+  // so a future useSomethingFlag() there — or any .ts helper — would otherwise
+  // slip a guard whose whole promise is that new code is covered by default.
+  {
+    files: ["src/**/*.ts", "src/**/*.tsx"],
+    ignores: [
+      // THE sanctioned implementation — the hook every other caller must use.
+      // Not debt; this one never leaves the list.
+      "src/lib/config/use-feature-flag.ts",
+      // ── the ledger ──
+      "src/app/(app)/plan/page.tsx", // change_plan_v1 + onboarding_simplified_v1
+      "src/app/(app)/disputes/page.tsx", // dispute_plan_pinning_v1
+      "src/app/(app)/dashboard/page.tsx", // onboarding_simplified_v1 (via SIMPLIFIED_ONBOARDING_FLAG)
+      "src/app/(app)/profile/page.tsx", // onboarding_simplified_v1 ×2 + the separate profile-dashboard route
+      "src/app/(app)/compare/page.tsx", // compare_v2_redesign
+      "src/app/auth/signup/page.tsx", // onboarding_simplified_v1 + TEST_PHONE_EXEMPTION_ENABLED
+      "src/app/onboarding/page.tsx", // onboarding_simplified_v1
+      "src/components/billing/SubscribeTrigger.tsx", // embedded_subscribe
+      "src/components/claims/ClaimDetail.tsx", // dispute_plan_pinning_v1
+    ],
+    plugins: { "candid-security": candidSecurityPlugin },
+    rules: { "candid-security/no-raw-feature-flag-fetch": "error" },
   },
 ]);
 

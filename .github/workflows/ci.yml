@@ -62,6 +62,15 @@ jobs:
         # checklist routes.
         run: npx tsx scripts/calibration/fixtures/guided-steps/registry.ts
 
+      - name: Script env target + write-ack (S313)
+        # The two PURE decisions behind scripts/_env.ts: which database a URL
+        # resolves to, and whether a write may proceed. Both are RUNTIME
+        # behaviour no type can express — a refactor that inverted the
+        # fail-closed UNKNOWN default would pass tsc and eslint while leaving
+        # every PROD write unguarded. case-events-backfill.ts --write writes
+        # real user history rows; the wrong database is not undoable.
+        run: npx tsx scripts/calibration/fixtures/ops/script-env.ts
+
       - name: Plan-year authority (S313, mig 228)
         # A plan document is authority only for care delivered in its own year.
         # Locks the live defect (PROD claim 046f64cd: 2024 date of service pinned
