@@ -48,7 +48,7 @@ const bill = {
   totalBilled: 372,
 } as unknown as ParsedBill;
 
-function evidenceWith(sourcedFromYear: number, sourcedFrom: "canonical_archive" | "user_exact" | "user_fallback" = "canonical_archive"): DisputeEvidence {
+function evidenceWith(sourcedFromYear: number | null, sourcedFrom: "canonical_archive" | "user_exact" | "user_fallback" = "canonical_archive"): DisputeEvidence {
   return {
     claims: [
       {
@@ -97,7 +97,7 @@ function evidenceWith(sourcedFromYear: number, sourcedFrom: "canonical_archive" 
   } as unknown as DisputeEvidence;
 }
 
-function render(serviceYear: number | null, sourcedFromYear: number, sourcedFrom: "canonical_archive" | "user_exact" | "user_fallback" = "canonical_archive"): string {
+function render(serviceYear: number | null, sourcedFromYear: number | null, sourcedFrom: "canonical_archive" | "user_exact" | "user_fallback" = "canonical_archive"): string {
   return LETTER_TEMPLATES["insurance_appeal"].body({
     patientName: "Test Patient",
     providerName: "SWEDISH PRIMARY CARE SAND POINT",
@@ -161,6 +161,17 @@ for (const src of ["canonical_archive", "user_exact", "user_fallback"] as const)
   check(`${src}: asserts without citing`, body.includes("Per my plan's benefits for this service"), body);
   check(`${src}: the year-gap note renders`, body.includes(NOTE), body);
 }
+
+// ── 5. NULL sourcedFromYear on user_exact — the case that shipped TWICE ──────
+// user_exact does not print sourcedFromYear at all; it prints the PINNED plan's
+// year. So a benefit carrying no source year still stamped "<plan>, 2026
+// specifies …" over 2023 care while a check keyed only on sourcedFromYear sat
+// false. Andrew pasted that letter twice before this case existed.
+console.log("\nflag ON, care 2024, user_exact with NO sourcedFromYear (pinned plan is 2026):");
+const nullYear = render(2024, null, "user_exact");
+check("no 2026 stamp from the PINNED plan", !nullYear.includes("2026 specifies"), nullYear);
+check("asserts without citing", nullYear.includes("Per my plan's benefits for this service"), nullYear);
+check("the year-gap note still renders", nullYear.includes(NOTE), nullYear);
 
 if (failures > 0) {
   console.error(`\n✗ plan-year-authority FAILED — ${failures} check(s).`);

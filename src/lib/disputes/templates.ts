@@ -1334,11 +1334,10 @@ function renderEvidenceBlock(
   const citeYearGap =
     planContext?.serviceYear != null &&
     evidence.claims.some((c) =>
-      c.lineItemEvidence.some(
-        (li) =>
-          li.planBenefit?.sourcedFromYear != null &&
-          li.planBenefit.sourcedFromYear !== planContext.serviceYear,
-      ),
+      c.lineItemEvidence.some((li) => {
+        const y = citedYearForBullet(li, planContext);
+        return y != null && y !== planContext.serviceYear;
+      }),
     );
   const yearGapNote =
     citeYearGap && planContext?.serviceYear != null
@@ -1370,6 +1369,22 @@ function renderEvidenceBlock(
 
 function hasAnyPlanBenefit(evidence: DisputeEvidence): boolean {
   return evidence.claims.some((c) => c.lineItemEvidence.some((li) => li.planBenefit));
+}
+
+/**
+ * S313 — the plan year a per-line bullet would NAME, whichever prefix case it
+ * takes. canonical_archive / user_fallback name `sourcedFromYear`; user_exact
+ * names the pinned plan's year. Both are "the year this letter is holding out
+ * as the authority", which is the only thing the plan-year rule cares about.
+ */
+function citedYearForBullet(
+  li: LineItemEvidence,
+  planContext: PlanContext | null | undefined,
+): number | null {
+  if (!li.planBenefit) return null;
+  if (li.planBenefit.sourcedFromYear != null) return li.planBenefit.sourcedFromYear;
+  if (li.planBenefit.sourcedFrom === "user_exact") return planContext?.plan?.planYear ?? null;
+  return null;
 }
 
 function renderLineItemEvidence(
@@ -1459,15 +1474,25 @@ function renderLineItemEvidence(
         : `${normalizeCoinsurancePct(li.planBenefit.coinsurance)}% coinsurance`
       : "cost-sharing terms";
 
-    // S313 — the CITATION's own year vs the year of the care. `planYearMismatch`
-    // is the service year (null when the flag is off or the years agree), so
-    // this stays FALSE for a right-year cite even when the PINNED plan is
-    // wrong-year: the archive lookup finding the bill-year canonical is a pass,
-    // not a bypass. Compared against the source year, never the pinned plan's.
+    // S313 — the year THIS BULLET WOULD NAME, vs the year of the care.
+    //
+    // Not simply `sourcedFromYear`: the three prefix cases take their year from
+    // two DIFFERENT places. canonical_archive and user_fallback print
+    // `sourcedFromYear`; user_exact prints `planContext.plan.planYear` — the
+    // PINNED plan's year, which owes nothing to the citation. So a benefit with
+    // a null sourcedFromYear still printed "BlueSelect Gold Core for
+    // Individuals, 2026 specifies …" over 2023 care while a check keyed only on
+    // sourcedFromYear sat false. That is the letter Andrew pasted twice.
+    //
+    // `citedYear` is the ONE answer both this and the B' note read, so the
+    // bullet and the disclosure above it can never disagree — they did while
+    // each derived its own (B' scans every line, the bullet is per-line, and a
+    // line whose sourcedFromYear was null satisfied one and not the other).
+    const citedYear = citedYearForBullet(li, planContext);
     const citeYearMismatch =
       planContext?.serviceYear != null &&
-      li.planBenefit.sourcedFromYear != null &&
-      li.planBenefit.sourcedFromYear !== planContext.serviceYear;
+      citedYear != null &&
+      citedYear !== planContext.serviceYear;
     let prefix: string;
     // S313 plan-year authority — decided ONCE, above the switch, because all
     // THREE sourcedFrom cases stamp a year into their own prefix in their own
