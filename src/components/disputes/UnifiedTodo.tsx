@@ -796,14 +796,37 @@ export function UnifiedTodo({
   // S302 — the ONE readiness signal. Labels are the server's three states; the
   // client's four-rung `computeTier` is deleted (it counted a different row set
   // and could disagree with the score that actually prints in the Case File).
+  // S314 hotfix (Andrew) — "Ready to send" over a panel with three IMPORTANT
+  // items still open reads as "nothing left to do", and on the letter that
+  // surfaced this one of those items was worth $43.96 and another sets the
+  // appeal deadline.
+  //
+  // The SEND GATE is deliberately untouched: it is the legal floor (something
+  // backing the charge, an address to mail to, a known patient), and these
+  // items make a letter stronger, not sendable. Widening the floor would refuse
+  // to send letters that can legitimately go out — the wall-with-no-door the
+  // S302 note already rules against. So this changes what the pill SAYS, never
+  // whether the letter can go.
+  //
+  // Andrew's ruling (option B): amber, same words as the row chip below it —
+  // "the letter shows, so they can choose to send anyway, but these details are
+  // important to the letter and we should push the user towards completion."
   const readinessMeta =
     readiness == null
       ? null
       : readiness.state === "attention"
         ? { label: "Not ready to send", pill: "border-amber-200 bg-amber-50 text-amber-800" }
-        : readiness.state === "airtight"
-          ? { label: "Airtight", pill: "border-emerald-200 bg-emerald-50 text-emerald-700" }
-          : { label: "Ready to send", pill: "border-blue-200 bg-blue-50 text-blue-700" };
+        : detailsOpenNeeds > 0
+          ? {
+              label:
+                detailsOpenNeeds === 1
+                  ? "1 thing still needed"
+                  : `${detailsOpenNeeds} things still needed`,
+              pill: "border-amber-200 bg-amber-50 text-amber-800",
+            }
+          : readiness.state === "airtight"
+            ? { label: "Airtight", pill: "border-emerald-200 bg-emerald-50 text-emerald-700" }
+            : { label: "Ready to send", pill: "border-blue-200 bg-blue-50 text-blue-700" };
 
   const all = [...prepRows, ...sendRows, ...(eventMode ? [] : staticAfterRows)];
   const required = all.filter((r) => r.required);

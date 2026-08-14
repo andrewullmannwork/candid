@@ -49,6 +49,13 @@ import {
   type LineItemEvidence,
 } from "../../../../src/lib/disputes/evidence-resolver";
 import { buildRequestSection } from "../../../../src/lib/disputes/templates";
+import {
+  isClaimDetailsConfirmed,
+  isDetailsAttestationConfirmed,
+  openImportantNeeds,
+  type ClaimDetailsNeedsInput,
+  type PlanCostService,
+} from "../../../../src/components/disputes/CaseNeedsPanel";
 
 let pass = 0;
 const fails: string[] = [];
@@ -253,6 +260,80 @@ function claim(lines: LineItemEvidence[]): ClaimEvidence {
     paidSection.includes(
       "reprocess the claim, pay the provider the plan-allowed amount so that I am not balance-billed, and refund the",
     ),
+  );
+}
+
+// ── 5 · THE COUNT MATCHES WHAT THE PANEL RENDERS ───────────────────────────
+// S314 hotfix. The panel showed THREE open IMPORTANT rows — an unknown plan
+// cost, an un-attested claim-details block, and a missing denial date — and the
+// chip said "2 things still needed". `attestationReviewed` was read as a GATE
+// on the answer rather than as one of the things being counted.
+//
+// These assert the count against the rows a user can point at, which is the
+// only definition that matters: Andrew found this by counting his own screen.
+{
+  const svc = (known: boolean, label: string): PlanCostService => ({
+    serviceSlug: label.toLowerCase().replace(/\s+/g, "_"),
+    serviceLabel: label,
+    known,
+    copay: known ? 0 : null,
+    coinsurancePercent: null,
+    source: known ? "manual" : null,
+    humanReviewed: known ? true : undefined,
+  });
+
+  const needs = (over: Partial<ClaimDetailsNeedsInput>): ClaimDetailsNeedsInput => ({
+    planServices: [],
+    attestationReviewed: true,
+    insurerTrack: true,
+    denialNoticeDate: "2026-06-01",
+    userPatientPaid: 146.21,
+    wantsCollectorDetails: false,
+    collectorAddressOnFile: false,
+    accountNumberOnFile: false,
+    openCoverageVerifyCount: 0,
+    ...over,
+  });
+
+  // Andrew's screen, exactly: unknown plan cost + un-attested details + no denial date.
+  const hisCase = needs({
+    planServices: [svc(false, "PREV VISIT EST AGE 18-39"), svc(true, "OFFICE/OUTPATIENT VISIT EST")],
+    attestationReviewed: false,
+    denialNoticeDate: null,
+  });
+  check("his screen counts THREE, not two", openImportantNeeds(hisCase).length === 3);
+  check(
+    "and it names them",
+    openImportantNeeds(hisCase).join("|") ===
+      "Plan cost — PREV VISIT EST AGE 18-39|Claim details|Denial date",
+  );
+  check("three open → the step is not confirmed", !isClaimDetailsConfirmed(hisCase));
+
+  // The regression itself: an un-attested block is an ITEM, not just a gate.
+  check(
+    "an un-attested claim-details block counts on its own",
+    openImportantNeeds(needs({ attestationReviewed: false })).length === 1,
+  );
+  check(
+    "attesting it clears exactly that item",
+    openImportantNeeds(needs({ attestationReviewed: true })).length === 0,
+  );
+
+  // The row's own truth must NOT be the aggregate, or clicking it does nothing
+  // visible while an unrelated item is open ("Done does nothing", S294/S295).
+  check(
+    "the ROW goes green on its own click, even with a denial date outstanding",
+    isDetailsAttestationConfirmed([svc(true, "A")], true) === true &&
+      openImportantNeeds(needs({ planServices: [svc(true, "A")], denialNoticeDate: null })).length === 1,
+  );
+
+  check("nothing open → confirmed", isClaimDetailsConfirmed(needs({})) === true);
+  check(
+    "a parsed cost awaiting human review blocks the attestation",
+    isDetailsAttestationConfirmed(
+      [{ ...svc(true, "A"), humanReviewed: false }],
+      true,
+    ) === false,
   );
 }
 
