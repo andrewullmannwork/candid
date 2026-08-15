@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
 import { useState, useEffect, type ReactNode } from "react";
 import { EmailVerifyBanner } from "@/components/auth/EmailVerifyBanner";
@@ -111,6 +111,7 @@ const accountItems: NavItem[] = [
 
 export default function AppLayout({ children }: { children: ReactNode }) {
   const pathname = usePathname();
+  const router = useRouter();
   const { user, loading, signOut } = useAuth();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -121,8 +122,16 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   }, [pathname]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
+  // S315 — anonymous bill-check accounts live on /check only (design §7.1:
+  // one upload surface per audience). The main app shell is account territory;
+  // the upgrade (linkWithCredential) flips isAnonymous and opens it.
+  const isAnonymousUser = !!user?.isAnonymous;
+  useEffect(() => {
+    if (isAnonymousUser) router.replace("/check");
+  }, [isAnonymousUser, router]);
+
   const showCubeLoader = useMinHoldLoading(loading);
-  if (showCubeLoader) {
+  if (showCubeLoader || isAnonymousUser) {
     return <CubeLoaderBuilding className="min-h-screen" />;
   }
 

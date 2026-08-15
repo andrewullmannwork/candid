@@ -5,10 +5,11 @@ import { createServerClient } from "@/lib/supabase/server";
 import { userScoped } from "@/lib/security/user-scoped";
 import { getStripe } from "@/lib/stripe";
 import { sendVerificationEmail, sendWelcomeEmail } from "@/lib/email/onboarding-emails";
-import { isFeatureEnabled } from "@/lib/config/product-flags";
+import { isFeatureEnabled, readFeatureFlagConfig } from "@/lib/config/product-flags";
 import { getFlags } from "@/lib/config/feature-flags";
 import { isTestPhoneExempt, TEST_PHONE_EXEMPT_E164 } from "@/lib/auth/test-phone-exempt";
 import { verifyTurnstileToken, getRemoteIp } from "@/lib/security/turnstile";
+import { consumeRateLimit, ipBucketKey } from "@/lib/security/durable-rate-limit";
 
 interface ConsentPayload {
   type: string;
@@ -73,11 +74,17 @@ function recordSignupStep(
 // Passive syncs from onAuthStateChanged (page reload, token refresh) omit
 // userAction and skip the gate — the user isn't doing anything triggerable
 // by a bot, and requiring a token would break legitimate session restoration.
-type UserAuthAction = "signup" | "signin";
+// "anon_check_start" (S315): anonymous bill-check creation — Turnstile-gated
+// like signup, and REQUIRED before a new anonymous row may be created below.
+type UserAuthAction = "signup" | "signin" | "anon_check_start";
+
+// S315 — shallow shape check for the anonymous results/deletion contact.
+// Deliverability is proven by the results email itself, not this regex.
+const CONTACT_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
 export async function POST(req: NextRequest) {
   try {
-    const { idToken, consents, userAction, turnstileToken, firstTouch, declaredTestPhone } =
+    const { idToken, consents, userAction, turnstileToken, firstTouch, declaredTestPhone, anonContactEmail } =
       (await req.json()) as {
         idToken: string;
         consents?: ConsentPayload[];
@@ -88,6 +95,9 @@ export async function POST(req: NextRequest) {
         // number when it skipped the Firebase OTP link. Ignored unless it
         // matches the code constant AND the KV kill switch is ON.
         declaredTestPhone?: string;
+        // S315 anonymous check: the typed results/deletion contact. Stored as
+        // users.contact_email on the anonymous path only — never identity.
+        anonContactEmail?: string;
       };
     if (!idToken) {
       return NextResponse.json({ error: "Missing idToken" }, { status: 400 });
@@ -123,8 +133,28 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: `Firebase auth failed: ${msg}` }, { status: 401 });
     }
 
-    const { uid, email, name } = decoded;
-    console.log("[auth/sync] Step 1 OK — uid:", uid, "email:", email);
+    const { uid, name } = decoded;
+
+    // S315 — anonymous bill-check path. Keyed on the TOKEN's provider (never
+    // client-declared), and available only while the flag is ON.
+    const isAnonToken = decoded.firebase?.sign_in_provider === "anonymous";
+    if (isAnonToken) {
+      const anonEnabled = await isFeatureEnabled("anonymous_bill_check_v1");
+      if (!anonEnabled) {
+        return NextResponse.json(
+          { error: "Anonymous bill check is not available." },
+          { status: 403 },
+        );
+      }
+    }
+
+    // Anonymous tokens carry no email. users.email is NOT NULL and the
+    // account-link branch below keys on it, so anonymous rows get a synthetic
+    // per-uid placeholder — a typed third-party address must never be able to
+    // collide with or link to a real account (design §7.1). The typed contact
+    // goes to users.contact_email instead.
+    const email = decoded.email ?? (isAnonToken ? `anon-${uid}@anon.candidclaim.internal` : undefined);
+    console.log("[auth/sync] Step 1 OK — uid:", uid, "email:", email, isAnonToken ? "(anonymous)" : "");
 
     if (!email) {
       return NextResponse.json({ error: "No email in token" }, { status: 400 });
@@ -149,11 +179,41 @@ export async function POST(req: NextRequest) {
     // this lets us detect first-time signups (used to gate transactional emails).
     const { data: existingByUid } = await supabase
       .from("users")
-      .select("id, phone_e164")
+      .select("id, phone_e164, is_anonymous")
       .eq("firebase_uid", uid)
       .maybeSingle();
 
     const isNewUser = !existingByEmail && !existingByUid;
+
+    // S315 — a NEW anonymous row is only ever minted by the explicit
+    // "anon_check_start" action (which sits behind the Turnstile gate above);
+    // a passive listener sync can't create one. Creation is also IP-capped —
+    // each anonymous account is a Haiku-spend vector.
+    if (isAnonToken && isNewUser) {
+      if (userAction !== "anon_check_start") {
+        return NextResponse.json(
+          { error: "Anonymous check must be started from the check page." },
+          { status: 403 },
+        );
+      }
+      const maxStartsPerDay = await readFeatureFlagConfig(
+        "anonymous_bill_check_v1",
+        "anon_starts_per_ip_per_day",
+        5,
+      );
+      const rl = await consumeRateLimit(
+        ipBucketKey("anon-check", getRemoteIp(req)),
+        { windowSeconds: 86_400, maxAttempts: maxStartsPerDay },
+        supabase,
+      );
+      if (!rl.allowed) {
+        console.warn("[auth/sync] anon-check IP cap hit; retryAfter=", rl.retryAfterSeconds);
+        return NextResponse.json(
+          { error: "Too many checks from this network today. Please try again tomorrow." },
+          { status: 429 },
+        );
+      }
+    }
 
     // Mirror the Firebase email_verified token claim on every sync. Drives the
     // Pattern 1 #3 corroboration gate (mig 074) — only email-verified users
@@ -197,7 +257,13 @@ export async function POST(req: NextRequest) {
     // (e.g., a /auth/signin Google attempt for a not-yet-existing account).
     // Q-S69-5: signin path NOT gated for existing users without phone — they
     // can sign in but won't contribute to corroboration (phone_verified=FALSE).
-    const isSignupAction = userAction === "signup" || isNewUser;
+    // S315: anonymous flows bypass the phone gate BY DESIGN (the whole point
+    // of the no-account check) and stay OUT of the signup funnel metrics
+    // (mig 206 measures the account-signup funnel; anon starts would pollute
+    // it). Anti-Sybil is preserved: phone_verified stays FALSE, which is what
+    // the corroboration gate actually reads — anonymous parses cannot
+    // corroborate canonical until the upgrade's real OTP.
+    const isSignupAction = (userAction === "signup" || isNewUser) && !isAnonToken;
     // Funnel (mig 206): an authenticated signup reached the gates.
     if (isSignupAction) recordSignupStep(supabase, uid, "attempted");
     if (isSignupAction) {
@@ -229,6 +295,14 @@ export async function POST(req: NextRequest) {
     const isAccountLink = !!(
       existingByEmail && existingByEmail.firebase_uid !== uid
     );
+
+    // S315 — the typed anonymous contact: anonymous path only, shape-checked.
+    // Hoisted above the branch so the consent records below can carry the
+    // human's real typed address rather than the synthetic row email.
+    const validContactEmail =
+      isAnonToken && typeof anonContactEmail === "string" && CONTACT_EMAIL_RE.test(anonContactEmail.trim())
+        ? anonContactEmail.trim().slice(0, 320)
+        : null;
 
     let userId: string;
 
@@ -277,6 +351,14 @@ export async function POST(req: NextRequest) {
             phone_e164: effPhoneE164,
             phone_verified: effPhoneVerified,
             ...(sanitizedFirstTouch ? { first_touch: sanitizedFirstTouch } : {}),
+            // S315 — mirror the token's provider truth on every sync: the
+            // upgrade (linkWithCredential, same uid, non-anon token) flips it
+            // false with no dedicated code path.
+            is_anonymous: isAnonToken,
+            ...(validContactEmail ? { contact_email: validContactEmail } : {}),
+            // Upgrade transition: the real email now lives in users.email —
+            // clear the anonymous-era contact channel (design §7.1).
+            ...(!isAnonToken && existingByUid?.is_anonymous ? { contact_email: null } : {}),
           },
           { onConflict: "firebase_uid" }
         )
@@ -301,7 +383,10 @@ export async function POST(req: NextRequest) {
 
       const consentRows = consents.map((c) => ({
         user_id: userId,
-        email,
+        // S315: consent proof identifies the consenting person's own address —
+        // for anonymous checks that's the typed contact, not the synthetic row
+        // email.
+        email: validContactEmail ?? email,
         consent_type: c.type,
         consent_version: c.version,
         consent_text_hash: c.hash,
@@ -323,15 +408,24 @@ export async function POST(req: NextRequest) {
     }
 
     // 4. Ensure Stripe Customer exists
+    // S315: NOT for anonymous accounts — they can't subscribe, and minting a
+    // Stripe customer per anonymous check would pollute live Stripe with
+    // synthetic-email customers. The upgrade sync (non-anon token, same uid)
+    // creates one through this very block.
     console.log("[auth/sync] Step 4: Checking Stripe customer...");
-    const { data: stripeRecord } = await userScoped(supabase, userId)
-      .table("stripe_customers")
-      .select("stripe_customer_id")
-      .single();
+    const { data: stripeRecord } = isAnonToken
+      ? { data: null }
+      : await userScoped(supabase, userId)
+          .table("stripe_customers")
+          .select("stripe_customer_id")
+          .single();
 
     let stripeCustomerId: string;
 
-    if (stripeRecord) {
+    if (isAnonToken) {
+      stripeCustomerId = "";
+      console.log("[auth/sync] Step 4 skipped — anonymous account has no Stripe customer");
+    } else if (stripeRecord) {
       stripeCustomerId = stripeRecord.stripe_customer_id;
       console.log("[auth/sync] Step 4 OK — existing Stripe customer:", stripeCustomerId);
     } else {
@@ -364,7 +458,9 @@ export async function POST(req: NextRequest) {
     // after deletion already had a Candid account.
     const provider = decoded.firebase?.sign_in_provider;
     const alreadyVerified = decoded.email_verified === true || provider === "google.com";
-    if (isNewUser || isAccountLink) {
+    // S315: never mail an anonymous account's synthetic address — the results
+    // email (A-5) goes to contact_email at results time, not at creation.
+    if ((isNewUser || isAccountLink) && !isAnonToken) {
       console.log(
         "[auth/sync] Step 5: Firing onboarding emails (isNewUser=" +
           isNewUser +
@@ -395,6 +491,8 @@ export async function POST(req: NextRequest) {
       emailVerified,
       phoneE164: effPhoneE164,
       phoneVerified: effPhoneVerified,
+      // S315 — token-derived; drives the (app) layout's anonymous guard.
+      isAnonymous: isAnonToken,
     });
     response.cookies.set("candid_session", "1", {
       httpOnly: false,

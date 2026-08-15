@@ -14,6 +14,7 @@ import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   signInWithPopup,
+  signInAnonymously,
   GoogleAuthProvider,
   signOut as firebaseSignOut,
   updateProfile,
@@ -33,6 +34,9 @@ export interface CandidUser {
   emailVerified: boolean;
   phoneE164: string | null;
   phoneVerified: boolean;
+  // S315 — Firebase anonymous-provider account (no-account bill check). The
+  // (app) layout keeps anonymous users on /check; upgrade = linkWithCredential.
+  isAnonymous: boolean;
 }
 
 interface ConsentPayload {
@@ -43,7 +47,10 @@ interface ConsentPayload {
 
 // User-initiated auth actions that require Turnstile verification (S68).
 // Passive resyncs from onAuthStateChanged omit this and skip the gate.
-type UserAuthAction = "signup" | "signin";
+// "anon_check_start" (S315): creation of an anonymous bill-check account —
+// Turnstile-gated exactly like signup; the server additionally requires it
+// before any NEW anonymous row is created (passive resyncs can't mint one).
+type UserAuthAction = "signup" | "signin" | "anon_check_start";
 
 interface AuthContextValue {
   user: CandidUser | null;
@@ -89,6 +96,16 @@ interface AuthContextValue {
   ) => Promise<void>;
   signInWithGoogle: (turnstileToken?: string) => Promise<void>;
 
+  // S315 A-1 — anonymous bill-check entry (/check Screen 1). Creates a Firebase
+  // anonymous account, then syncs with userAction="anon_check_start" carrying
+  // the consents + the typed results contact. Flag-gated server-side
+  // (anonymous_bill_check_v1); the sync 403s when the flag is OFF.
+  startAnonymousCheck: (
+    contactEmail: string,
+    consents: ConsentPayload[],
+    turnstileToken: string,
+  ) => Promise<CandidUser>;
+
   signOut: () => Promise<void>;
 }
 
@@ -100,6 +117,7 @@ async function syncWithBackend(
   userAction?: UserAuthAction,
   turnstileToken?: string,
   declaredTestPhone?: string,
+  anonContactEmail?: string,
 ): Promise<CandidUser> {
   let idToken: string;
   try {
@@ -127,6 +145,9 @@ async function syncWithBackend(
       // normal sync; the server ignores it unless it matches the allowlisted
       // constant AND the kill switch is ON.
       declaredTestPhone,
+      // S315 anonymous check — the typed results/deletion contact. Server
+      // stores it as users.contact_email on the anonymous path only.
+      anonContactEmail,
     }),
   });
 
@@ -162,6 +183,7 @@ async function syncWithBackend(
     emailVerified?: boolean;
     phoneE164?: string | null;
     phoneVerified?: boolean;
+    isAnonymous?: boolean;
   };
   return {
     firebaseUser,
@@ -171,6 +193,7 @@ async function syncWithBackend(
     emailVerified: data.emailVerified ?? firebaseUser.emailVerified,
     phoneE164: data.phoneE164 ?? firebaseUser.phoneNumber ?? null,
     phoneVerified: data.phoneVerified ?? firebaseUser.phoneNumber !== null,
+    isAnonymous: data.isAnonymous ?? firebaseUser.isAnonymous,
   };
 }
 
@@ -337,6 +360,42 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  // S315 A-1 — anonymous bill-check entry. Mirrors the signUpStart idiom: the
+  // uid goes into pendingSignupUidsRef BEFORE the account exists so the
+  // auth-state listener's passive sync (no Turnstile, no consents) never races
+  // the explicit "anon_check_start" sync that actually creates the row.
+  const startAnonymousCheck = useCallback(
+    async (
+      contactEmail: string,
+      consents: ConsentPayload[],
+      turnstileToken: string,
+    ): Promise<CandidUser> => {
+      const cred = await signInAnonymously(getFirebaseAuth());
+      pendingSignupUidsRef.current.add(cred.user.uid);
+      try {
+        const candidUser = await syncWithBackend(
+          cred.user,
+          consents,
+          "anon_check_start",
+          turnstileToken,
+          undefined,
+          contactEmail,
+        );
+        setUser(candidUser);
+        return candidUser;
+      } catch (err) {
+        // Row creation refused (flag OFF, Turnstile, rate cap, …) — don't
+        // leave an orphaned anonymous Firebase session behind; it would just
+        // generate passive-sync 403 noise on every future page load.
+        await firebaseSignOut(getFirebaseAuth()).catch(() => {});
+        throw err;
+      } finally {
+        pendingSignupUidsRef.current.delete(cred.user.uid);
+      }
+    },
+    [],
+  );
+
   const signOut = useCallback(async () => {
     await firebaseSignOut(getFirebaseAuth());
     document.cookie = "candid_session=; path=/; max-age=0";
@@ -355,6 +414,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         recoverOrphanSignup,
         signInWithEmail,
         signInWithGoogle,
+        startAnonymousCheck,
         signOut,
       }}
     >
