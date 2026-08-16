@@ -125,6 +125,9 @@ export default function CheckPage() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [fileName, setFileName] = useState<string | null>(null);
+  // Stage-then-check (Andrew, testing round 2): the file can be added BEFORE
+  // email/consent; NOTHING uploads or parses until "Check my bill".
+  const [stagedFile, setStagedFile] = useState<File | null>(null);
   const [parseDoc, setParseDoc] = useState<ParseDoc | null>(null);
   const [documentId, setDocumentId] = useState<string | null>(null);
   const [claimId, setClaimId] = useState<string | null>(null);
@@ -162,7 +165,18 @@ export default function CheckPage() {
       tokenRef.current = null;
       return t;
     }
-    return new Promise((resolve) => tokenWaitersRef.current.push(resolve));
+    return new Promise((resolve, reject) => {
+      const waiter = (tok: string) => {
+        clearTimeout(timer);
+        resolve(tok);
+      };
+      const timer = setTimeout(() => {
+        const i = tokenWaitersRef.current.indexOf(waiter);
+        if (i >= 0) tokenWaitersRef.current.splice(i, 1);
+        reject(new Error("The security check didn't finish. Give it a moment, then press the button again."));
+      }, 20_000);
+      tokenWaitersRef.current.push(waiter);
+    });
   }, []);
 
   const settled = !authLoading && !flagLoading;
@@ -226,8 +240,8 @@ export default function CheckPage() {
     [user, takeToken],
   );
 
-  // ── the bill entry: consent → anonymous account → upload → parse ──
-  const handleBillFile = useCallback(
+  // ── the bill entry: staged file + consent → anonymous account → upload → parse ──
+  const runCheck = useCallback(
     async (file: File) => {
       setBusy(true);
       setErrorMsg(null);
@@ -487,9 +501,10 @@ export default function CheckPage() {
         setErrorMsg(bad);
         return;
       }
-      void handleBillFile(file);
+      setErrorMsg(null);
+      setStagedFile(file);
     },
-    [validateFile, handleBillFile],
+    [validateFile],
   );
   const onSbcDrop = useCallback(
     (accepted: File[]) => {
@@ -516,7 +531,7 @@ export default function CheckPage() {
     accept: FILE_ACCEPT,
     maxFiles: 1,
     noKeyboard: true,
-    disabled: !entryReady || busy,
+    disabled: busy,
   });
   const sbcDrop = useDropzone({
     onDrop: onSbcDrop,
@@ -572,29 +587,48 @@ export default function CheckPage() {
                 We only flag what your documents prove. No estimates. No &quot;typical prices.&quot;
               </div>
 
-              <div className={`mt-6 transition ${entryReady ? "" : "opacity-40"}`}>
+              <div className="mt-6">
                 {busy && fileName ? (
                   <DropUploading fileName={fileName} uploadProgress={uploadProgress} onCancel={() => {}} />
                 ) : (
-                  <div {...billDrop.getRootProps({ className: entryReady ? "cursor-pointer" : "cursor-not-allowed" })}>
+                  <div {...billDrop.getRootProps({ className: "cursor-pointer" })}>
                     <input {...billDrop.getInputProps()} />
                     {billDrop.isDragActive ? (
                       <DropHover />
+                    ) : stagedFile ? (
+                      <div className="flex items-center justify-between gap-3 rounded-xl bg-blue-50/60 px-4 py-3.5 ring-1 ring-inset ring-blue-100">
+                        <span className="flex min-w-0 items-center gap-2.5">
+                          <svg viewBox="0 0 20 20" className="h-5 w-5 shrink-0 text-blue-500" fill="none" aria-hidden>
+                            <path d="M5 2.5h6.5L15 6v11.5H5z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+                            <path d="M11.5 2.5V6H15" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+                          </svg>
+                          <span className="min-w-0">
+                            <span className="block truncate text-sm font-medium text-gray-900">{stagedFile.name}</span>
+                            <span className="block text-xs text-gray-500">
+                              {(stagedFile.size / 1024 / 1024).toFixed(1)} MB · click to choose a different file
+                            </span>
+                          </span>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setStagedFile(null);
+                          }}
+                          className="shrink-0 text-xs font-semibold text-gray-400 transition hover:text-red-500"
+                        >
+                          Remove
+                        </button>
+                      </div>
                     ) : (
                       <DropIdle kind="bill" onPickFile={() => {}} tipsOpen={false} onToggleTips={() => {}} />
                     )}
                   </div>
                 )}
               </div>
-              {!entryReady ? (
-                <p className="mt-2.5 text-center text-xs font-medium text-blue-600/70">
-                  Add your email and check the consent box below to enable the upload.
-                </p>
-              ) : (
-                <p className="mt-2.5 text-center text-xs text-gray-400">
-                  One bill per check · 14 pages max · PDF or photo
-                </p>
-              )}
+              <p className="mt-2.5 text-center text-xs text-gray-400">
+                One bill per check · 14 pages max · PDF or photo
+              </p>
 
               <div className="mt-7 border-t border-gray-100 pt-6">
                 <label className={LABEL} htmlFor="check-email">
@@ -642,9 +676,18 @@ export default function CheckPage() {
                 </p>
               </div>
 
-              <div className="mt-4 flex justify-center">
-                <TurnstileWidget ref={turnstileRef} onToken={onToken} action="anon_check" appearance="execute" />
+              <div className="mt-6 flex justify-center">
+                <TurnstileWidget ref={turnstileRef} onToken={onToken} action="anon_check" />
               </div>
+
+              <button
+                type="button"
+                onClick={() => stagedFile && void runCheck(stagedFile)}
+                disabled={!entryReady || !stagedFile || busy}
+                className={`${BTN_PRIMARY} mt-6 w-full disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-400 disabled:shadow-none`}
+              >
+                {busy ? "Checking…" : "Check my bill"}
+              </button>
             </div>
           )}
 
@@ -792,6 +835,9 @@ export default function CheckPage() {
                     Plan documents also improve Candid&apos;s coverage of that plan for everyone. Your name, ID
                     numbers, and personal details are never shared.
                   </p>
+                  <div className="mt-4 flex justify-center">
+                    <TurnstileWidget ref={turnstileRef} onToken={onToken} action="anon_check_sbc" />
+                  </div>
                   <div className="mt-4 flex flex-wrap items-center gap-4">
                     <button
                       onClick={() => setMissMode(false)}
