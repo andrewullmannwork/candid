@@ -160,6 +160,8 @@ export default function CheckPage() {
   // the plan document stages the same way behind "Use this document".
   const [stagedFile, setStagedFile] = useState<File | null>(null);
   const [sbcStaged, setSbcStaged] = useState<File | null>(null);
+  const [sbcDocId, setSbcDocId] = useState<string | null>(null);
+  const [planLinked, setPlanLinked] = useState(false);
   const [parseDoc, setParseDoc] = useState<ParseDoc | null>(null);
   const [documentId, setDocumentId] = useState<string | null>(null);
   const [claimId, setClaimId] = useState<string | null>(null);
@@ -427,6 +429,7 @@ export default function CheckPage() {
             headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
             body: JSON.stringify({
               query: q.trim(),
+              limit: 50,
               ...(stateFilter ? { state: stateFilter } : {}),
               ...(withYear && claimDosYear ? { planYear: claimDosYear } : {}),
             }),
@@ -453,6 +456,24 @@ export default function CheckPage() {
     return () => clearTimeout(t);
   }, [query, runSearch]);
 
+  // Adopt the claim onto the now-active plan via the EXISTING S291 repin
+  // (cost-share-override field:"claim_plan" — ownership-checked, Rule #10
+  // plan_repinned emit). /check inverts the product's plan-first order, so
+  // the claim persists unlinked and must be adopted when identity arrives.
+  const repinClaim = useCallback(
+    async (planId: string) => {
+      if (!user || !claimId) return false;
+      const idToken = await user.firebaseUser.getIdToken();
+      const res = await fetch(`/api/claims/${claimId}/cost-share-override`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+        body: JSON.stringify({ field: "claim_plan", insurancePlanId: planId }),
+      });
+      return res.ok;
+    },
+    [user, claimId],
+  );
+
   const pickPlan = useCallback(
     async (r: SearchResult) => {
       if (!user) return;
@@ -474,6 +495,15 @@ export default function CheckPage() {
           }),
         });
         if (!res.ok) throw new Error("Couldn't save that plan. Please try again.");
+        const cur = await fetch("/api/plan/current", {
+          headers: { Authorization: `Bearer ${idToken}` },
+        });
+        const curBody = (await cur.json().catch(() => ({}))) as { plan?: { id?: string } | null };
+        const planId = curBody.plan?.id;
+        if (planId) {
+          const pinned = await repinClaim(planId);
+          setPlanLinked(pinned);
+        }
         setIdentityDone("picked");
         setPhase("results");
       } catch (err) {
@@ -482,7 +512,7 @@ export default function CheckPage() {
         setBusy(false);
       }
     },
-    [user],
+    [user, repinClaim],
   );
 
   const handleSbcFile = useCallback(
@@ -495,6 +525,7 @@ export default function CheckPage() {
         if (up.status === "error") {
           throw new Error(up.error || "We couldn't read that document. Please try again.");
         }
+        setSbcDocId(up.documentId);
         // The plan-doc pipeline runs in the background and links the plan when
         // done; the check proceeds now and the results page reads live state.
         // (awaiting_user_confirmation also proceeds — the plan lands after
@@ -510,6 +541,46 @@ export default function CheckPage() {
     },
     [uploadFile],
   );
+
+  // ── SBC follow-through: the plan doc parses in the background; when it
+  // lands (status GET exposes linkedInsurancePlanId, and the status route
+  // already activates it on the profile), adopt the claim via the same repin.
+  useEffect(() => {
+    if (phase !== "results" || identityDone !== "uploaded" || !sbcDocId || !user || planLinked) return;
+    let active = true;
+    let ticks = 0;
+    const poll = async () => {
+      if (!active || ticks++ > 45) return; // ~3 min ceiling
+      try {
+        const res = await fetch(`/api/documents/status?id=${sbcDocId}`);
+        if (res.ok) {
+          const data = (await res.json()) as {
+            status?: string; needsTrigger?: boolean; linkedInsurancePlanId?: string | null;
+          };
+          if (data.needsTrigger) {
+            await fetch("/api/documents/status", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ documentId: sbcDocId }),
+            });
+          }
+          if (data.status === "processed" && data.linkedInsurancePlanId) {
+            const pinned = await repinClaim(data.linkedInsurancePlanId);
+            if (active && pinned) setPlanLinked(true);
+            return;
+          }
+          if (data.status === "error") return;
+        }
+      } catch {
+        /* transient */
+      }
+      if (active) setTimeout(() => void poll(), 4000);
+    };
+    void poll();
+    return () => {
+      active = false;
+    };
+  }, [phase, identityDone, sbcDocId, user, planLinked, repinClaim]);
 
   // ── A-4: account upgrade (linkWithCredential — uid unchanged, data follows) ──
   const handleUpgrade = useCallback(async () => {
@@ -963,12 +1034,22 @@ export default function CheckPage() {
                   Checked without your plan
                 </div>
               )}
-              {identityDone === "uploaded" && (
+              {identityDone === "uploaded" && !planLinked && (
                 <div className="mb-3 rounded-xl bg-blue-50 px-3.5 py-2.5 text-xs leading-relaxed text-blue-700 ring-1 ring-inset ring-blue-100">
                   Your plan document is being read — plan-based findings appear here as soon as it finishes.
                 </div>
               )}
-              <ClaimDetail claimId={claimId} onBack={() => setPhase("identity")} backLabel="Change your plan" />
+              {identityDone === "uploaded" && planLinked && (
+                <div className="mb-3 rounded-xl bg-emerald-50 px-3.5 py-2.5 text-xs leading-relaxed text-emerald-800 ring-1 ring-inset ring-emerald-200">
+                  Your plan is linked — the check below now uses its terms.
+                </div>
+              )}
+              <ClaimDetail
+                key={`${claimId}-${planLinked ? "linked" : "unlinked"}`}
+                claimId={claimId}
+                onBack={() => setPhase("identity")}
+                backLabel="Change your plan"
+              />
 
               <div className="mt-7 rounded-2xl border border-blue-100 bg-gradient-to-b from-blue-50 to-white p-6 text-center sm:p-7">
                 <h3 className="text-[17px] font-bold tracking-tight text-gray-900">Keep these results — and act on them</h3>

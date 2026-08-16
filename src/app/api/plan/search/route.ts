@@ -75,7 +75,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { query, state, planType, metalLevel, planYear, insurerHint, canonicalOnly } = await req.json();
+  const { query, state, planType, metalLevel, planYear, insurerHint, canonicalOnly, limit } = await req.json();
+  // S315 — additive: callers may widen the response (default 15 preserves
+  // every existing consumer; /check requests 50 so long insurer families
+  // — e.g. 24 Kaiser plans across HI/OR/CA — aren't cut mid-family).
+  const resultLimit = Math.min(50, Math.max(1, typeof limit === "number" && Number.isFinite(limit) ? Math.floor(limit) : 15));
   void canonicalOnly; // S110 Chunk D — accepted for forward-compat; this route IS canonical-only
 
   if (!query || typeof query !== "string" || query.trim().length < 2) {
@@ -133,7 +137,7 @@ export async function POST(req: NextRequest) {
        is_verified,
        field_provenance`,
     )
-    .limit(50);
+    .limit(Math.max(50, resultLimit * 3));
 
   // AND every token: each .ilike() chains as a separate AND condition, so all
   // words must appear somewhere in plan_name (order-independent).
@@ -197,7 +201,7 @@ export async function POST(req: NextRequest) {
       if (a.badgeRank !== b.badgeRank) return a.badgeRank - b.badgeRank;
       return (a.row.plan_name || "").localeCompare(b.row.plan_name || "");
     })
-    .slice(0, 15);
+    .slice(0, resultLimit);
 
   const results = ranked.map(({ row, badgeLevel }) => ({
     // S107: id IS the canonical_plan_id now (no plan_catalog indirection).
