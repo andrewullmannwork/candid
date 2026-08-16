@@ -1121,6 +1121,11 @@ export function OnboardingDocStep({
                 <>
                   {searchResults.length > 0 && (
                     <div className="mt-3 max-h-[320px] divide-y divide-gray-100 overflow-y-auto rounded-xl border border-gray-200">
+                      {searchResults.length > 25 && (
+                        <div className="sticky top-0 z-10 border-b border-gray-100 bg-gray-50/95 px-4 py-1.5 text-[11px] font-medium text-gray-500">
+                          Showing all {searchResults.length} matches — keep typing to narrow.
+                        </div>
+                      )}
                       {searchResults.map((p) => (
                         <button
                           key={p.canonicalPlanId}

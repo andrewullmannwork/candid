@@ -1634,6 +1634,11 @@ function PlanDetailsStep({
           )}
           {showSuggestions && planSuggestions.length > 0 && (
             <div className="absolute z-20 left-0 right-0 top-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg max-h-60 overflow-y-auto">
+              {planSuggestions.length > 25 && (
+                <div className="sticky top-0 z-10 border-b border-gray-100 bg-gray-50/95 px-4 py-1.5 text-[11px] font-medium text-gray-500">
+                  Showing all {planSuggestions.length} matches — keep typing to narrow.
+                </div>
+              )}
               {planSuggestions.map((plan) => (
                 <button
                   key={plan.id}

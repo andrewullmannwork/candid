@@ -429,7 +429,6 @@ export default function CheckPage() {
             headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
             body: JSON.stringify({
               query: q.trim(),
-              limit: 50,
               ...(stateFilter ? { state: stateFilter } : {}),
               ...(withYear && claimDosYear ? { planYear: claimDosYear } : {}),
             }),
@@ -925,6 +924,11 @@ export default function CheckPage() {
                   )}
                   {(searching || results.length > 0 || query.trim().length >= 2) && (
                     <div className="mt-3 max-h-72 divide-y divide-gray-100 overflow-y-auto rounded-xl ring-1 ring-gray-200">
+                      {results.length > 25 && (
+                        <div className="sticky top-0 z-10 border-b border-gray-100 bg-gray-50/95 px-4 py-1.5 text-[11px] font-medium text-gray-500">
+                          Showing all {results.length} matches — keep typing to narrow.
+                        </div>
+                      )}
                       {searching && <div className="px-4 py-3.5 text-sm text-gray-400">Searching…</div>}
                       {!searching && query.trim().length >= 2 && results.length === 0 && (
                         <div className="px-4 py-3.5 text-sm text-gray-500">
