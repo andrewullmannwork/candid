@@ -33,7 +33,8 @@ import { useAuth } from "@/lib/auth/auth-context";
 import { useFeatureFlag } from "@/lib/config/use-feature-flag";
 import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 import { TurnstileWidget, type TurnstileWidgetHandle } from "@/components/security/TurnstileWidget";
-import { DropIdle, DropUploading } from "@/components/upload/DropZoneStates";
+import { useDropzone } from "react-dropzone";
+import { DropIdle, DropHover, DropUploading } from "@/components/upload/DropZoneStates";
 import { UnifiedParseScreen, type ParseDoc } from "@/components/parsing/UnifiedParseScreen";
 import { ClaimDetail } from "@/components/claims/ClaimDetail";
 import { getConsentDocument } from "@/lib/consent/consent-documents";
@@ -137,11 +138,6 @@ export default function CheckPage() {
   const [identityDone, setIdentityDone] = useState<"picked" | "uploaded" | "skipped" | null>(null);
   const [missMode, setMissMode] = useState(false);
 
-  // hidden file inputs — DropIdle's onPickFile only signals a click; the
-  // parent owns the actual <input type=file> (mirrors the upload page).
-  const billInputRef = useRef<HTMLInputElement>(null);
-  const sbcInputRef = useRef<HTMLInputElement>(null);
-
   // upgrade panel (A-4)
   const [upgradeOpen, setUpgradeOpen] = useState(false);
   const [upgradePassword, setUpgradePassword] = useState("");
@@ -171,6 +167,23 @@ export default function CheckPage() {
 
   const settled = !authLoading && !flagLoading;
   const isFullAccount = !!user && !user.isAnonymous;
+  const entryReady = EMAIL_RE.test(email.trim()) && consented;
+
+  // A2-L2 fix, part 2: a file dropped OUTSIDE the active zone (or onto the
+  // dimmed one, which carries no handlers) must not navigate the browser to
+  // the file. Window-level preventDefault is the standard react-dropzone
+  // companion for full-page safety.
+  useEffect(() => {
+    const prevent = (e: DragEvent) => {
+      e.preventDefault();
+    };
+    window.addEventListener("dragover", prevent);
+    window.addEventListener("drop", prevent);
+    return () => {
+      window.removeEventListener("dragover", prevent);
+      window.removeEventListener("drop", prevent);
+    };
+  }, []);
   useEffect(() => {
     if (!settled) return;
     if (!enabled) router.replace("/");
@@ -453,37 +466,72 @@ export default function CheckPage() {
     }
   }, [user, upgradeEmail, upgradePassword, router]);
 
+  // ── drag-and-drop (mirrors /upload: react-dropzone + DropHover; without
+  // this a dropped file navigates the browser to the file itself — A2-L2's
+  // first FAIL). Type/size validation matches the upload page exactly.
+  const validateFile = useCallback((file: File): string | null => {
+    const allowedTypes = ["application/pdf", "image/jpeg", "image/png", "image/heic", "image/heif"];
+    const isHeic = /\.(heic|heif)$/i.test(file.name);
+    if (!allowedTypes.includes(file.type) && !isHeic) {
+      return "Accepted formats: PDF, JPEG, PNG, or HEIC (iPhone photos).";
+    }
+    if (file.size > 20 * 1024 * 1024) return "File must be under 20MB.";
+    return null;
+  }, []);
+  const onBillDrop = useCallback(
+    (accepted: File[]) => {
+      const file = accepted[0];
+      if (!file) return;
+      const bad = validateFile(file);
+      if (bad) {
+        setErrorMsg(bad);
+        return;
+      }
+      void handleBillFile(file);
+    },
+    [validateFile, handleBillFile],
+  );
+  const onSbcDrop = useCallback(
+    (accepted: File[]) => {
+      const file = accepted[0];
+      if (!file) return;
+      const bad = validateFile(file);
+      if (bad) {
+        setErrorMsg(bad);
+        return;
+      }
+      void handleSbcFile(file);
+    },
+    [validateFile, handleSbcFile],
+  );
+  const FILE_ACCEPT = {
+    "application/pdf": [".pdf"],
+    "image/jpeg": [".jpg", ".jpeg"],
+    "image/png": [".png"],
+    "image/heic": [".heic"],
+    "image/heif": [".heif"],
+  };
+  const billDrop = useDropzone({
+    onDrop: onBillDrop,
+    accept: FILE_ACCEPT,
+    maxFiles: 1,
+    noKeyboard: true,
+    disabled: !entryReady || busy,
+  });
+  const sbcDrop = useDropzone({
+    onDrop: onSbcDrop,
+    accept: { "application/pdf": [".pdf"] },
+    maxFiles: 1,
+    noKeyboard: true,
+    disabled: busy,
+  });
+
   if (!settled || !enabled || isFullAccount) {
     return <CubeLoaderBuilding className="min-h-screen" />;
   }
 
-  const entryReady = EMAIL_RE.test(email.trim()) && consented;
-
   return (
     <main className="min-h-screen bg-gray-50">
-      <input
-        ref={billInputRef}
-        type="file"
-        accept=".pdf,image/*"
-        className="hidden"
-        onChange={(e) => {
-          const f = e.target.files?.[0];
-          e.target.value = "";
-          if (f) void handleBillFile(f);
-        }}
-      />
-      <input
-        ref={sbcInputRef}
-        type="file"
-        accept=".pdf"
-        className="hidden"
-        onChange={(e) => {
-          const f = e.target.files?.[0];
-          e.target.value = "";
-          if (f) void handleSbcFile(f);
-        }}
-      />
-
       <div className={phase === "entry" ? "gradient-mesh" : undefined}>
         <div className="mx-auto max-w-2xl px-4 pb-16 pt-7">
           {/* header row */}
@@ -524,69 +572,77 @@ export default function CheckPage() {
                 We only flag what your documents prove. No estimates. No &quot;typical prices.&quot;
               </div>
 
-              <label className={`${LABEL} mt-6`} htmlFor="check-email">
-                Email for your results
-              </label>
-              <input
-                id="check-email"
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com"
-                className={`${INPUT} mt-1.5`}
-              />
-              <p className="mt-1.5 text-xs leading-relaxed text-gray-400">
-                We use your email to send your results and to honor deletion requests. Nothing else without your
-                say-so.
-              </p>
-
-              <label className="mt-5 flex cursor-pointer items-start gap-2.5 text-[13.5px] leading-relaxed text-gray-600">
-                <input
-                  type="checkbox"
-                  checked={consented}
-                  onChange={(e) => setConsented(e.target.checked)}
-                  className="mt-0.5 h-4 w-4 accent-blue-600"
-                />
-                <span>
-                  I agree to the{" "}
-                  <Link href="/terms" className="font-medium text-blue-600 underline decoration-blue-200 underline-offset-2">
-                    Terms of Service
-                  </Link>{" "}
-                  and the{" "}
-                  <Link href="/health-data" className="font-medium text-blue-600 underline decoration-blue-200 underline-offset-2">
-                    Consumer Health Data Privacy Policy
-                  </Link>
-                  , and{" "}
-                  <Link href="/health-data" className="font-medium text-blue-600 underline decoration-blue-200 underline-offset-2">
-                    consent
-                  </Link>{" "}
-                  to Candid collecting and processing the health information I upload.
-                </span>
-              </label>
-              <p className="ml-[26px] mt-2 text-xs leading-relaxed text-gray-400">
-                Candid keeps de-identified, aggregated data — never your name, contact, or account details — to
-                improve price and coverage results for everyone. Details in the Health Data Consent.
-              </p>
-
-              <div className={`mt-6 transition ${entryReady ? "" : "pointer-events-none opacity-40"}`}>
+              <div className={`mt-6 transition ${entryReady ? "" : "opacity-40"}`}>
                 {busy && fileName ? (
                   <DropUploading fileName={fileName} uploadProgress={uploadProgress} onCancel={() => {}} />
                 ) : (
-                  <DropIdle
-                    kind="bill"
-                    onPickFile={() => billInputRef.current?.click()}
-                    tipsOpen={false}
-                    onToggleTips={() => {}}
-                  />
+                  <div {...billDrop.getRootProps({ className: entryReady ? "cursor-pointer" : "cursor-not-allowed" })}>
+                    <input {...billDrop.getInputProps()} />
+                    {billDrop.isDragActive ? (
+                      <DropHover />
+                    ) : (
+                      <DropIdle kind="bill" onPickFile={() => {}} tipsOpen={false} onToggleTips={() => {}} />
+                    )}
+                  </div>
                 )}
               </div>
-              {!entryReady && (
-                <p className="mt-2 text-center text-xs text-gray-400">
-                  Add your email and check the consent box to enable the upload.
+              {!entryReady ? (
+                <p className="mt-2.5 text-center text-xs font-medium text-blue-600/70">
+                  Add your email and check the consent box below to enable the upload.
+                </p>
+              ) : (
+                <p className="mt-2.5 text-center text-xs text-gray-400">
+                  One bill per check · 14 pages max · PDF or photo
                 </p>
               )}
-              <p className="mt-2 text-center text-xs text-gray-400">One bill per check · 14 pages max · PDF or photo</p>
-              <div className="mt-3 flex justify-center">
+
+              <div className="mt-7 border-t border-gray-100 pt-6">
+                <label className={LABEL} htmlFor="check-email">
+                  Email for your results
+                </label>
+                <input
+                  id="check-email"
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="you@example.com"
+                  className={`${INPUT} mt-1.5`}
+                />
+                <p className="mt-1.5 text-xs leading-relaxed text-gray-400">
+                  We use your email to send your results and to honor deletion requests. Nothing else without your
+                  say-so.
+                </p>
+
+                <label className="mt-5 flex cursor-pointer items-start gap-2.5 text-[13.5px] leading-relaxed text-gray-600">
+                  <input
+                    type="checkbox"
+                    checked={consented}
+                    onChange={(e) => setConsented(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 accent-blue-600"
+                  />
+                  <span>
+                    I agree to the{" "}
+                    <Link href="/terms" className="font-medium text-blue-600 underline decoration-blue-200 underline-offset-2">
+                      Terms of Service
+                    </Link>{" "}
+                    and the{" "}
+                    <Link href="/health-data" className="font-medium text-blue-600 underline decoration-blue-200 underline-offset-2">
+                      Consumer Health Data Privacy Policy
+                    </Link>
+                    , and{" "}
+                    <Link href="/health-data" className="font-medium text-blue-600 underline decoration-blue-200 underline-offset-2">
+                      consent
+                    </Link>{" "}
+                    to Candid collecting and processing the health information I upload.
+                  </span>
+                </label>
+                <p className="ml-[26px] mt-2 text-xs leading-relaxed text-gray-400">
+                  Candid keeps de-identified, aggregated data — never your name, contact, or account details — to
+                  improve price and coverage results for everyone. Details in the Health Data Consent.
+                </p>
+              </div>
+
+              <div className="mt-4 flex justify-center">
                 <TurnstileWidget ref={turnstileRef} onToken={onToken} action="anon_check" appearance="execute" />
               </div>
             </div>
@@ -718,16 +774,18 @@ export default function CheckPage() {
                     Upload your plan&apos;s Summary of Benefits and Coverage (SBC) — the coverage PDF your insurer or
                     employer gave you — and we&apos;ll read it and use it for this check.
                   </p>
-                  <div className={`mt-4 transition ${busy ? "pointer-events-none opacity-40" : ""}`}>
+                  <div className={`mt-4 transition ${busy ? "opacity-40" : ""}`}>
                     {busy && fileName ? (
                       <DropUploading fileName={fileName} uploadProgress={uploadProgress} onCancel={() => {}} />
                     ) : (
-                      <DropIdle
-                        kind="plan"
-                        onPickFile={() => sbcInputRef.current?.click()}
-                        tipsOpen={false}
-                        onToggleTips={() => {}}
-                      />
+                      <div {...sbcDrop.getRootProps({ className: "cursor-pointer" })}>
+                        <input {...sbcDrop.getInputProps()} />
+                        {sbcDrop.isDragActive ? (
+                          <DropHover />
+                        ) : (
+                          <DropIdle kind="plan" onPickFile={() => {}} tipsOpen={false} onToggleTips={() => {}} />
+                        )}
+                      </div>
                     )}
                   </div>
                   <p className="mt-2.5 text-xs leading-relaxed text-gray-400">
