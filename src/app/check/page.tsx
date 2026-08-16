@@ -38,6 +38,8 @@ import { DropIdle, DropHover, DropUploading } from "@/components/upload/DropZone
 import { UnifiedParseScreen, type ParseDoc } from "@/components/parsing/UnifiedParseScreen";
 import { ClaimDetail } from "@/components/claims/ClaimDetail";
 import { getConsentDocument } from "@/lib/consent/consent-documents";
+import { DisputeDraftOverlayProvider } from "@/lib/loading/dispute-draft-overlay";
+import { UploadFlowProvider } from "@/lib/upload/upload-flow-context";
 
 type Phase = "entry" | "parsing" | "confirmGap" | "identity" | "results" | "error";
 
@@ -613,6 +615,8 @@ export default function CheckPage() {
   }
 
   return (
+    <UploadFlowProvider>
+    <DisputeDraftOverlayProvider>
     <main className="min-h-screen bg-gray-50">
       <div className={phase === "entry" ? "gradient-mesh" : undefined}>
         <div className="mx-auto max-w-2xl px-4 pb-16 pt-7">
@@ -719,9 +723,6 @@ export default function CheckPage() {
                 {busy ? "Checking…" : "Check my bill"}
               </button>
 
-              <div className="mb-3 mt-10 flex justify-center">
-                <TurnstileWidget ref={turnstileRef} onToken={onToken} action="anon_check" />
-              </div>
             </div>
           )}
 
@@ -929,9 +930,6 @@ export default function CheckPage() {
                   >
                     {busy ? "Reading…" : "Use this document"}
                   </button>
-                  <div className="mb-1 mt-6 flex justify-center">
-                    <TurnstileWidget ref={turnstileRef} onToken={onToken} action="anon_check_sbc" />
-                  </div>
                   <div className="mt-5 flex flex-wrap items-center gap-4">
                     <button
                       onClick={() => setMissMode(false)}
@@ -1038,8 +1036,13 @@ export default function CheckPage() {
               </button>
             </div>
           )}
+          <div className="mt-10 flex justify-center pb-4">
+            <TurnstileWidget ref={turnstileRef} onToken={onToken} action="anon_check" />
+          </div>
         </div>
       </div>
     </main>
+    </DisputeDraftOverlayProvider>
+    </UploadFlowProvider>
   );
 }
