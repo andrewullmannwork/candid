@@ -74,6 +74,35 @@ const BADGE_LABELS: Record<SearchResult["badgeLevel"], string> = {
   estimated: "Estimated",
 };
 
+function StagedFileChip({ file, onRemove }: { file: File; onRemove: () => void }) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-xl bg-blue-50/60 px-4 py-3.5 ring-1 ring-inset ring-blue-100">
+      <span className="flex min-w-0 items-center gap-2.5">
+        <svg viewBox="0 0 20 20" className="h-5 w-5 shrink-0 text-blue-500" fill="none" aria-hidden>
+          <path d="M5 2.5h6.5L15 6v11.5H5z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+          <path d="M11.5 2.5V6H15" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+        </svg>
+        <span className="min-w-0">
+          <span className="block truncate text-sm font-medium text-gray-900">{file.name}</span>
+          <span className="block text-xs text-gray-500">
+            {(file.size / 1024 / 1024).toFixed(1)} MB · click to choose a different file
+          </span>
+        </span>
+      </span>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onRemove();
+        }}
+        className="shrink-0 text-xs font-semibold text-gray-400 transition hover:text-red-500"
+      >
+        Remove
+      </button>
+    </div>
+  );
+}
+
 function StepPills({ phase }: { phase: Phase }) {
   const steps: Array<{ label: string; active: boolean; done: boolean }> = [
     {
@@ -125,8 +154,10 @@ export default function CheckPage() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [fileName, setFileName] = useState<string | null>(null);
   // Stage-then-check (Andrew, testing round 2): the file can be added BEFORE
-  // email/consent; NOTHING uploads or parses until "Check my bill".
+  // email/consent; NOTHING uploads or parses until "Check my bill". Round 4:
+  // the plan document stages the same way behind "Use this document".
   const [stagedFile, setStagedFile] = useState<File | null>(null);
+  const [sbcStaged, setSbcStaged] = useState<File | null>(null);
   const [parseDoc, setParseDoc] = useState<ParseDoc | null>(null);
   const [documentId, setDocumentId] = useState<string | null>(null);
   const [claimId, setClaimId] = useState<string | null>(null);
@@ -134,6 +165,7 @@ export default function CheckPage() {
 
   // identity step
   const [query, setQuery] = useState("");
+  const [stateFilter, setStateFilter] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [searching, setSearching] = useState(false);
   const [yearRelaxed, setYearRelaxed] = useState(false);
@@ -393,6 +425,7 @@ export default function CheckPage() {
             headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
             body: JSON.stringify({
               query: q.trim(),
+              ...(stateFilter ? { state: stateFilter } : {}),
               ...(withYear && claimDosYear ? { planYear: claimDosYear } : {}),
             }),
           });
@@ -405,13 +438,13 @@ export default function CheckPage() {
           plans = await doSearch(false);
           relaxed = plans.length > 0;
         }
-        setResults(plans.slice(0, 8));
+        setResults(plans);
         setYearRelaxed(relaxed);
       } finally {
         setSearching(false);
       }
     },
-    [user, claimDosYear],
+    [user, claimDosYear, stateFilter],
   );
   useEffect(() => {
     const t = setTimeout(() => void runSearch(query), 350);
@@ -457,9 +490,15 @@ export default function CheckPage() {
       try {
         const up = await uploadFile(file, "sbc");
         if (!up.documentId) throw new Error("Upload failed. Please try again.");
+        if (up.status === "error") {
+          throw new Error(up.error || "We couldn't read that document. Please try again.");
+        }
         // The plan-doc pipeline runs in the background and links the plan when
         // done; the check proceeds now and the results page reads live state.
+        // (awaiting_user_confirmation also proceeds — the plan lands after
+        // account creation; honest note shown on results.)
         setIdentityDone("uploaded");
+        setSbcStaged(null);
         setPhase("results");
       } catch (err) {
         setErrorMsg(err instanceof Error ? err.message : "Upload failed. Please try again.");
@@ -542,9 +581,10 @@ export default function CheckPage() {
         setErrorMsg(bad);
         return;
       }
-      void handleSbcFile(file);
+      setErrorMsg(null);
+      setSbcStaged(file);
     },
-    [validateFile, handleSbcFile],
+    [validateFile],
   );
   const FILE_ACCEPT = {
     "application/pdf": [".pdf"],
@@ -599,19 +639,14 @@ export default function CheckPage() {
 
           {phase === "entry" && (
             <div className={`${CARD} animate-fade-in p-8 sm:p-9`}>
-              <span className="inline-flex items-center gap-2 rounded-full bg-blue-50 px-3.5 py-1.5 text-xs font-semibold text-blue-700 ring-1 ring-inset ring-blue-100">
-                <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden />
-                No account needed
-              </span>
-              <h1 className="mt-4 text-[28px] font-extrabold leading-[1.15] tracking-tight text-gray-900">
+              <h1 className="text-[28px] font-extrabold leading-[1.15] tracking-tight text-gray-900">
                 Check your medical bill — <span className="text-blue-600">free, no account</span>
               </h1>
               <p className="mt-2.5 text-[15px] leading-relaxed text-gray-500">
-                Upload a bill. We check it for duplicate charges, billing math that doesn&apos;t add up, and — if you
-                tell us your plan — charges that don&apos;t match what your plan says you owe.
+                We check for duplicate charges, math errors, and charges your plan says you shouldn&apos;t owe.
               </p>
-              <div className="mt-4 rounded-xl bg-emerald-50 px-3.5 py-2.5 text-sm font-medium text-emerald-800 ring-1 ring-inset ring-emerald-200">
-                We only flag what your documents prove. No estimates. No &quot;typical prices.&quot;
+              <div className="mt-4 rounded-xl bg-emerald-50 px-3.5 py-2 text-sm font-medium text-emerald-800 ring-1 ring-inset ring-emerald-200">
+                We only flag what your documents prove.
               </div>
 
               <div className="mt-6">
@@ -623,39 +658,14 @@ export default function CheckPage() {
                     {billDrop.isDragActive ? (
                       <DropHover />
                     ) : stagedFile ? (
-                      <div className="flex items-center justify-between gap-3 rounded-xl bg-blue-50/60 px-4 py-3.5 ring-1 ring-inset ring-blue-100">
-                        <span className="flex min-w-0 items-center gap-2.5">
-                          <svg viewBox="0 0 20 20" className="h-5 w-5 shrink-0 text-blue-500" fill="none" aria-hidden>
-                            <path d="M5 2.5h6.5L15 6v11.5H5z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
-                            <path d="M11.5 2.5V6H15" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
-                          </svg>
-                          <span className="min-w-0">
-                            <span className="block truncate text-sm font-medium text-gray-900">{stagedFile.name}</span>
-                            <span className="block text-xs text-gray-500">
-                              {(stagedFile.size / 1024 / 1024).toFixed(1)} MB · click to choose a different file
-                            </span>
-                          </span>
-                        </span>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setStagedFile(null);
-                          }}
-                          className="shrink-0 text-xs font-semibold text-gray-400 transition hover:text-red-500"
-                        >
-                          Remove
-                        </button>
-                      </div>
+                      <StagedFileChip file={stagedFile} onRemove={() => setStagedFile(null)} />
                     ) : (
                       <DropIdle kind="bill" onPickFile={() => {}} tipsOpen={false} onToggleTips={() => {}} />
                     )}
                   </div>
                 )}
               </div>
-              <p className="mt-2.5 text-center text-xs text-gray-400">
-                One bill per check · 14 pages max · PDF or photo
-              </p>
+
 
               <div className="mt-7 border-t border-gray-100 pt-6">
                 <label className={LABEL} htmlFor="check-email">
@@ -669,10 +679,7 @@ export default function CheckPage() {
                   placeholder="you@example.com"
                   className={`${INPUT} mt-1.5`}
                 />
-                <p className="mt-1.5 text-xs leading-relaxed text-gray-400">
-                  We use your email to send your results and to honor deletion requests. Nothing else without your
-                  say-so.
-                </p>
+                <p className="mt-1.5 text-xs text-gray-400">Only used for your results and deletion requests.</p>
 
                 <label className="mt-5 flex cursor-pointer items-start gap-2.5 text-[13.5px] leading-relaxed text-gray-600">
                   <input
@@ -712,7 +719,7 @@ export default function CheckPage() {
                 {busy ? "Checking…" : "Check my bill"}
               </button>
 
-              <div className="mb-2 mt-7 flex justify-center">
+              <div className="mb-3 mt-10 flex justify-center">
                 <TurnstileWidget ref={turnstileRef} onToken={onToken} action="anon_check" />
               </div>
             </div>
@@ -751,36 +758,91 @@ export default function CheckPage() {
           {phase === "identity" && (
             <div className={`${CARD} animate-fade-in p-8 sm:p-9`}>
               <h2 className="text-[22px] font-bold leading-tight tracking-tight text-gray-900">
-                Which health plan were you on when you got this care?
+                Which health plan were you on?
               </h2>
-              <p className="mt-2 text-sm leading-relaxed text-gray-500">
-                Your plan&apos;s own terms are what make a dispute stick. We compare this bill against what YOUR plan
-                says you owe — never a look-alike plan.
+              <p className="mt-1.5 text-sm text-gray-500">
+                We compare your bill against your plan&apos;s own terms — never a look-alike.
               </p>
-              {claimDosYear && (
-                <p className="mt-1.5 text-xs text-gray-400">
-                  This care is from {claimDosYear}, so we&apos;re asking about your {claimDosYear} plan.
-                </p>
-              )}
 
               {!missMode ? (
                 <>
-                  <div className="relative mt-5">
-                    <svg
-                      viewBox="0 0 20 20"
-                      className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400"
-                      fill="none"
-                      aria-hidden
+                  <div className="mt-5 flex gap-2.5">
+                    <div className="relative min-w-0 flex-1">
+                      <svg
+                        viewBox="0 0 20 20"
+                        className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400"
+                        fill="none"
+                        aria-hidden
+                      >
+                        <circle cx="9" cy="9" r="6" stroke="currentColor" strokeWidth="1.6" />
+                        <path d="M13.5 13.5L17 17" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                      </svg>
+                      <input
+                        value={query}
+                        onChange={(e) => setQuery(e.target.value)}
+                        placeholder="Insurer or plan name"
+                        className={`${INPUT} pl-10`}
+                      />
+                    </div>
+                    <select
+                      value={stateFilter}
+                      onChange={(e) => setStateFilter(e.target.value)}
+                      aria-label="State"
+                      className="w-[92px] shrink-0 rounded-xl border border-gray-300 bg-white px-2.5 py-2.5 text-sm text-gray-700 transition focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100"
                     >
-                      <circle cx="9" cy="9" r="6" stroke="currentColor" strokeWidth="1.6" />
-                      <path d="M13.5 13.5L17 17" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-                    </svg>
-                    <input
-                      value={query}
-                      onChange={(e) => setQuery(e.target.value)}
-                      placeholder="Insurer or plan name — e.g. Blue Cross Bronze"
-                      className={`${INPUT} pl-10`}
-                    />
+                      <option value="">State</option>
+                      <option value="AL">AL</option>
+                      <option value="AK">AK</option>
+                      <option value="AZ">AZ</option>
+                      <option value="AR">AR</option>
+                      <option value="CA">CA</option>
+                      <option value="CO">CO</option>
+                      <option value="CT">CT</option>
+                      <option value="DE">DE</option>
+                      <option value="FL">FL</option>
+                      <option value="GA">GA</option>
+                      <option value="HI">HI</option>
+                      <option value="ID">ID</option>
+                      <option value="IL">IL</option>
+                      <option value="IN">IN</option>
+                      <option value="IA">IA</option>
+                      <option value="KS">KS</option>
+                      <option value="KY">KY</option>
+                      <option value="LA">LA</option>
+                      <option value="ME">ME</option>
+                      <option value="MD">MD</option>
+                      <option value="MA">MA</option>
+                      <option value="MI">MI</option>
+                      <option value="MN">MN</option>
+                      <option value="MS">MS</option>
+                      <option value="MO">MO</option>
+                      <option value="MT">MT</option>
+                      <option value="NE">NE</option>
+                      <option value="NV">NV</option>
+                      <option value="NH">NH</option>
+                      <option value="NJ">NJ</option>
+                      <option value="NM">NM</option>
+                      <option value="NY">NY</option>
+                      <option value="NC">NC</option>
+                      <option value="ND">ND</option>
+                      <option value="OH">OH</option>
+                      <option value="OK">OK</option>
+                      <option value="OR">OR</option>
+                      <option value="PA">PA</option>
+                      <option value="RI">RI</option>
+                      <option value="SC">SC</option>
+                      <option value="SD">SD</option>
+                      <option value="TN">TN</option>
+                      <option value="TX">TX</option>
+                      <option value="UT">UT</option>
+                      <option value="VT">VT</option>
+                      <option value="VA">VA</option>
+                      <option value="WA">WA</option>
+                      <option value="WV">WV</option>
+                      <option value="WI">WI</option>
+                      <option value="WY">WY</option>
+                      <option value="DC">DC</option>
+                    </select>
                   </div>
                   {yearRelaxed && claimDosYear && (
                     <p className="mt-2.5 rounded-xl bg-amber-50 px-3.5 py-2.5 text-xs leading-relaxed text-amber-800 ring-1 ring-inset ring-amber-200">
@@ -790,7 +852,7 @@ export default function CheckPage() {
                     </p>
                   )}
                   {(searching || results.length > 0 || query.trim().length >= 2) && (
-                    <div className="mt-3 divide-y divide-gray-100 overflow-hidden rounded-xl ring-1 ring-gray-200">
+                    <div className="mt-3 max-h-72 divide-y divide-gray-100 overflow-y-auto rounded-xl ring-1 ring-gray-200">
                       {searching && <div className="px-4 py-3.5 text-sm text-gray-400">Searching…</div>}
                       {!searching && query.trim().length >= 2 && results.length === 0 && (
                         <div className="px-4 py-3.5 text-sm text-gray-500">
@@ -839,10 +901,9 @@ export default function CheckPage() {
                 </>
               ) : (
                 <>
-                  <h3 className="mt-6 font-semibold text-gray-900">We don&apos;t have your plan&apos;s terms yet.</h3>
-                  <p className="mt-1.5 text-sm leading-relaxed text-gray-500">
-                    Upload your plan&apos;s Summary of Benefits and Coverage (SBC) — the coverage PDF your insurer or
-                    employer gave you — and we&apos;ll read it and use it for this check.
+                  <h3 className="mt-6 text-lg font-bold tracking-tight text-gray-900">Upload your plan document</h3>
+                  <p className="mt-1 text-sm text-gray-500">
+                    Drop the coverage PDF from your insurer or employer — usually called an SBC.
                   </p>
                   <div className={`mt-4 transition ${busy ? "opacity-40" : ""}`}>
                     {busy && fileName ? (
@@ -852,20 +913,26 @@ export default function CheckPage() {
                         <input {...sbcDrop.getInputProps()} />
                         {sbcDrop.isDragActive ? (
                           <DropHover />
+                        ) : sbcStaged ? (
+                          <StagedFileChip file={sbcStaged} onRemove={() => setSbcStaged(null)} />
                         ) : (
                           <DropIdle kind="plan" onPickFile={() => {}} tipsOpen={false} onToggleTips={() => {}} />
                         )}
                       </div>
                     )}
                   </div>
-                  <p className="mt-2.5 text-xs leading-relaxed text-gray-400">
-                    Plan documents also improve Candid&apos;s coverage of that plan for everyone. Your name, ID
-                    numbers, and personal details are never shared.
-                  </p>
-                  <div className="mt-4 flex justify-center">
+                  <button
+                    type="button"
+                    onClick={() => sbcStaged && void handleSbcFile(sbcStaged)}
+                    disabled={!sbcStaged || busy}
+                    className={`${BTN_PRIMARY} mt-5 w-full disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-400 disabled:shadow-none`}
+                  >
+                    {busy ? "Reading…" : "Use this document"}
+                  </button>
+                  <div className="mb-1 mt-6 flex justify-center">
                     <TurnstileWidget ref={turnstileRef} onToken={onToken} action="anon_check_sbc" />
                   </div>
-                  <div className="mt-4 flex flex-wrap items-center gap-4">
+                  <div className="mt-5 flex flex-wrap items-center gap-4">
                     <button
                       onClick={() => setMissMode(false)}
                       className="text-sm font-medium text-blue-600 underline decoration-blue-200 underline-offset-2"
@@ -882,6 +949,10 @@ export default function CheckPage() {
                       Skip — check the bill alone
                     </button>
                   </div>
+                  <p className="mt-4 text-[11px] leading-relaxed text-gray-400">
+                    Plan documents also improve Candid&apos;s coverage of that plan for everyone. Your name, ID
+                    numbers, and personal details are never shared.
+                  </p>
                 </>
               )}
             </div>
