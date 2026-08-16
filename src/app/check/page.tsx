@@ -541,7 +541,7 @@ export default function CheckPage() {
         setBusy(false);
       }
     },
-    [uploadFile],
+    [uploadFile, user],
   );
 
   // ── SBC follow-through: the plan doc parses in the background; when it
