@@ -52,7 +52,6 @@ interface SearchResult {
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
-const STABLE_STATUSES = ["complete", "auto_processed", "awaiting_confirmation", "dedup_processed", "rejected", "pending_review"];
 
 // ── shared visual atoms (Candid token system) ──────────────────────────────
 const CARD = "rounded-2xl border border-gray-200 bg-white shadow-sm";
@@ -235,7 +234,13 @@ export default function CheckPage() {
         const errBody = (await res.json().catch(() => ({}))) as { error?: string };
         throw new Error(errBody.error || "Upload failed. Please try again.");
       }
-      return (await res.json()) as { documentId?: string; deduplicated?: boolean };
+      return (await res.json()) as {
+        documentId?: string;
+        deduplicated?: boolean;
+        status?: string;
+        error?: string;
+        classification?: { pageCount?: number };
+      };
     },
     [user, takeToken],
   );
@@ -259,13 +264,22 @@ export default function CheckPage() {
         const up = await uploadFile(file, "itemized_bill");
         if (!up.documentId) throw new Error("Upload failed. Please try again.");
         setDocumentId(up.documentId);
+        if (up.status === "error") {
+          throw new Error(up.error || "We couldn't process that document. Please try again.");
+        }
+        if (up.status === "awaiting_user_confirmation") {
+          // The confirm-modal floor fired at classification time — /check v1
+          // routes this to the honest interim card (tree-flagged gap).
+          setPhase("confirmGap");
+          return;
+        }
         setParseDoc({
           id: up.documentId,
           label: "Your bill",
           fileName: file.name,
           phase: "parsing",
           uploadProgress: 100,
-          totalPages: null,
+          totalPages: typeof up.classification?.pageCount === "number" ? up.classification.pageCount : null,
           step: null,
           realCompletedPages: null,
         });
@@ -279,74 +293,87 @@ export default function CheckPage() {
     [user, email, startAnonymousCheck, uploadFile, takeToken],
   );
 
-  // ── status polling during parse ──
+  // ── status polling during parse — MIRRORS /upload's proven loop exactly:
+  // GET /api/documents/status?id=<id> (query param, no auth header), POST the
+  // trigger when needsTrigger (the pipeline is CLIENT-DRIVEN — without the
+  // trigger a queued document never processes; the round-3 hang), terminal on
+  // processed / pending_review / error / isStuck, 4s cadence. ──
   useEffect(() => {
     if (phase !== "parsing" || !documentId || !user) return;
-    let cancelled = false;
-    const tick = async () => {
-      if (cancelled) return;
+    let active = true;
+    const poll = async () => {
+      if (!active) return;
       try {
-        const idToken = await user.firebaseUser.getIdToken();
-        const res = await fetch(`/api/documents/status/${documentId}`, {
-          headers: { Authorization: `Bearer ${idToken}` },
-        });
-        if (res.ok) {
-          const data = (await res.json()) as {
-            status?: string; processing_step?: string | null; totalPages?: number | null;
-            completedPages?: number | null; smart_skip_outcome?: string | null;
+        const res = await fetch(`/api/documents/status?id=${documentId}`);
+        if (!res.ok || !active) return;
+        const data = (await res.json()) as {
+          status?: string; step?: string | null; completedPages?: number; totalPages?: number;
+          needsTrigger?: boolean; processingError?: string | null; isStuck?: boolean;
+          smartSkipOutcome?: string | null;
+        };
+        setParseDoc((d) =>
+          d
+            ? {
+                ...d,
+                step: data.step ?? d.step,
+                totalPages: data.totalPages && data.totalPages > 0 ? data.totalPages : d.totalPages,
+                realCompletedPages: data.completedPages ?? d.realCompletedPages,
+                smartSkipOutcome: data.smartSkipOutcome ?? d.smartSkipOutcome,
+                phase: data.status === "processed" ? "complete" : d.phase,
+              }
+            : d,
+        );
+        if (data.status === "processed") {
+          active = false;
+          const idToken = await user.firebaseUser.getIdToken();
+          const claimsRes = await fetch(`/api/claims?documentId=${documentId}`, {
+            headers: { Authorization: `Bearer ${idToken}` },
+          });
+          const claims = (await claimsRes.json().catch(() => ({}))) as {
+            claims?: Array<{ id: string; date_of_service?: string | null }>;
           };
-          const status = data.status ?? "";
-          setParseDoc((d) =>
-            d
-              ? {
-                  ...d,
-                  step: data.processing_step ?? d.step,
-                  totalPages: data.totalPages ?? d.totalPages,
-                  realCompletedPages: data.completedPages ?? d.realCompletedPages,
-                  smartSkipOutcome: data.smart_skip_outcome ?? d.smartSkipOutcome,
-                  phase: STABLE_STATUSES.includes(status) ? "complete" : d.phase,
-                }
-              : d,
-          );
-          if (STABLE_STATUSES.includes(status)) {
-            if (status === "rejected") {
-              setErrorMsg("We couldn't read that document as a medical bill. Try a clearer photo or the PDF.");
-              setPhase("error");
-              return;
-            }
-            if (status === "awaiting_confirmation" || status === "pending_review") {
-              setPhase("confirmGap");
-              return;
-            }
-            // complete family → find the claim
-            const claimsRes = await fetch(`/api/claims?documentId=${documentId}`, {
-              headers: { Authorization: `Bearer ${idToken}` },
-            });
-            const claims = (await claimsRes.json().catch(() => ({}))) as {
-              claims?: Array<{ id: string; date_of_service?: string | null }>;
-            };
-            const claim = claims.claims?.[0];
-            if (claim) {
-              setClaimId(claim.id);
-              const y = claim.date_of_service ? new Date(claim.date_of_service).getFullYear() : null;
-              setClaimDosYear(Number.isFinite(y as number) ? (y as number) : null);
-              setPhase("identity");
-            } else {
-              setErrorMsg("The bill parsed, but we couldn't build a claim from it. Try the PDF version if you have one.");
-              setPhase("error");
-            }
-            return;
+          const claim = claims.claims?.[0];
+          if (claim) {
+            setClaimId(claim.id);
+            const y = claim.date_of_service ? new Date(claim.date_of_service).getFullYear() : null;
+            setClaimDosYear(Number.isFinite(y as number) ? (y as number) : null);
+            setPhase("identity");
+          } else {
+            setErrorMsg("The bill parsed, but we couldn't build a claim from it. Try the PDF version if you have one.");
+            setPhase("error");
           }
+          return;
+        }
+        if (data.status === "pending_review") {
+          active = false;
+          setPhase("confirmGap");
+          return;
+        }
+        if (data.status === "error" || data.isStuck) {
+          active = false;
+          setErrorMsg(
+            data.processingError ||
+              "Processing hit a snag. Try the PDF version if you have one, or a clearer photo.",
+          );
+          setPhase("error");
+          return;
+        }
+        if (data.needsTrigger) {
+          await fetch("/api/documents/status", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ documentId }),
+          });
         }
       } catch {
-        /* transient poll error — keep ticking */
+        /* transient poll error — next interval retries */
       }
-      if (!cancelled) setTimeout(tick, 1200);
     };
-    const timer = setTimeout(tick, 1200);
+    void poll();
+    const interval = setInterval(() => void poll(), 4000);
     return () => {
-      cancelled = true;
-      clearTimeout(timer);
+      active = false;
+      clearInterval(interval);
     };
   }, [phase, documentId, user]);
 
@@ -676,18 +703,18 @@ export default function CheckPage() {
                 </p>
               </div>
 
-              <div className="mt-6 flex justify-center">
-                <TurnstileWidget ref={turnstileRef} onToken={onToken} action="anon_check" />
-              </div>
-
               <button
                 type="button"
                 onClick={() => stagedFile && void runCheck(stagedFile)}
                 disabled={!entryReady || !stagedFile || busy}
-                className={`${BTN_PRIMARY} mt-6 w-full disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-400 disabled:shadow-none`}
+                className={`${BTN_PRIMARY} mt-7 w-full disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-400 disabled:shadow-none`}
               >
                 {busy ? "Checking…" : "Check my bill"}
               </button>
+
+              <div className="mb-2 mt-7 flex justify-center">
+                <TurnstileWidget ref={turnstileRef} onToken={onToken} action="anon_check" />
+              </div>
             </div>
           )}
 
