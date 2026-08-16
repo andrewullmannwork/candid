@@ -6,6 +6,9 @@
  * Design record: vault plans/s315-anonymous-funnel-design.md (mock rev 4
  * approved 2026-08-15). Strings are the approved ledger entries (L*, C*, P*,
  * I*, Y*, E*); every asserted number downstream comes from existing machinery.
+ * Visual language: the Candid token system (globals.css — candid-blue scale,
+ * fg/bg neutrals, glow-blue, gradient-mesh, radius scale) + the display-state
+ * badge vocabulary (emerald Verified family / amber estimated).
  *
  * REUSE MAP (design §7.2): DropIdle/DropUploading (upload) ·
  * UnifiedParseScreen stackV3 (the SAME parsing screens) · /api/plan/search
@@ -49,6 +52,65 @@ interface SearchResult {
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 const STABLE_STATUSES = ["complete", "auto_processed", "awaiting_confirmation", "dedup_processed", "rejected", "pending_review"];
+
+// ── shared visual atoms (Candid token system) ──────────────────────────────
+const CARD = "rounded-2xl border border-gray-200 bg-white shadow-sm";
+const BTN_PRIMARY =
+  "inline-block rounded-xl bg-blue-600 px-6 py-3 text-[15px] font-semibold text-white glow-blue transition hover:bg-blue-700 disabled:opacity-50";
+const BTN_GHOST =
+  "inline-block rounded-xl border-[1.5px] border-blue-100 bg-white px-5 py-2.5 text-sm font-semibold text-blue-600 transition hover:border-blue-200 hover:bg-blue-50/50";
+const INPUT =
+  "w-full rounded-xl border border-gray-300 px-3.5 py-2.5 text-[15px] text-gray-900 placeholder:text-gray-400 transition focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100";
+const LABEL = "block text-[13px] font-semibold text-gray-800";
+
+const BADGE_STYLES: Record<SearchResult["badgeLevel"], string> = {
+  verified: "bg-emerald-50 text-emerald-700 ring-emerald-200",
+  community: "bg-green-50 text-green-700 ring-green-200",
+  estimated: "bg-amber-50 text-amber-700 ring-amber-200",
+};
+const BADGE_LABELS: Record<SearchResult["badgeLevel"], string> = {
+  verified: "Verified",
+  community: "Community",
+  estimated: "Estimated",
+};
+
+function StepPills({ phase }: { phase: Phase }) {
+  const steps: Array<{ label: string; active: boolean; done: boolean }> = [
+    {
+      label: "Bill",
+      active: phase === "entry" || phase === "parsing",
+      done: ["confirmGap", "identity", "results"].includes(phase),
+    },
+    { label: "Your plan", active: phase === "identity", done: phase === "results" },
+    { label: "Results", active: phase === "results", done: false },
+  ];
+  return (
+    <div className="flex items-center gap-2">
+      {steps.map((s, i) => (
+        <span
+          key={s.label}
+          className={
+            "flex items-center gap-1.5 rounded-full px-3.5 py-1 text-xs transition " +
+            (s.active
+              ? "bg-blue-600 font-semibold text-white glow-blue"
+              : s.done
+                ? "bg-emerald-50 font-medium text-emerald-700 ring-1 ring-inset ring-emerald-200"
+                : "bg-gray-100 font-medium text-gray-400")
+          }
+        >
+          {s.done ? (
+            <svg viewBox="0 0 12 12" className="h-3 w-3" fill="none" aria-hidden>
+              <path d="M2.5 6.5l2.5 2.5 4.5-5.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          ) : (
+            <span className={s.active ? "" : "opacity-70"}>{i + 1}</span>
+          )}
+          {s.label}
+        </span>
+      ))}
+    </div>
+  );
+}
 
 export default function CheckPage() {
   const router = useRouter();
@@ -421,309 +483,360 @@ export default function CheckPage() {
           if (f) void handleSbcFile(f);
         }}
       />
-      <div className="mx-auto max-w-2xl px-4 py-8">
-        <div className="mb-6 flex items-center justify-between">
-          <Link href="/" className="text-lg font-bold text-blue-600">candid</Link>
-          <div className="flex gap-2 text-xs text-gray-500">
-            <span className={`rounded-full px-3 py-1 ${phase === "entry" ? "bg-blue-600 font-semibold text-white" : "bg-gray-100"}`}>1 Bill</span>
-            <span className={`rounded-full px-3 py-1 ${phase === "identity" ? "bg-blue-600 font-semibold text-white" : "bg-gray-100"}`}>2 Your plan</span>
-            <span className={`rounded-full px-3 py-1 ${phase === "results" ? "bg-blue-600 font-semibold text-white" : "bg-gray-100"}`}>3 Results</span>
-          </div>
-        </div>
 
-        {errorMsg && phase !== "error" && (
-          <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{errorMsg}</div>
-        )}
-
-        {phase === "entry" && (
-          <div className="rounded-2xl border border-gray-200 bg-white p-7 shadow-sm">
-            <h1 className="text-2xl font-bold tracking-tight text-gray-900">
-              Check your medical bill — free, no account
-            </h1>
-            <p className="mt-2 text-gray-500">
-              Upload a bill. We check it for duplicate charges, billing math that doesn&apos;t add up, and — if you
-              tell us your plan — charges that don&apos;t match what your plan says you owe.
-            </p>
-            <div className="mt-4 rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm font-medium text-green-800">
-              We only flag what your documents prove. No estimates. No &quot;typical prices.&quot;
-            </div>
-
-            <label className="mt-5 block text-sm font-semibold text-gray-900" htmlFor="check-email">
-              Email for your results
-            </label>
-            <input
-              id="check-email"
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@example.com"
-              className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2.5 text-[15px]"
-            />
-            <p className="mt-1 text-xs text-gray-500">
-              We use your email to send your results and to honor deletion requests. Nothing else without your say-so.
-            </p>
-
-            <label className="mt-4 flex items-start gap-2.5 text-sm text-gray-700">
-              <input
-                type="checkbox"
-                checked={consented}
-                onChange={(e) => setConsented(e.target.checked)}
-                className="mt-0.5 accent-blue-600"
-              />
-              <span>
-                I agree to the <Link href="/terms" className="text-blue-600 underline">Terms of Service</Link> and the{" "}
-                <Link href="/health-data" className="text-blue-600 underline">Consumer Health Data Privacy Policy</Link>, and{" "}
-                <Link href="/health-data" className="text-blue-600 underline">consent</Link> to Candid collecting and
-                processing the health information I upload.
-              </span>
-            </label>
-            <p className="ml-7 mt-2 text-xs text-gray-500">
-              Candid keeps de-identified, aggregated data — never your name, contact, or account details — to improve
-              price and coverage results for everyone. Details in the Health Data Consent.
-            </p>
-
-            <div className={`mt-5 ${entryReady ? "" : "pointer-events-none opacity-45"}`}>
-              {busy && fileName ? (
-                <DropUploading fileName={fileName} uploadProgress={uploadProgress} onCancel={() => {}} />
-              ) : (
-                <DropIdle
-                  kind="bill"
-                  onPickFile={() => billInputRef.current?.click()}
-                  tipsOpen={false}
-                  onToggleTips={() => {}}
-                />
-              )}
-            </div>
-            <p className="mt-2 text-center text-xs text-gray-400">One bill per check · 14 pages max · PDF or photo</p>
-            <div className="mt-3 flex justify-center">
-              <TurnstileWidget ref={turnstileRef} onToken={onToken} action="anon_check" appearance="execute" />
-            </div>
-          </div>
-        )}
-
-        {phase === "parsing" && parseDoc && (
-          <UnifiedParseScreen
-            docs={[parseDoc]}
-            loaderVariant="stackV3"
-            title="Reading your bill…"
-            subtitle="Checking the charges…"
-          />
-        )}
-
-        {phase === "confirmGap" && (
-          <div className="rounded-2xl border border-gray-200 bg-white p-7 text-center shadow-sm">
-            <h2 className="text-lg font-semibold text-gray-900">We need a second look at a couple of details.</h2>
-            <p className="mt-2 text-sm text-gray-500">
-              Your bill parsed, but a value needs your confirmation before we can assert anything from it — and this
-              early version of the free check can&apos;t collect that yet. Your upload is saved; creating a free
-              account lets you finish the review.
-            </p>
-            <Link
-              href="/auth/signup"
-              className="mt-4 inline-block rounded-xl bg-blue-600 px-6 py-3 font-semibold text-white shadow"
-            >
-              Create your free account
+      <div className={phase === "entry" ? "gradient-mesh" : undefined}>
+        <div className="mx-auto max-w-2xl px-4 pb-16 pt-7">
+          {/* header row */}
+          <div className="mb-7 flex flex-wrap items-center justify-between gap-3">
+            <Link href="/" className="text-[19px] font-bold tracking-tight text-blue-600">
+              candid
             </Link>
-          </div>
-        )}
-
-        {phase === "identity" && (
-          <div className="rounded-2xl border border-gray-200 bg-white p-7 shadow-sm">
-            <h2 className="text-xl font-bold tracking-tight text-gray-900">
-              Which health plan were you on when you got this care?
-            </h2>
-            <p className="mt-1.5 text-sm text-gray-500">
-              Your plan&apos;s own terms are what make a dispute stick. We compare this bill against what YOUR plan
-              says you owe — never a look-alike plan.
-            </p>
-            {claimDosYear && (
-              <p className="mt-1 text-xs text-gray-400">
-                This care is from {claimDosYear}, so we&apos;re asking about your {claimDosYear} plan.
-              </p>
-            )}
-
-            {!missMode ? (
-              <>
-                <input
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Insurer or plan name — e.g. Blue Cross Bronze"
-                  className="mt-4 w-full rounded-lg border border-gray-300 px-3 py-2.5 text-[15px]"
-                />
-                {yearRelaxed && claimDosYear && (
-                  <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                    We have your plan&apos;s current terms, but this care is from {claimDosYear}. We can cite the
-                    current terms as a clearly-labeled reference, but we can&apos;t claim they applied in {claimDosYear}.
-                  </p>
-                )}
-                <div className="mt-3 divide-y divide-gray-100 rounded-lg border border-gray-200">
-                  {searching && <div className="px-4 py-3 text-sm text-gray-400">Searching…</div>}
-                  {!searching && query.trim().length >= 2 && results.length === 0 && (
-                    <div className="px-4 py-3 text-sm text-gray-500">No matches — try fewer words, or use &quot;My plan isn&apos;t listed&quot;.</div>
-                  )}
-                  {results.map((r) => (
-                    <button
-                      key={r.id}
-                      onClick={() => void pickPlan(r)}
-                      disabled={busy}
-                      className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-blue-50"
-                    >
-                      <span>
-                        <span className="block text-sm font-medium text-gray-900">{r.name}</span>
-                        <span className="block text-xs text-gray-500">
-                          {r.insurerName}
-                          {r.state ? ` · ${r.state}` : ""}
-                          {r.year ? ` · ${r.year}` : ""}
-                        </span>
-                      </span>
-                      <span
-                        className={`ml-3 shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-                          r.badgeLevel === "verified"
-                            ? "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200"
-                            : "bg-amber-50 text-amber-700 ring-1 ring-amber-200"
-                        }`}
-                      >
-                        {r.badgeLevel === "verified" ? "Verified" : r.badgeLevel === "community" ? "Community" : "Estimated"}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-                <div className="mt-4 flex flex-wrap items-center gap-3">
-                  <button
-                    onClick={() => setMissMode(true)}
-                    className="rounded-xl border-2 border-blue-100 bg-white px-4 py-2 text-sm font-semibold text-blue-600"
-                  >
-                    My plan isn&apos;t listed
-                  </button>
-                  <button
-                    onClick={() => {
-                      setIdentityDone("skipped");
-                      setPhase("results");
-                    }}
-                    className="text-sm text-gray-400 underline"
-                  >
-                    Skip — check the bill alone
-                  </button>
-                </div>
-              </>
-            ) : (
-              <>
-                <h3 className="mt-4 font-semibold text-gray-900">We don&apos;t have your plan&apos;s terms yet.</h3>
-                <p className="mt-1 text-sm text-gray-500">
-                  Upload your plan&apos;s Summary of Benefits and Coverage (SBC) — the coverage PDF your insurer or
-                  employer gave you — and we&apos;ll read it and use it for this check.
-                </p>
-                <div className={`mt-3 ${busy ? "pointer-events-none opacity-45" : ""}`}>
-                  {busy && fileName ? (
-                    <DropUploading fileName={fileName} uploadProgress={uploadProgress} onCancel={() => {}} />
-                  ) : (
-                    <DropIdle kind="plan" onPickFile={() => sbcInputRef.current?.click()} tipsOpen={false} onToggleTips={() => {}} />
-                  )}
-                </div>
-                <p className="mt-2 text-xs text-gray-500">
-                  Plan documents also improve Candid&apos;s coverage of that plan for everyone. Your name, ID numbers,
-                  and personal details are never shared.
-                </p>
-                <div className="mt-3 flex gap-3">
-                  <button onClick={() => setMissMode(false)} className="text-sm text-blue-600 underline">
-                    Back to search
-                  </button>
-                  <button
-                    onClick={() => {
-                      setIdentityDone("skipped");
-                      setPhase("results");
-                    }}
-                    className="text-sm text-gray-400 underline"
-                  >
-                    Skip — check the bill alone
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-        )}
-
-        {phase === "results" && claimId && (
-          <div>
-            {identityDone === "skipped" && (
-              <div className="mb-3 inline-block rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-500 ring-1 ring-gray-200">
-                Checked without your plan
-              </div>
-            )}
-            {identityDone === "uploaded" && (
-              <div className="mb-3 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-700">
-                Your plan document is being read — plan-based findings appear here as soon as it finishes.
-              </div>
-            )}
-            <ClaimDetail claimId={claimId} onBack={() => setPhase("identity")} backLabel="Change your plan" />
-
-            <div className="mt-6 rounded-xl border border-blue-100 bg-gradient-to-b from-blue-50 to-white p-5 text-center">
-              <h3 className="font-semibold text-gray-900">Keep these results — and act on them</h3>
-              <p className="mx-auto mt-1 max-w-md text-sm text-gray-500">
-                A free account saves this check, lets you add the EOB or your plan documents later, and turns findings
-                into a dispute letter you approve word by word.
-              </p>
-              {!upgradeOpen ? (
-                <button
-                  onClick={() => {
-                    setUpgradeEmail(email);
-                    setUpgradeOpen(true);
-                  }}
-                  className="mt-3 rounded-xl bg-blue-600 px-6 py-3 font-semibold text-white shadow"
-                >
-                  Create your free account
-                </button>
-              ) : (
-                <div className="mx-auto mt-3 max-w-sm text-left">
-                  <label className="block text-xs font-semibold text-gray-600">Email</label>
-                  <input
-                    type="email"
-                    value={upgradeEmail}
-                    onChange={(e) => setUpgradeEmail(e.target.value)}
-                    className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
-                  />
-                  <label className="mt-2 block text-xs font-semibold text-gray-600">Password</label>
-                  <input
-                    type="password"
-                    value={upgradePassword}
-                    onChange={(e) => setUpgradePassword(e.target.value)}
-                    className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
-                  />
-                  {upgradeError && <p className="mt-2 text-xs text-red-600">{upgradeError}</p>}
-                  <button
-                    onClick={() => void handleUpgrade()}
-                    disabled={busy}
-                    className="mt-3 w-full rounded-xl bg-blue-600 px-6 py-2.5 font-semibold text-white shadow disabled:opacity-50"
-                  >
-                    {busy ? "Creating…" : "Create your free account"}
-                  </button>
-                </div>
+            <div className="flex items-center gap-4">
+              <StepPills phase={phase} />
+              {!user && phase === "entry" && (
+                <Link href="/auth/signin" className="text-xs font-medium text-gray-400 transition hover:text-gray-600">
+                  Sign in
+                </Link>
               )}
-              <p className="mt-2 text-xs text-gray-400">
-                A letter demands money in your name. That takes an account — you review every word before anything is
-                sent, and the response gets tracked.
-              </p>
             </div>
           </div>
-        )}
 
-        {phase === "error" && (
-          <div className="rounded-2xl border border-gray-200 bg-white p-7 text-center shadow-sm">
-            <h2 className="text-lg font-semibold text-gray-900">That didn&apos;t work.</h2>
-            <p className="mt-2 text-sm text-gray-500">{errorMsg}</p>
-            <button
-              onClick={() => {
-                setPhase("entry");
-                setErrorMsg(null);
-                setParseDoc(null);
-                setDocumentId(null);
-              }}
-              className="mt-4 rounded-xl border-2 border-blue-100 bg-white px-5 py-2.5 text-sm font-semibold text-blue-600"
-            >
-              Try another file
-            </button>
-          </div>
-        )}
+          {errorMsg && phase !== "error" && (
+            <div className="animate-fade-in mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              {errorMsg}
+            </div>
+          )}
+
+          {phase === "entry" && (
+            <div className={`${CARD} animate-fade-in p-8 sm:p-9`}>
+              <span className="inline-flex items-center gap-2 rounded-full bg-blue-50 px-3.5 py-1.5 text-xs font-semibold text-blue-700 ring-1 ring-inset ring-blue-100">
+                <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden />
+                No account needed
+              </span>
+              <h1 className="mt-4 text-[28px] font-extrabold leading-[1.15] tracking-tight text-gray-900">
+                Check your medical bill — <span className="text-blue-600">free, no account</span>
+              </h1>
+              <p className="mt-2.5 text-[15px] leading-relaxed text-gray-500">
+                Upload a bill. We check it for duplicate charges, billing math that doesn&apos;t add up, and — if you
+                tell us your plan — charges that don&apos;t match what your plan says you owe.
+              </p>
+              <div className="mt-4 rounded-xl bg-emerald-50 px-3.5 py-2.5 text-sm font-medium text-emerald-800 ring-1 ring-inset ring-emerald-200">
+                We only flag what your documents prove. No estimates. No &quot;typical prices.&quot;
+              </div>
+
+              <label className={`${LABEL} mt-6`} htmlFor="check-email">
+                Email for your results
+              </label>
+              <input
+                id="check-email"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@example.com"
+                className={`${INPUT} mt-1.5`}
+              />
+              <p className="mt-1.5 text-xs leading-relaxed text-gray-400">
+                We use your email to send your results and to honor deletion requests. Nothing else without your
+                say-so.
+              </p>
+
+              <label className="mt-5 flex cursor-pointer items-start gap-2.5 text-[13.5px] leading-relaxed text-gray-600">
+                <input
+                  type="checkbox"
+                  checked={consented}
+                  onChange={(e) => setConsented(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 accent-blue-600"
+                />
+                <span>
+                  I agree to the{" "}
+                  <Link href="/terms" className="font-medium text-blue-600 underline decoration-blue-200 underline-offset-2">
+                    Terms of Service
+                  </Link>{" "}
+                  and the{" "}
+                  <Link href="/health-data" className="font-medium text-blue-600 underline decoration-blue-200 underline-offset-2">
+                    Consumer Health Data Privacy Policy
+                  </Link>
+                  , and{" "}
+                  <Link href="/health-data" className="font-medium text-blue-600 underline decoration-blue-200 underline-offset-2">
+                    consent
+                  </Link>{" "}
+                  to Candid collecting and processing the health information I upload.
+                </span>
+              </label>
+              <p className="ml-[26px] mt-2 text-xs leading-relaxed text-gray-400">
+                Candid keeps de-identified, aggregated data — never your name, contact, or account details — to
+                improve price and coverage results for everyone. Details in the Health Data Consent.
+              </p>
+
+              <div className={`mt-6 transition ${entryReady ? "" : "pointer-events-none opacity-40"}`}>
+                {busy && fileName ? (
+                  <DropUploading fileName={fileName} uploadProgress={uploadProgress} onCancel={() => {}} />
+                ) : (
+                  <DropIdle
+                    kind="bill"
+                    onPickFile={() => billInputRef.current?.click()}
+                    tipsOpen={false}
+                    onToggleTips={() => {}}
+                  />
+                )}
+              </div>
+              {!entryReady && (
+                <p className="mt-2 text-center text-xs text-gray-400">
+                  Add your email and check the consent box to enable the upload.
+                </p>
+              )}
+              <p className="mt-2 text-center text-xs text-gray-400">One bill per check · 14 pages max · PDF or photo</p>
+              <div className="mt-3 flex justify-center">
+                <TurnstileWidget ref={turnstileRef} onToken={onToken} action="anon_check" appearance="execute" />
+              </div>
+            </div>
+          )}
+
+          {phase === "parsing" && parseDoc && (
+            <div className="animate-fade-in">
+              <UnifiedParseScreen
+                docs={[parseDoc]}
+                loaderVariant="stackV3"
+                title="Reading your bill…"
+                subtitle="Checking the charges…"
+              />
+            </div>
+          )}
+
+          {phase === "confirmGap" && (
+            <div className={`${CARD} animate-fade-in p-8 text-center`}>
+              <div className="mx-auto grid h-11 w-11 place-items-center rounded-full bg-amber-50 text-lg font-bold text-amber-600 ring-1 ring-inset ring-amber-200">
+                !
+              </div>
+              <h2 className="mt-4 text-lg font-bold tracking-tight text-gray-900">
+                We need a second look at a couple of details.
+              </h2>
+              <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-gray-500">
+                Your bill parsed, but a value needs your confirmation before we can assert anything from it — and
+                this early version of the free check can&apos;t collect that yet. Your upload is saved; creating a
+                free account lets you finish the review.
+              </p>
+              <Link href="/auth/signup" className={`${BTN_PRIMARY} mt-5`}>
+                Create your free account
+              </Link>
+            </div>
+          )}
+
+          {phase === "identity" && (
+            <div className={`${CARD} animate-fade-in p-8 sm:p-9`}>
+              <h2 className="text-[22px] font-bold leading-tight tracking-tight text-gray-900">
+                Which health plan were you on when you got this care?
+              </h2>
+              <p className="mt-2 text-sm leading-relaxed text-gray-500">
+                Your plan&apos;s own terms are what make a dispute stick. We compare this bill against what YOUR plan
+                says you owe — never a look-alike plan.
+              </p>
+              {claimDosYear && (
+                <p className="mt-1.5 text-xs text-gray-400">
+                  This care is from {claimDosYear}, so we&apos;re asking about your {claimDosYear} plan.
+                </p>
+              )}
+
+              {!missMode ? (
+                <>
+                  <div className="relative mt-5">
+                    <svg
+                      viewBox="0 0 20 20"
+                      className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400"
+                      fill="none"
+                      aria-hidden
+                    >
+                      <circle cx="9" cy="9" r="6" stroke="currentColor" strokeWidth="1.6" />
+                      <path d="M13.5 13.5L17 17" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                    </svg>
+                    <input
+                      value={query}
+                      onChange={(e) => setQuery(e.target.value)}
+                      placeholder="Insurer or plan name — e.g. Blue Cross Bronze"
+                      className={`${INPUT} pl-10`}
+                    />
+                  </div>
+                  {yearRelaxed && claimDosYear && (
+                    <p className="mt-2.5 rounded-xl bg-amber-50 px-3.5 py-2.5 text-xs leading-relaxed text-amber-800 ring-1 ring-inset ring-amber-200">
+                      We have your plan&apos;s current terms, but this care is from {claimDosYear}. We can cite the
+                      current terms as a clearly-labeled reference, but we can&apos;t claim they applied in{" "}
+                      {claimDosYear}.
+                    </p>
+                  )}
+                  {(searching || results.length > 0 || query.trim().length >= 2) && (
+                    <div className="mt-3 divide-y divide-gray-100 overflow-hidden rounded-xl ring-1 ring-gray-200">
+                      {searching && <div className="px-4 py-3.5 text-sm text-gray-400">Searching…</div>}
+                      {!searching && query.trim().length >= 2 && results.length === 0 && (
+                        <div className="px-4 py-3.5 text-sm text-gray-500">
+                          No matches — try fewer words, or use &quot;My plan isn&apos;t listed&quot;.
+                        </div>
+                      )}
+                      {!searching &&
+                        results.map((r) => (
+                          <button
+                            key={r.id}
+                            onClick={() => void pickPlan(r)}
+                            disabled={busy}
+                            className="flex w-full items-center justify-between bg-white px-4 py-3.5 text-left transition hover:bg-blue-50/60 disabled:opacity-50"
+                          >
+                            <span className="min-w-0 pr-3">
+                              <span className="block truncate text-sm font-medium text-gray-900">{r.name}</span>
+                              <span className="mt-0.5 block text-xs text-gray-500">
+                                {r.insurerName}
+                                {r.state ? ` · ${r.state}` : ""}
+                                {r.year ? ` · ${r.year}` : ""}
+                              </span>
+                            </span>
+                            <span
+                              className={`shrink-0 rounded-full px-2.5 py-0.5 text-[10.5px] font-semibold ring-1 ring-inset ${BADGE_STYLES[r.badgeLevel]}`}
+                            >
+                              {BADGE_LABELS[r.badgeLevel]}
+                            </span>
+                          </button>
+                        ))}
+                    </div>
+                  )}
+                  <div className="mt-6 flex flex-wrap items-center gap-4">
+                    <button onClick={() => setMissMode(true)} className={BTN_GHOST}>
+                      My plan isn&apos;t listed
+                    </button>
+                    <button
+                      onClick={() => {
+                        setIdentityDone("skipped");
+                        setPhase("results");
+                      }}
+                      className="text-sm text-gray-400 underline decoration-gray-300 underline-offset-2 transition hover:text-gray-600"
+                    >
+                      Skip — check the bill alone
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <h3 className="mt-6 font-semibold text-gray-900">We don&apos;t have your plan&apos;s terms yet.</h3>
+                  <p className="mt-1.5 text-sm leading-relaxed text-gray-500">
+                    Upload your plan&apos;s Summary of Benefits and Coverage (SBC) — the coverage PDF your insurer or
+                    employer gave you — and we&apos;ll read it and use it for this check.
+                  </p>
+                  <div className={`mt-4 transition ${busy ? "pointer-events-none opacity-40" : ""}`}>
+                    {busy && fileName ? (
+                      <DropUploading fileName={fileName} uploadProgress={uploadProgress} onCancel={() => {}} />
+                    ) : (
+                      <DropIdle
+                        kind="plan"
+                        onPickFile={() => sbcInputRef.current?.click()}
+                        tipsOpen={false}
+                        onToggleTips={() => {}}
+                      />
+                    )}
+                  </div>
+                  <p className="mt-2.5 text-xs leading-relaxed text-gray-400">
+                    Plan documents also improve Candid&apos;s coverage of that plan for everyone. Your name, ID
+                    numbers, and personal details are never shared.
+                  </p>
+                  <div className="mt-4 flex flex-wrap items-center gap-4">
+                    <button
+                      onClick={() => setMissMode(false)}
+                      className="text-sm font-medium text-blue-600 underline decoration-blue-200 underline-offset-2"
+                    >
+                      Back to search
+                    </button>
+                    <button
+                      onClick={() => {
+                        setIdentityDone("skipped");
+                        setPhase("results");
+                      }}
+                      className="text-sm text-gray-400 underline decoration-gray-300 underline-offset-2 transition hover:text-gray-600"
+                    >
+                      Skip — check the bill alone
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {phase === "results" && claimId && (
+            <div className="animate-fade-in">
+              {identityDone === "skipped" && (
+                <div className="mb-3 inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-500 ring-1 ring-inset ring-gray-200">
+                  Checked without your plan
+                </div>
+              )}
+              {identityDone === "uploaded" && (
+                <div className="mb-3 rounded-xl bg-blue-50 px-3.5 py-2.5 text-xs leading-relaxed text-blue-700 ring-1 ring-inset ring-blue-100">
+                  Your plan document is being read — plan-based findings appear here as soon as it finishes.
+                </div>
+              )}
+              <ClaimDetail claimId={claimId} onBack={() => setPhase("identity")} backLabel="Change your plan" />
+
+              <div className="mt-7 rounded-2xl border border-blue-100 bg-gradient-to-b from-blue-50 to-white p-6 text-center sm:p-7">
+                <h3 className="text-[17px] font-bold tracking-tight text-gray-900">Keep these results — and act on them</h3>
+                <p className="mx-auto mt-1.5 max-w-md text-sm leading-relaxed text-gray-500">
+                  A free account saves this check, lets you add the EOB or your plan documents later, and turns
+                  findings into a dispute letter you approve word by word.
+                </p>
+                {!upgradeOpen ? (
+                  <button
+                    onClick={() => {
+                      setUpgradeEmail(email);
+                      setUpgradeOpen(true);
+                    }}
+                    className={`${BTN_PRIMARY} mt-4`}
+                  >
+                    Create your free account
+                  </button>
+                ) : (
+                  <div className="mx-auto mt-4 max-w-sm text-left">
+                    <label className={LABEL}>Email</label>
+                    <input
+                      type="email"
+                      value={upgradeEmail}
+                      onChange={(e) => setUpgradeEmail(e.target.value)}
+                      className={`${INPUT} mt-1`}
+                    />
+                    <label className={`${LABEL} mt-3`}>Password</label>
+                    <input
+                      type="password"
+                      value={upgradePassword}
+                      onChange={(e) => setUpgradePassword(e.target.value)}
+                      className={`${INPUT} mt-1`}
+                    />
+                    {upgradeError && <p className="mt-2 text-xs leading-relaxed text-red-600">{upgradeError}</p>}
+                    <button onClick={() => void handleUpgrade()} disabled={busy} className={`${BTN_PRIMARY} mt-4 w-full`}>
+                      {busy ? "Creating…" : "Create your free account"}
+                    </button>
+                  </div>
+                )}
+                <p className="mx-auto mt-3 max-w-md text-xs leading-relaxed text-gray-400">
+                  A letter demands money in your name. That takes an account — you review every word before anything
+                  is sent, and the response gets tracked.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {phase === "error" && (
+            <div className={`${CARD} animate-fade-in p-8 text-center`}>
+              <div className="mx-auto grid h-11 w-11 place-items-center rounded-full bg-red-50 text-lg font-bold text-red-500 ring-1 ring-inset ring-red-200">
+                !
+              </div>
+              <h2 className="mt-4 text-lg font-bold tracking-tight text-gray-900">That didn&apos;t work.</h2>
+              <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-gray-500">{errorMsg}</p>
+              <button
+                onClick={() => {
+                  setPhase("entry");
+                  setErrorMsg(null);
+                  setParseDoc(null);
+                  setDocumentId(null);
+                }}
+                className={`${BTN_GHOST} mt-5`}
+              >
+                Try another file
+              </button>
+            </div>
+          )}
+        </div>
       </div>
     </main>
   );
