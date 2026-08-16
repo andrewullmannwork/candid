@@ -171,6 +171,7 @@ export default function CheckPage() {
   const [query, setQuery] = useState("");
   const [stateFilter, setStateFilter] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
+  const [totalMatches, setTotalMatches] = useState(0);
   const [searching, setSearching] = useState(false);
   const [yearRelaxed, setYearRelaxed] = useState(false);
   const [identityDone, setIdentityDone] = useState<"picked" | "uploaded" | "skipped" | null>(null);
@@ -241,11 +242,8 @@ export default function CheckPage() {
 
   // ── upload one file through the existing pipeline ──
   const uploadFile = useCallback(
-    async (file: File, docType: "itemized_bill" | "sbc") => {
-      const authed = user ?? null;
-      const fbUser = authed?.firebaseUser;
-      if (!fbUser) throw new Error("no session");
-      const idToken = await fbUser.getIdToken();
+    async (file: File, docType: "itemized_bill" | "sbc", asUser: { firebaseUser: { getIdToken: () => Promise<string> } }) => {
+      const idToken = await asUser.firebaseUser.getIdToken();
       const token = await takeToken();
       const formData = new FormData();
       formData.append("file", file);
@@ -278,7 +276,7 @@ export default function CheckPage() {
         classification?: { pageCount?: number };
       };
     },
-    [user, takeToken],
+    [takeToken],
   );
 
   // ── the bill entry: staged file + consent → anonymous account → upload → parse ──
@@ -288,16 +286,19 @@ export default function CheckPage() {
       setErrorMsg(null);
       setFileName(file.name);
       try {
-        if (!user) {
+        let session = user;
+        if (!session) {
           const consents = (["tos", "privacy_policy", "health_data_upload"] as const).map((t) => {
             const doc = getConsentDocument(t);
             return { type: t, version: doc.version, hash: doc.hash };
           });
           const token = await takeToken();
-          await startAnonymousCheck(email.trim(), consents, token);
+          // Thread the RETURNED account — setUser hasn't re-rendered this
+          // closure yet (the round-6 "no session" stale-closure bug).
+          session = await startAnonymousCheck(email.trim(), consents, token);
           turnstileRef.current?.reset();
         }
-        const up = await uploadFile(file, "itemized_bill");
+        const up = await uploadFile(file, "itemized_bill", session);
         if (!up.documentId) throw new Error("Upload failed. Please try again.");
         setDocumentId(up.documentId);
         if (up.status === "error") {
@@ -433,16 +434,17 @@ export default function CheckPage() {
               ...(withYear && claimDosYear ? { planYear: claimDosYear } : {}),
             }),
           });
-          const body = (await res.json().catch(() => ({}))) as { plans?: SearchResult[] };
-          return body.plans ?? [];
+          const body = (await res.json().catch(() => ({}))) as { plans?: SearchResult[]; total?: number };
+          return { plans: body.plans ?? [], total: body.total ?? (body.plans ?? []).length };
         };
-        let plans = await doSearch(true);
+        let out = await doSearch(true);
         let relaxed = false;
-        if (plans.length === 0 && claimDosYear) {
-          plans = await doSearch(false);
-          relaxed = plans.length > 0;
+        if (out.plans.length === 0 && claimDosYear) {
+          out = await doSearch(false);
+          relaxed = out.plans.length > 0;
         }
-        setResults(plans);
+        setResults(out.plans);
+        setTotalMatches(out.total);
         setYearRelaxed(relaxed);
       } finally {
         setSearching(false);
@@ -519,7 +521,8 @@ export default function CheckPage() {
       setBusy(true);
       setErrorMsg(null);
       try {
-        const up = await uploadFile(file, "sbc");
+        if (!user) throw new Error("Session expired — reload the page and try again.");
+        const up = await uploadFile(file, "sbc", user);
         if (!up.documentId) throw new Error("Upload failed. Please try again.");
         if (up.status === "error") {
           throw new Error(up.error || "We couldn't read that document. Please try again.");
@@ -926,7 +929,9 @@ export default function CheckPage() {
                     <div className="mt-3 max-h-72 divide-y divide-gray-100 overflow-y-auto rounded-xl ring-1 ring-gray-200">
                       {results.length > 25 && (
                         <div className="sticky top-0 z-10 border-b border-gray-100 bg-gray-50/95 px-4 py-1.5 text-[11px] font-medium text-gray-500">
-                          Showing all {results.length} matches — keep typing to narrow.
+                          {totalMatches > results.length
+                            ? `Showing ${results.length} of ${totalMatches} matches — keep typing to narrow.`
+                            : `Showing all ${results.length} matches — keep typing to narrow.`}
                         </div>
                       )}
                       {searching && <div className="px-4 py-3.5 text-sm text-gray-400">Searching…</div>}

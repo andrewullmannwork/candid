@@ -132,6 +132,7 @@ export function OnboardingDocStep({
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<PlanSearchResult[]>([]);
+  const [searchTotal, setSearchTotal] = useState(0);
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchSelecting, setSearchSelecting] = useState(false);
   const [searchError, setSearchError] = useState("");
@@ -153,9 +154,10 @@ export function OnboardingDocStep({
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
           body: JSON.stringify({ query: q.trim(), canonicalOnly: true }),
         });
-        const data = (await res.json().catch(() => ({}))) as { plans?: PlanSearchResult[] };
+        const data = (await res.json().catch(() => ({}))) as { plans?: PlanSearchResult[]; total?: number };
         if (searchReqRef.current === reqId) {
           setSearchResults((data.plans ?? []).filter((p) => p.canonicalPlanId));
+          setSearchTotal(typeof data.total === "number" ? data.total : (data.plans ?? []).length);
         }
       } catch {
         if (searchReqRef.current === reqId) setSearchResults([]);
@@ -1123,7 +1125,9 @@ export function OnboardingDocStep({
                     <div className="mt-3 max-h-[320px] divide-y divide-gray-100 overflow-y-auto rounded-xl border border-gray-200">
                       {searchResults.length > 25 && (
                         <div className="sticky top-0 z-10 border-b border-gray-100 bg-gray-50/95 px-4 py-1.5 text-[11px] font-medium text-gray-500">
-                          Showing all {searchResults.length} matches — keep typing to narrow.
+                          {searchTotal > searchResults.length
+                            ? `Showing ${searchResults.length} of ${searchTotal} matches — keep typing to narrow.`
+                            : `Showing all ${searchResults.length} matches — keep typing to narrow.`}
                         </div>
                       )}
                       {searchResults.map((p) => (

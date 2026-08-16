@@ -177,6 +177,7 @@ function SearchPicker({
   const [query, setQuery] = useState("");
   const [stateFilter, setStateFilter] = useState("");
   const [results, setResults] = useState<PlanSearchResult[]>([]);
+  const [searchTotal, setSearchTotal] = useState(0);
   const [searching, setSearching] = useState(false);
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -201,8 +202,9 @@ function SearchPicker({
           body: JSON.stringify({ query, ...(stateFilter ? { state: stateFilter } : {}) }),
         });
         if (res.ok) {
-          const { plans } = await res.json();
+          const { plans, total } = await res.json();
           setResults(((plans as PlanSearchResult[]) || []).filter((p) => !excludeIds.includes(p.id)));
+          setSearchTotal(typeof total === "number" ? total : ((plans as PlanSearchResult[]) || []).length);
         }
       } catch {
         /* ignore */
@@ -256,7 +258,9 @@ function SearchPicker({
         <div className="rounded-xl bg-white ring-1 ring-slate-200 max-h-72 overflow-y-auto">
           {results.length > 25 && (
             <div className="sticky top-0 z-10 border-b border-slate-100 bg-slate-50/95 px-4 py-1.5 text-[11px] font-medium text-slate-500">
-              Showing all {results.length} matches — keep typing to narrow.
+              {searchTotal > results.length
+                ? `Showing ${results.length} of ${searchTotal} matches — keep typing to narrow.`
+                : `Showing all ${results.length} matches — keep typing to narrow.`}
             </div>
           )}
           {results.map((plan) => (

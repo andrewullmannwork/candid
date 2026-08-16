@@ -1492,6 +1492,7 @@ function PlanDetailsStep({
 
   // Plan name autocomplete
   const [planSuggestions, setPlanSuggestions] = useState<PlanSearchResult[]>([]);
+  const [planSearchTotal, setPlanSearchTotal] = useState(0);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [searchingPlans, setSearchingPlans] = useState(false);
   const searchTimeout = useRef<NodeJS.Timeout | null>(null);
@@ -1522,8 +1523,9 @@ function PlanDetailsStep({
           body: JSON.stringify({ query: value, insurer, state }),
         });
         if (res.ok) {
-          const { plans } = await res.json();
+          const { plans, total } = await res.json();
           setPlanSuggestions(plans || []);
+          setPlanSearchTotal(typeof total === "number" ? total : (plans || []).length);
           setShowSuggestions((plans || []).length > 0);
         }
       } catch {
@@ -1636,7 +1638,9 @@ function PlanDetailsStep({
             <div className="absolute z-20 left-0 right-0 top-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg max-h-60 overflow-y-auto">
               {planSuggestions.length > 25 && (
                 <div className="sticky top-0 z-10 border-b border-gray-100 bg-gray-50/95 px-4 py-1.5 text-[11px] font-medium text-gray-500">
-                  Showing all {planSuggestions.length} matches — keep typing to narrow.
+                  {planSearchTotal > planSuggestions.length
+                    ? `Showing ${planSuggestions.length} of ${planSearchTotal} matches — keep typing to narrow.`
+                    : `Showing all ${planSuggestions.length} matches — keep typing to narrow.`}
                 </div>
               )}
               {planSuggestions.map((plan) => (
