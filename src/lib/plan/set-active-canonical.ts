@@ -21,6 +21,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { userScoped } from "@/lib/security/user-scoped";
+import { adoptUnlinkedClaims } from "@/lib/claims/claim-plan-link";
 import { decideCardPreservation } from "@/lib/plan/insurer-match";
 import {
   canonicalLinkFields,
@@ -200,6 +201,9 @@ export async function setActiveCanonicalPlan(
     console.error("[set-active-canonical] profile repoint failed:", profileErr.message);
     return { ok: false, status: 500, error: "Could not set plan" };
   }
+
+  // S315 — a plan just became active: unlinked claims adopt it (fail-soft).
+  await adoptUnlinkedClaims(supabase, userId, activePlanId);
 
   return { ok: true, insurancePlanId: activePlanId, cardCleared };
 }

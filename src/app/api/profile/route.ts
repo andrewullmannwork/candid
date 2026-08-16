@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { userScoped, selectOwnedChildren, upsertOwnedChildren } from "@/lib/security/user-scoped";
+import { adoptUnlinkedClaims } from "@/lib/claims/claim-plan-link";
 import { loadPlanCoverageMeta } from "@/lib/audit/coverage-loader";
 import { normalizeCoinsuranceForStorage } from "@/lib/billing/coinsurance";
 import { matchInsurerCatalog } from "@/lib/plan/insurer-match";
@@ -617,6 +618,8 @@ export async function POST(req: NextRequest) {
             .table("profiles")
             .update({ active_insurance_plan_id: orphanedActive.id });
           console.log(`[profile] CF-25 orphan-discovery: repointed profile.active_insurance_plan_id → ${orphanedActive.id} for user ${user.id}`);
+          // S315 — a plan just became active: unlinked claims adopt it.
+          await adoptUnlinkedClaims(supabase, user.id, orphanedActive.id);
         }
       }
 
@@ -775,6 +778,9 @@ export async function POST(req: NextRequest) {
 
             // Track the new plan ID for canonical matching below
             if (existingProfile) existingProfile.active_insurance_plan_id = newPlan.id;
+
+            // S315 — a plan just became active: unlinked claims adopt it.
+            await adoptUnlinkedClaims(supabase, user.id, newPlan.id);
 
             // Create plan_covered_services rows for copays
             await syncCopayServices(supabase, user.id, newPlan.id, { copay_primary, copay_specialist, copay_er, copay_urgent_care, copay_rx }, isCardScan);

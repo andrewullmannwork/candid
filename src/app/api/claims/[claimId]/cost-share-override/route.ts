@@ -23,6 +23,7 @@ import { parseCostShareOverride } from "@/lib/claims/cost-share-override";
 import { PLAN_COVERED_ONCONFLICT } from "@/lib/plan/coverage-targeting";
 import { buildDirectEntryProvenance } from "@/lib/parser/provenance-builders";
 import { SOURCE_DEFAULT_CONFIDENCE } from "@/lib/parser/field-categories";
+import { linkClaimToPlan } from "@/lib/claims/claim-plan-link";
 
 async function getAuthUser(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -271,27 +272,12 @@ export async function POST(
   // its coverage back through the audit. userScoped makes the lookup return
   // nothing for a foreign id, so it fails closed with a 404.
   if (ov.field === "claim_plan") {
-    const { data: target } = await userScoped(supabase, user.id)
-      .table("insurance_plans")
-      .select("id")
-      .eq("id", ov.insurancePlanId)
-      .maybeSingle();
-    if (!target) {
+    // S315 — the write is the shared derivation now (claim-plan-link.ts);
+    // the S313 Rule #10 emit and the S291 target-ownership check live there.
+    const ok = await linkClaimToPlan(supabase, user.id, claimId, ov.insurancePlanId);
+    if (!ok) {
       return NextResponse.json({ error: "Plan not found" }, { status: 404 });
     }
-    const { error } = await userScoped(supabase, user.id)
-      .table("claims")
-      .update({ insurance_plan_id: ov.insurancePlanId })
-      .eq("id", claimId);
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-    // S313 — the Rule #10 emit this branch was missing. `plan_repinned` already
-    // existed as a kind and was emitted ONLY from the disputes repin route, so a
-    // re-pin made from the plan-change ask (the path the accumulator modal uses)
-    // wrote no history at all — while the sibling branch in this same file emits
-    // and quotes Rule #10. Fail-soft, references only: which plan, never money.
-    await emitCaseEvents(supabase, user.id, [
-      { claimId, kind: "plan_repinned", payload: { toPlanId: ov.insurancePlanId } },
-    ]);
     return NextResponse.json({ ok: true, field: ov.field, applied: true });
   }
 

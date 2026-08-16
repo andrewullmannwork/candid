@@ -63,6 +63,8 @@ export const DIRECT_USER_OWNED_TABLES = [
   // All writes go through src/lib/case/case-events.ts (fail-soft emitter);
   // registered so those inserts ride userScoped's user_id stamping.
   "claim_case_events",
+  // S315 — parse-log rows carry user_id; the A-6 reclaim move repoints them.
+  "document_extraction_log",
 ] as const;
 
 export type DirectUserOwnedTable = (typeof DIRECT_USER_OWNED_TABLES)[number];
