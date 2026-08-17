@@ -28,7 +28,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { EmailAuthProvider, linkWithCredential } from "firebase/auth";
 import { useAuth } from "@/lib/auth/auth-context";
 import { useFeatureFlag } from "@/lib/config/use-feature-flag";
 import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
@@ -37,6 +36,7 @@ import { useDropzone } from "react-dropzone";
 import { DropIdle, DropHover, DropUploading } from "@/components/upload/DropZoneStates";
 import { UnifiedParseScreen, type ParseDoc } from "@/components/parsing/UnifiedParseScreen";
 import { ClaimDetail } from "@/components/claims/ClaimDetail";
+import { PlanSearchCountLine } from "@/components/shared/PlanSearchCountLine";
 import { getConsentDocument } from "@/lib/consent/consent-documents";
 import { DisputeDraftOverlayProvider } from "@/lib/loading/dispute-draft-overlay";
 import { UploadFlowProvider } from "@/lib/upload/upload-flow-context";
@@ -75,6 +75,116 @@ const BADGE_LABELS: Record<SearchResult["badgeLevel"], string> = {
   community: "Community",
   estimated: "Estimated",
 };
+
+// S316 — the anonymous letter gate: renders inline under "Draft my dispute
+// letter" (via ClaimDetail's anonymousDraftGate prop) instead of letting the
+// click reach /api/disputes/generate's 403. The explainer sentence relocated
+// here FROM the bottom card's footnote — the letter-specific justification
+// lives at the letter button, the card keeps the save/act framing (one
+// sentence, one home). "Email me my results" tries the stored contact first;
+// the server answers email_required when none is on file and the input mode
+// collects one.
+function LetterAccountGate({
+  onCreateAccount,
+  sendResults,
+}: {
+  /** S316 round 3 — navigates to the ESTABLISHED signup flow with the typed
+   *  contact prefilled (/auth/signup?email=…); the anonymous session upgrades
+   *  INSIDE that flow via credential-linking, so the check carries over. */
+  onCreateAccount: () => void;
+  sendResults: (
+    email?: string,
+  ) => Promise<{ sentTo: string } | { needEmail: true } | { error: string }>;
+}) {
+  const [mode, setMode] = useState<"idle" | "input" | "sending" | "sent">("idle");
+  const [inputEmail, setInputEmail] = useState("");
+  const [sentTo, setSentTo] = useState<string | null>(null);
+  const [errMsg, setErrMsg] = useState<string | null>(null);
+
+  const doSend = async (email?: string) => {
+    setMode("sending");
+    setErrMsg(null);
+    const res = await sendResults(email);
+    if ("sentTo" in res) {
+      setSentTo(res.sentTo);
+      setMode("sent");
+    } else if ("needEmail" in res) {
+      setMode("input");
+    } else {
+      setErrMsg(res.error);
+      setMode("idle");
+    }
+  };
+
+  return (
+    <div className="rounded-xl border border-blue-200 bg-blue-50 p-5 text-left">
+      <p className="text-[15px] font-semibold text-gray-900">
+        A dispute letter is a demand for reimbursement or debt forgiveness
+      </p>
+      <p className="mt-1.5 text-[13.5px] leading-relaxed text-gray-500">
+        In order to accurately draft this letter, you&apos;ll need to create a free account. We then organize all
+        your data and give you the document to review and send. Everything from this check carries over
+        automatically.
+      </p>
+      {/* S316 (#5) — the sent confirmation lives INSIDE the card, full width;
+          the card and its join ask stay put, only the email action retires. */}
+      {mode === "sent" && (
+        <div className="mt-3 flex items-center gap-2.5 rounded-[10px] border border-emerald-200 bg-emerald-50 px-3.5 py-2.5">
+          <svg style={{ width: 16, height: 16 }} className="flex-shrink-0 text-emerald-600" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24" aria-hidden="true">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+          </svg>
+          <p className="text-[13px] leading-relaxed text-emerald-800">
+            Sent to {sentTo}. Your results stay right here in this browser too.
+          </p>
+        </div>
+      )}
+      {mode === "input" ? (
+        <div className="mt-3.5 flex items-center gap-2.5">
+          <input
+            type="email"
+            value={inputEmail}
+            onChange={(e) => setInputEmail(e.target.value)}
+            placeholder="you@example.com"
+            className={`${INPUT} flex-1`}
+          />
+          <button
+            onClick={() => void doSend(inputEmail.trim())}
+            disabled={!EMAIL_RE.test(inputEmail.trim())}
+            className="rounded-xl bg-blue-600 px-[18px] py-2.5 text-[13.5px] font-semibold text-white transition hover:bg-blue-700 disabled:opacity-50"
+          >
+            Send
+          </button>
+        </div>
+      ) : (
+        <div className="mt-3.5 flex flex-wrap items-center gap-2.5">
+          <button
+            onClick={onCreateAccount}
+            className="rounded-xl bg-blue-600 px-[18px] py-2.5 text-[13.5px] font-semibold text-white transition hover:bg-blue-700"
+          >
+            Create your free account
+          </button>
+          {mode === "sent" ? (
+            <button
+              disabled
+              className="rounded-xl border border-gray-200 bg-gray-100 px-[18px] py-2.5 text-[13.5px] font-semibold text-gray-400"
+            >
+              Sent ✓
+            </button>
+          ) : (
+            <button
+              onClick={() => void doSend()}
+              disabled={mode === "sending"}
+              className="rounded-xl border border-gray-300 bg-white px-[18px] py-2.5 text-[13.5px] font-semibold text-gray-700 transition hover:bg-gray-50 disabled:opacity-50"
+            >
+              {mode === "sending" ? "Sending…" : "Email me my results"}
+            </button>
+          )}
+        </div>
+      )}
+      {errMsg && <p className="mt-2 text-xs leading-relaxed text-red-600">{errMsg}</p>}
+    </div>
+  );
+}
 
 function StagedFileChip({ file, onRemove }: { file: File; onRemove: () => void }) {
   return (
@@ -180,10 +290,13 @@ export default function CheckPage() {
   const [missMode, setMissMode] = useState(false);
 
   // upgrade panel (A-4)
-  const [upgradeOpen, setUpgradeOpen] = useState(false);
-  const [upgradePassword, setUpgradePassword] = useState("");
-  const [upgradeEmail, setUpgradeEmail] = useState("");
-  const [upgradeError, setUpgradeError] = useState<string | null>(null);
+  // S316 — the screen's own recovery summary (ClaimDetail reports what it
+  // renders); the results email sends THIS so it can never contradict the page.
+  const [resultsSummary, setResultsSummary] = useState<{
+    potentialRecovery: number;
+    shouldOwe: number;
+    lines: { label: string; amount: number | null }[];
+  } | null>(null);
 
   // ── Turnstile token plumbing: tokens are single-use (sync consumes one,
   // upload consumes another) — queue waiters across resets.
@@ -549,41 +662,48 @@ export default function CheckPage() {
   );
 
   // ── A-4: account upgrade (linkWithCredential — uid unchanged, data follows) ──
-  const handleUpgrade = useCallback(async () => {
-    if (!user) return;
-    setUpgradeError(null);
-    const em = (upgradeEmail || user.email).trim();
-    if (!EMAIL_RE.test(em)) {
-      setUpgradeError("Enter a valid email address.");
-      return;
-    }
-    if (upgradePassword.length < 8) {
-      setUpgradeError("Password needs at least 8 characters.");
-      return;
-    }
-    setBusy(true);
-    try {
-      const cred = EmailAuthProvider.credential(em, upgradePassword);
-      await linkWithCredential(user.firebaseUser, cred);
-      await user.firebaseUser.getIdToken(true);
-      // Passive resync flips is_anonymous + clears contact_email server-side;
-      // the auth listener picks up the new state. Route into the full app.
-      router.push("/claim");
-    } catch (err) {
-      const code = (err as { code?: string })?.code ?? "";
-      if (code === "auth/email-already-in-use" || code === "auth/credential-already-in-use") {
-        setUpgradeError(
-          "That email already has a Candid account. Sign in to it — you\u2019ll be offered this check there.",
-        );
-      } else if (code === "auth/weak-password") {
-        setUpgradeError("That password is too weak — try a longer one.");
-      } else {
-        setUpgradeError("Couldn't create the account. Please try again.");
+  // S316 — POST the results email. Sends to the stored contact; the server
+  // answers email_required when none is on file (the gate then collects one).
+  const sendResultsEmail = useCallback(
+    async (
+      overrideEmail?: string,
+    ): Promise<{ sentTo: string } | { needEmail: true } | { error: string }> => {
+      if (!user || !claimId) return { error: "Something went wrong. Reload and try again." };
+      try {
+        const idToken = await user.firebaseUser.getIdToken();
+        const res = await fetch("/api/check/email-results", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+          body: JSON.stringify({
+            claimId,
+            ...(overrideEmail ? { email: overrideEmail } : {}),
+            ...(resultsSummary ? { summary: resultsSummary } : {}),
+          }),
+        });
+        const body = (await res.json().catch(() => ({}))) as { sentTo?: string; error?: string };
+        if (res.ok && body.sentTo) return { sentTo: body.sentTo };
+        if (res.status === 400 && body.error === "email_required") return { needEmail: true };
+        return { error: body.error || "Couldn't send the email right now." };
+      } catch {
+        return { error: "Couldn't send the email right now." };
       }
-    } finally {
-      setBusy(false);
-    }
-  }, [user, upgradeEmail, upgradePassword, router]);
+    },
+    [user, claimId, resultsSummary],
+  );
+
+  // S316 — true from upgrade-submit until the /onboarding push lands (or the
+  // attempt fails). Read by the full-account guard above so the mid-upgrade
+  // context flip can't bounce the user to /upload first.
+  // S316 round 3 (Andrew) — account creation is THE ESTABLISHED SIGNUP FLOW,
+  // not a /check-local form: navigate with the typed results contact
+  // prefilled. The anonymous session upgrades INSIDE that flow (signUpStart
+  // links the credential to the same Firebase user), so the bill, plan, and
+  // findings carry over with zero data movement — and phone OTP, Turnstile,
+  // funnel telemetry, and the verification/welcome emails all apply to the
+  // upgrade exactly as to any signup.
+  const goToSignup = useCallback(() => {
+    router.push(email ? `/auth/signup?email=${encodeURIComponent(email)}` : "/auth/signup");
+  }, [router, email]);
 
   // ── drag-and-drop (mirrors /upload: react-dropzone + DropHover; without
   // this a dropped file navigates the browser to the file itself — A2-L2's
@@ -656,7 +776,11 @@ export default function CheckPage() {
     <DisputeDraftOverlayProvider>
     <main className="min-h-screen bg-gray-50">
       <div className={phase === "entry" ? "gradient-mesh" : undefined}>
-        <div className="mx-auto max-w-2xl px-4 pb-16 pt-7">
+        {/* S316 — the results phase widens to the authed /claim habitat
+            (max-w-4xl): ClaimDetail's line-items grid is sized for that inner
+            width, and the narrower entry column crushed its Service column
+            into overlapping text (the S315 transplant lesson, again). */}
+        <div className={`mx-auto ${phase === "results" ? "max-w-4xl" : "max-w-2xl"} px-4 pb-16 pt-7`}>
           {/* header row */}
           <div className="mb-7 flex flex-wrap items-center justify-between gap-3">
             <Link href="/" className="text-[19px] font-bold tracking-tight text-blue-600">
@@ -891,13 +1015,7 @@ export default function CheckPage() {
                   )}
                   {(searching || results.length > 0 || query.trim().length >= 2) && (
                     <div className="mt-3 max-h-72 divide-y divide-gray-100 overflow-y-auto rounded-xl ring-1 ring-gray-200">
-                      {results.length > 25 && (
-                        <div className="sticky top-0 z-10 border-b border-gray-100 bg-gray-50/95 px-4 py-1.5 text-[11px] font-medium text-gray-500">
-                          {totalMatches > results.length
-                            ? `Showing ${results.length} of ${totalMatches} matches — keep typing to narrow.`
-                            : `Showing all ${results.length} matches — keep typing to narrow.`}
-                        </div>
-                      )}
+                      <PlanSearchCountLine shown={results.length} total={totalMatches} />
                       {searching && <div className="px-4 py-3.5 text-sm text-gray-400">Searching…</div>}
                       {!searching && query.trim().length >= 2 && results.length === 0 && (
                         <div className="px-4 py-3.5 text-sm text-gray-500">
@@ -1012,50 +1130,27 @@ export default function CheckPage() {
                   Your plan is linked — the check below uses its terms.
                 </div>
               )}
-              <ClaimDetail claimId={claimId} onBack={() => setPhase("identity")} backLabel="Change your plan" />
+              <ClaimDetail
+                claimId={claimId}
+                onBack={() => setPhase("identity")}
+                backLabel="Change your plan"
+                onResultsSummary={setResultsSummary}
+                anonymousDraftGate={
+                  user?.firebaseUser?.isAnonymous ? (
+                    <LetterAccountGate onCreateAccount={goToSignup} sendResults={sendResultsEmail} />
+                  ) : undefined
+                }
+              />
 
               <div className="mt-7 rounded-2xl border border-blue-100 bg-gradient-to-b from-blue-50 to-white p-6 text-center sm:p-7">
-                <h3 className="text-[17px] font-bold tracking-tight text-gray-900">Keep these results — and act on them</h3>
+                <h3 className="text-[17px] font-bold tracking-tight text-gray-900">Keep these results and act on them</h3>
                 <p className="mx-auto mt-1.5 max-w-md text-sm leading-relaxed text-gray-500">
-                  A free account saves this check, lets you add the EOB or your plan documents later, and turns
-                  findings into a dispute letter you approve word by word.
+                  A free account saves this check, lets you add future bills, and turns every finding into clear
+                  next steps.
                 </p>
-                {!upgradeOpen ? (
-                  <button
-                    onClick={() => {
-                      setUpgradeEmail(email);
-                      setUpgradeOpen(true);
-                    }}
-                    className={`${BTN_PRIMARY} mt-4`}
-                  >
-                    Create your free account
-                  </button>
-                ) : (
-                  <div className="mx-auto mt-4 max-w-sm text-left">
-                    <label className={LABEL}>Email</label>
-                    <input
-                      type="email"
-                      value={upgradeEmail}
-                      onChange={(e) => setUpgradeEmail(e.target.value)}
-                      className={`${INPUT} mt-1`}
-                    />
-                    <label className={`${LABEL} mt-3`}>Password</label>
-                    <input
-                      type="password"
-                      value={upgradePassword}
-                      onChange={(e) => setUpgradePassword(e.target.value)}
-                      className={`${INPUT} mt-1`}
-                    />
-                    {upgradeError && <p className="mt-2 text-xs leading-relaxed text-red-600">{upgradeError}</p>}
-                    <button onClick={() => void handleUpgrade()} disabled={busy} className={`${BTN_PRIMARY} mt-4 w-full`}>
-                      {busy ? "Creating…" : "Create your free account"}
-                    </button>
-                  </div>
-                )}
-                <p className="mx-auto mt-3 max-w-md text-xs leading-relaxed text-gray-400">
-                  A letter demands money in your name. That takes an account — you review every word before anything
-                  is sent, and the response gets tracked.
-                </p>
+                <button onClick={goToSignup} className={`${BTN_PRIMARY} mt-4`}>
+                  Create your free account
+                </button>
               </div>
             </div>
           )}

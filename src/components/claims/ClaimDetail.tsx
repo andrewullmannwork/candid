@@ -471,11 +471,34 @@ export function ClaimDetail({
   backLabel = "Back to claims",
   onClaimUpdated,
   billState: billStateProp,
+  anonymousDraftGate,
+  onResultsSummary,
 }: {
   claimId: string;
   onBack: () => void;
   focusLineItemId?: string | null;
   backLabel?: string;
+  /**
+   * S316 — the /check anonymous flow's letter gate. When present, every
+   * draft-letter CTA click renders this node inline under the button instead
+   * of calling /api/disputes/generate (which would 403 the anonymous session
+   * — the Tier-3 floor). The authed pages never pass it, so their path is
+   * byte-identical. Content and behavior live with the caller.
+   */
+  anonymousDraftGate?: React.ReactNode;
+  /**
+   * S316 — fires the SCREEN's own recovery summary (the live-engine numbers
+   * this component renders: claim recovery + per-line recoveries) up to the
+   * caller whenever the claim payload loads. The /check results email sends
+   * exactly this, so the email can never contradict the page (the persisted
+   * audit rows it first read are a DIFFERENT finding family than the
+   * cost-share engine — his live test caught the contradiction).
+   */
+  onResultsSummary?: (s: {
+    potentialRecovery: number;
+    shouldOwe: number;
+    lines: { label: string; amount: number | null }[];
+  }) => void;
   /**
    * S132 iter-6 Phase 1 — parent /claim page passes its claims-list refetch
    * here. ClaimDetail calls it after any mutation that affects bill state
@@ -1215,6 +1238,23 @@ export function ClaimDetail({
     },
     [claimId, getAuthToken, refetchClaim, onClaimUpdated],
   );
+
+  // S316 — surface the rendered recovery summary to the caller (the /check
+  // results email mails EXACTLY what this screen shows — one derivation).
+  useEffect(() => {
+    if (!data || !onResultsSummary) return;
+    const lines = (data.lineItems ?? [])
+      .filter((li) => (li.recovery?.potentialRecovery ?? 0) >= 1)
+      .map((li) => ({
+        label: (li.description as string) || "Charge",
+        amount: li.recovery?.potentialRecovery ?? null,
+      }));
+    onResultsSummary({
+      potentialRecovery: data.recovery?.potentialRecovery ?? 0,
+      shouldOwe: data.recovery?.shouldOwe ?? 0,
+      lines,
+    });
+  }, [data, onResultsSummary]);
 
   // Cost-Share v2 — multi-charge bills start with their line rows collapsed so
   // the bill isn't too busy (single-charge bills stay expanded). Runs once when
@@ -2292,7 +2332,8 @@ export function ClaimDetail({
             onGenerated={(result) => router.push(disputeUrlForResult(result))}
             existingDisputeId={data.disputes.find((d) => d.status !== "cancelled")?.id ?? null}
             muted={muted}
-          />
+          anonymousDraftGate={anonymousDraftGate}
+            />
         </div>
       </div>
     );
@@ -2314,7 +2355,8 @@ export function ClaimDetail({
       getAuthToken={getAuthToken}
       onGenerated={(result) => router.push(disputeUrlForResult(result))}
       existingDisputeId={null}
-    />
+    anonymousDraftGate={anonymousDraftGate}
+      />
   );
 
   return (
@@ -4710,7 +4752,8 @@ export function ClaimDetail({
               getAuthToken={getAuthToken}
               onGenerated={(result) => router.push(disputeUrlForResult(result))}
               existingDisputeId={data.disputes.find((d) => d.status !== "cancelled")?.id ?? null}
-            />
+            anonymousDraftGate={anonymousDraftGate}
+              />
             </div>
           )}
         </>
@@ -4731,7 +4774,8 @@ export function ClaimDetail({
           getAuthToken={getAuthToken}
           onGenerated={(result) => router.push(disputeUrlForResult(result))}
           existingDisputeId={data.disputes.find((d) => d.status !== "cancelled")?.id ?? null}
-        />
+        anonymousDraftGate={anonymousDraftGate}
+          />
         </div>
       ) : null)}
 
@@ -5733,6 +5777,7 @@ function BulkDisputeButton({
   existingDisputeId,
   size = "md",
   muted = false,
+  anonymousDraftGate,
 }: {
   claimId: string;
   claim: Record<string, unknown>;
@@ -5759,10 +5804,14 @@ function BulkDisputeButton({
   /** S297 4b — greyed inactive look until the phone question concludes.
    *  STILL CLICKABLE (contract §3.6: the pack never blocks letter generation). */
   muted?: boolean;
+  /** S316 — /check anonymous gate: click renders this node instead of
+   *  generating (the server would 403 the anonymous session anyway). */
+  anonymousDraftGate?: React.ReactNode;
 }) {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [gateOpen, setGateOpen] = useState(false);
   // S132 iter-2 — overlay is hoisted to (app)/layout.tsx so it survives the
   // /claim → /disputes navigation as a single persistent React mount (no
   // carousel/microcopy reset). BulkDisputeButton drives start()/stop();
@@ -5915,6 +5964,12 @@ function BulkDisputeButton({
   // with the claim's default pin — byte-identical to pre-flag behavior.
   async function handleClick() {
     if (loading || preparingRef.current) return;
+    // S316 — anonymous /check: the click opens the account gate inline and
+    // never reaches the generate route (whose Tier-3 floor would 403 it).
+    if (anonymousDraftGate) {
+      setGateOpen((open) => !open);
+      return;
+    }
     const claimMeta = claim;
     const defaultPinId = (claimMeta.insurance_plan_id as string) || undefined;
 
@@ -5981,6 +6036,11 @@ function BulkDisputeButton({
     ? "Drafting…"
     : "Draft my dispute letter";
 
+  // S316 (#4) — while the anonymous gate is open, the gate card is the active
+  // surface and the button visually yields to it: the S304 muted idiom
+  // (outlined blue, never grey-disabled — it stays clickable to collapse).
+  const superseded = !!anonymousDraftGate && gateOpen;
+
   // S132 iter-2: overlay moved to (app)/layout.tsx via DisputeDraftOverlayProvider
   // so it persists across /claim → /disputes navigation as a single React mount.
   // S132 iter-8: overlay loader is now cube (audit loader retired).
@@ -5995,8 +6055,10 @@ function BulkDisputeButton({
         disabled={loading}
         className={
           size === "xl"
-            ? "flex w-full items-center justify-center gap-2 rounded-[14px] bg-blue-600 px-6 py-3.5 text-[15px] font-semibold text-white shadow-[0_0_20px_hsla(217,91%,60%,0.15)] transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow-[0_0_24px_hsla(217,91%,60%,0.25)] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0"
-            : muted
+            ? superseded
+              ? "flex w-full items-center justify-center gap-2 rounded-[14px] border-[1.5px] border-blue-600 bg-white px-6 py-3.5 text-[15px] font-semibold text-blue-700 transition-all hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+              : "flex w-full items-center justify-center gap-2 rounded-[14px] bg-blue-600 px-6 py-3.5 text-[15px] font-semibold text-white shadow-[0_0_20px_hsla(217,91%,60%,0.15)] transition-all hover:-translate-y-px hover:bg-blue-700 hover:shadow-[0_0_24px_hsla(217,91%,60%,0.25)] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0"
+            : muted || superseded
               // S304 (Andrew) — the muted variant was grey fill on grey text,
               // which reads as DISABLED on a button that is fully clickable.
               // De-emphasis should come from weight, not from looking broken:
@@ -6014,6 +6076,9 @@ function BulkDisputeButton({
           </svg>
         )}
       </button>
+      {anonymousDraftGate && gateOpen && (
+        <div className="mt-2.5 w-full min-w-[300px]">{anonymousDraftGate}</div>
+      )}
       {error && (
         <p className="mt-2 text-xs text-red-700">{error}</p>
       )}
