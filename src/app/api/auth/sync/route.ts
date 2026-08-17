@@ -3,6 +3,7 @@ import { createHash } from "crypto";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { userScoped } from "@/lib/security/user-scoped";
+import { repointOrphanedActivePlan } from "@/lib/claims/claim-plan-link";
 import { getStripe } from "@/lib/stripe";
 import { sendVerificationEmail, sendWelcomeEmail } from "@/lib/email/onboarding-emails";
 import { isFeatureEnabled, readFeatureFlagConfig } from "@/lib/config/product-flags";
@@ -375,6 +376,38 @@ export async function POST(req: NextRequest) {
       console.log("[auth/sync] Step 2 OK — user:", userId, "(email_verified=" + emailVerified + ", phone_verified=" + effPhoneVerified + (testPhoneExempt ? ", test_phone_exempt" : "") + ")");
     }
 
+    // 2b. S316 D2 — anonymous users never run the onboarding wizard (the ONLY
+    // existing profiles-row creator, POST /api/profile), so nothing ever
+    // creates theirs. Downstream, the activation seams' profiles UPDATE
+    // silently no-ops (0 rows matched) and parse-time claim stamping
+    // (fallbackActivePlanId) reads a profile that was never there, so it's
+    // permanently null. Check-then-create (not a write on every sync) mirrors
+    // the Stripe-customer shape in Step 4 below — cheap on the steady-state
+    // resync path. When the pointer is NULL on a non-new account, the shared
+    // CF-25 repair (claim-plan-link.ts) reconciles it from insurance_plans
+    // .is_active and adopts orphaned claims — heals any account whose
+    // activation predated its profiles row (the pre-fix residue shape) or
+    // whose seam write failed. Brand-new users can't have plans; skip.
+    if (isAnonToken) {
+      const { data: existingProfile } = await userScoped(supabase, userId)
+        .table("profiles")
+        .select("active_insurance_plan_id")
+        .maybeSingle();
+      if (!existingProfile) {
+        const { error: profileError } = await userScoped(supabase, userId)
+          .table("profiles")
+          .upsert({ user_id: userId }, { onConflict: "user_id" });
+        if (profileError) {
+          console.error("[auth/sync] Failed to create profiles row for anonymous user:", profileError);
+        } else {
+          console.log("[auth/sync] Step 2b OK — profiles row created for anonymous user:", userId);
+        }
+      }
+      if (!isNewUser && (!existingProfile || !existingProfile.active_insurance_plan_id)) {
+        await repointOrphanedActivePlan(supabase, userId);
+      }
+    }
+
     // 3. Record consent events (server-side, service role bypasses RLS)
     if (consents && consents.length > 0) {
       console.log("[auth/sync] Step 3: Recording", consents.length, "consent events...");
@@ -458,9 +491,15 @@ export async function POST(req: NextRequest) {
     // after deletion already had a Candid account.
     const provider = decoded.firebase?.sign_in_provider;
     const alreadyVerified = decoded.email_verified === true || provider === "google.com";
+    // S316 — the anonymous→full upgrade (a /check session that linked real
+    // credentials through the ESTABLISHED signup flow): same uid, so it is
+    // neither isNewUser nor isAccountLink, but the human just created their
+    // account — verification (drives the reclaim + corroboration gates) and
+    // the welcome email both apply.
+    const isAnonUpgrade = !isAnonToken && existingByUid?.is_anonymous === true;
     // S315: never mail an anonymous account's synthetic address — the results
     // email (A-5) goes to contact_email at results time, not at creation.
-    if ((isNewUser || isAccountLink) && !isAnonToken) {
+    if ((isNewUser || isAccountLink || isAnonUpgrade) && !isAnonToken) {
       console.log(
         "[auth/sync] Step 5: Firing onboarding emails (isNewUser=" +
           isNewUser +
@@ -479,7 +518,7 @@ export async function POST(req: NextRequest) {
       // when the response returns.
       await Promise.allSettled([
         alreadyVerified ? Promise.resolve() : sendVerificationEmail(email, name),
-        isNewUser ? sendWelcomeEmail(email, name) : Promise.resolve(),
+        isNewUser || isAnonUpgrade ? sendWelcomeEmail(email, name) : Promise.resolve(),
       ]);
     }
 

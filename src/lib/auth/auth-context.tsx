@@ -16,6 +16,9 @@ import {
   signInWithPopup,
   signInAnonymously,
   GoogleAuthProvider,
+  EmailAuthProvider,
+  linkWithCredential,
+  linkWithPopup,
   signOut as firebaseSignOut,
   updateProfile,
   linkWithPhoneNumber,
@@ -106,6 +109,7 @@ interface AuthContextValue {
     turnstileToken: string,
   ) => Promise<CandidUser>;
 
+
   signOut: () => Promise<void>;
 }
 
@@ -167,10 +171,23 @@ async function syncWithBackend(
           { code: "auth/phone-verification-required" },
         );
       }
+      // S316 — the anon-creation guard ("must be started from the check
+      // page") answers 403 to a passive listener sync racing an in-flight
+      // startAnonymousCheck. That's the guard WORKING (the explicit call
+      // creates the row); it is not a bot-defense failure, and claiming so
+      // in the console sent a debugging session the wrong way. Not-an-error:
+      // log quietly, no user-facing throw message change for real turnstile.
+      if (msg.toLowerCase().includes("check page")) {
+        console.info("Auth sync: anonymous creation deferred to the explicit check-start (expected).");
+        throw Object.assign(new Error(msg), { code: "auth/anon-check-start-required" });
+      }
       console.error("Auth sync failed:", res.status, errBody);
-      throw Object.assign(new Error("Bot defense check failed. Please reload and try again."), {
-        code: "auth/turnstile-failed",
-      });
+      // Pass the server's own words through when it gave any; the bot-defense
+      // sentence is only asserted when the server didn't say otherwise.
+      throw Object.assign(
+        new Error(msg || "Bot defense check failed. Please reload and try again."),
+        { code: "auth/turnstile-failed" },
+      );
     }
     console.error("Auth sync failed:", res.status, errBody);
     throw new Error("Failed to sync auth");
@@ -280,6 +297,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signUpStart = useCallback(
     async (email: string, password: string, displayName?: string): Promise<FirebaseUser> => {
+      // S316 — anonymous-aware: when the browser holds a /check anonymous
+      // session, the credential LINKS to that same Firebase user instead of
+      // creating a new one — the bill/plan/claims stay owned with zero data
+      // movement, and the rest of the ESTABLISHED signup flow (phone OTP,
+      // Turnstile, funnel telemetry, verification email at sync) applies to
+      // the upgrade exactly as to a fresh signup. This replaced /check's
+      // hand-rolled inline upgrade form, which had quietly diverged from all
+      // four of those gates.
+      const current = getFirebaseAuth().currentUser;
+      if (current?.isAnonymous) {
+        const linked = await linkWithCredential(current, EmailAuthProvider.credential(email, password));
+        if (displayName) {
+          await updateProfile(linked.user, { displayName });
+        }
+        pendingSignupUidsRef.current.add(linked.user.uid);
+        return linked.user;
+      }
       const cred = await createUserWithEmailAndPassword(getFirebaseAuth(), email, password);
       if (displayName) {
         await updateProfile(cred.user, { displayName });
@@ -294,7 +328,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signUpStartGoogle = useCallback(async (): Promise<FirebaseUser> => {
     const provider = new GoogleAuthProvider();
-    const cred = await signInWithPopup(getFirebaseAuth(), provider);
+    // S316 — same anonymous-aware rule as signUpStart: an anonymous /check
+    // session LINKS the Google credential (same user, data stays) instead of
+    // signing into a separate account that would orphan the check.
+    const current = getFirebaseAuth().currentUser;
+    const cred = current?.isAnonymous
+      ? await linkWithPopup(current, provider)
+      : await signInWithPopup(getFirebaseAuth(), provider);
     // For Google signup we always defer sync until phone OTP confirms (or is
     // skipped if Google user already has a linked phone). Caller checks
     // cred.user.phoneNumber to decide whether to enter OTP step.

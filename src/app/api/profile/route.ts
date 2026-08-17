@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { userScoped, selectOwnedChildren, upsertOwnedChildren } from "@/lib/security/user-scoped";
-import { adoptUnlinkedClaims } from "@/lib/claims/claim-plan-link";
+import { adoptUnlinkedClaims, repointOrphanedActivePlan } from "@/lib/claims/claim-plan-link";
 import { loadPlanCoverageMeta } from "@/lib/audit/coverage-loader";
 import { normalizeCoinsuranceForStorage } from "@/lib/billing/coinsurance";
 import { matchInsurerCatalog } from "@/lib/plan/insurer-match";
@@ -539,6 +539,13 @@ export async function POST(req: NextRequest) {
       if (canonicalRow) {
         const setActive = await setActiveCanonicalPlan(supabase, user.id, matched_plan_id);
         canonicalSelected = setActive.ok;
+        // S316 — a canonical id must NEVER reach profiles.matched_plan_id
+        // (FK → plan_catalog; a canonical selection 23503'd the upsert AFTER
+        // activation succeeded — half-done presenting as total failure). The
+        // canonical link lives on the activated insurance_plans row; a
+        // canonical selection also clears any legacy catalog pointer, same
+        // as force_plan_switch does.
+        update.matched_plan_id = null;
         if (!setActive.ok) {
           console.error("[profile] canonical set-active failed:", setActive.error);
           return NextResponse.json(
@@ -590,37 +597,17 @@ export async function POST(req: NextRequest) {
 
       const isCardScan = plan_source === "insurance_card";
 
-      // CF-25 (Session 73, S71) — orphan-discovery for active insurance_plans rows
-      // when profile.active_insurance_plan_id is null. The smart-skip path on a
-      // fresh SBC upload calls profiles.UPDATE to set the pointer, but if no
-      // profile row existed at upload time the UPDATE silently no-ops (no rows
-      // matched). Result: an orphan is_active=true SBC-extracted row with
-      // cite-grade provenance, plus a profile that thinks the user has no plan.
-      // When the user then fills the onboarding form, the else-branch below
-      // INSERTs a manual plan with is_active=true → two active rows + the
-      // profile points at the manual one (no provenance, no badges).
-      //
-      // Fix: before deciding insert-vs-update, check for any orphan active row.
-      // If found, repoint the profile to it and treat it as the existing plan.
-      // The user's form values then flow through the update branch +
-      // isFormAfterDoc preserves SBC cost data while updating identity fields.
+      // CF-25 (Session 73, S71) — orphan-discovery for active insurance_plans
+      // rows when profile.active_insurance_plan_id is null (an activation
+      // seam's profiles UPDATE no-ops when the row doesn't exist yet). Without
+      // the repoint, the else-branch below INSERTs a manual plan → two active
+      // rows + the profile pointing at the provenance-free one. S316: the
+      // repair is shared (claim-plan-link.ts) — the anonymous sync seam calls
+      // the same derivation. The user's form values then flow through the
+      // update branch + isFormAfterDoc preserves SBC cost data.
       if (existingProfile && !existingProfile.active_insurance_plan_id) {
-        const { data: orphanedActive } = await userScoped(supabase, user.id)
-          .table("insurance_plans")
-          .select("id")
-          .eq("is_active", true)
-          .order("created_at", { ascending: false })
-          .limit(1)
-          .maybeSingle();
-        if (orphanedActive) {
-          existingProfile.active_insurance_plan_id = orphanedActive.id;
-          await userScoped(supabase, user.id)
-            .table("profiles")
-            .update({ active_insurance_plan_id: orphanedActive.id });
-          console.log(`[profile] CF-25 orphan-discovery: repointed profile.active_insurance_plan_id → ${orphanedActive.id} for user ${user.id}`);
-          // S315 — a plan just became active: unlinked claims adopt it.
-          await adoptUnlinkedClaims(supabase, user.id, orphanedActive.id);
-        }
+        const repointed = await repointOrphanedActivePlan(supabase, user.id);
+        if (repointed) existingProfile.active_insurance_plan_id = repointed;
       }
 
       // Fetch existing plan source for isFormAfterDoc detection

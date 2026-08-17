@@ -49,6 +49,59 @@ export async function linkClaimToPlan(
 }
 
 /**
+ * CF-25 orphan-discovery, shared (S316; extracted from POST /api/profile,
+ * where it had lived since Session 73 — reachable only from the onboarding
+ * wizard's plan-form submit, which anonymous users never touch).
+ *
+ * The class it repairs: profiles.active_insurance_plan_id is a CACHE of the
+ * truth in insurance_plans.is_active, written only at the moment of
+ * activation. If the profile row didn't exist at that moment (the /check
+ * anonymous flow's whole shape), the activation seam's UPDATE no-ops and the
+ * pointer stays NULL forever — parse-time claim stamping reads NULL, every
+ * later claim is born unlinked, and plan-scoped surfaces 409. This
+ * reconciles the cache from the truth and adopts the orphaned claims.
+ *
+ * No-ops (returns null) when the profile row is missing, the pointer is
+ * already set (a set pointer is NEVER clobbered), or no active plan exists.
+ * Fail-soft: a sync must never 500 because repair hiccupped.
+ */
+export async function repointOrphanedActivePlan(
+  supabase: SupabaseClient,
+  userId: string,
+): Promise<string | null> {
+  try {
+    const { data: profile } = await userScoped(supabase, userId)
+      .table("profiles")
+      .select("active_insurance_plan_id")
+      .maybeSingle();
+    if (!profile || profile.active_insurance_plan_id) return null;
+    const { data: orphanedActive } = await userScoped(supabase, userId)
+      .table("insurance_plans")
+      .select("id")
+      .eq("is_active", true)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (!orphanedActive) return null;
+    const { error: repointErr } = await userScoped(supabase, userId)
+      .table("profiles")
+      .update({ active_insurance_plan_id: orphanedActive.id });
+    if (repointErr) {
+      console.warn("[claim-plan-link] orphan repoint failed:", repointErr.message);
+      return null;
+    }
+    console.log(
+      `[claim-plan-link] CF-25 orphan-discovery: repointed profile.active_insurance_plan_id → ${orphanedActive.id} for user ${userId}`,
+    );
+    await adoptUnlinkedClaims(supabase, userId, orphanedActive.id as string);
+    return orphanedActive.id as string;
+  } catch (err) {
+    console.warn("[claim-plan-link] orphan repoint failed soft:", err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
+/**
  * Adopt every UNLINKED claim (insurance_plan_id IS NULL) the user owns onto
  * the plan that just became active. NULL-only by design; fail-soft (an
  * activation must never 500 because adoption hiccupped); returns the count
