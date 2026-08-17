@@ -9,6 +9,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase/server";
+import { adoptUnlinkedClaims } from "@/lib/claims/claim-plan-link";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { decideCardPreservation } from "@/lib/plan/insurer-match";
 
@@ -261,6 +262,10 @@ export async function POST(req: NextRequest) {
       .from("profiles")
       .update({ active_insurance_plan_id: doc.linked_insurance_plan_id })
       .eq("user_id", doc.user_id);
+    if (!repointErr) {
+      // S315 — a plan just became active: unlinked claims adopt it.
+      await adoptUnlinkedClaims(supabase, doc.user_id as string, doc.linked_insurance_plan_id as string);
+    }
     if (repointErr) {
       console.error(
         `[documents/status activate_plan] profile repoint FAILED for user ${doc.user_id} → plan ${doc.linked_insurance_plan_id}:`,

@@ -6,6 +6,10 @@ export interface AuthenticatedUser {
   id: string;
   firebase_uid: string;
   email: string;
+  /** S315 — TOKEN-derived (sign_in_provider), not a DB read: true for Firebase
+   *  anonymous-provider sessions (the no-account bill check). Routes that act
+   *  in the user's name (letter generation) refuse when true. */
+  isAnonymous: boolean;
 }
 
 /**
@@ -35,6 +39,7 @@ export async function requireAuthenticatedUser(
       id: user.id as string,
       firebase_uid: user.firebase_uid as string,
       email: user.email as string,
+      isAnonymous: decoded.firebase?.sign_in_provider === "anonymous",
     };
   } catch {
     return null;

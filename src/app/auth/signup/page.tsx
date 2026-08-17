@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import type { ConfirmationResult, User as FirebaseUser } from "firebase/auth";
 import { useAuth } from "@/lib/auth/auth-context";
+import { useFeatureFlag } from "@/lib/config/use-feature-flag";
 import { getConsentDocument } from "@/lib/consent/consent-documents";
 import { TurnstileWidget } from "@/components/security/TurnstileWidget";
 import { PhoneOTPStep } from "@/components/auth/PhoneOTPStep";
@@ -62,8 +63,19 @@ export default function SignUpPage() {
     recoverOrphanSignup,
   } = useAuth();
 
+  // SP-1 (S316) — the two /check escape links ride the anonymous-check flag;
+  // the security-framing copy below is flag-independent trust polish.
+  const { enabled: anonCheck } = useFeatureFlag("anonymous_bill_check_v1");
+
   // Account creation state
   const [email, setEmail] = useState("");
+  // S316 — /check hands off here with the typed results contact prefilled
+  // (?email=…). window.location on mount (client page) avoids the
+  // useSearchParams Suspense requirement; the user can still edit the field.
+  useEffect(() => {
+    const qp = new URLSearchParams(window.location.search).get("email");
+    if (qp) setEmail((prev) => prev || qp);
+  }, []);
   const [password, setPassword] = useState("");
   const [fullName, setFullName] = useState("");
   const [phone, setPhone] = useState("");
@@ -413,7 +425,7 @@ export default function SignUpPage() {
   }
 
   return (
-    <div className="flex flex-col items-center justify-center min-h-screen px-4 bg-white">
+    <div className="flex flex-col items-center justify-center min-h-screen px-4 pb-24 bg-white">
       <div className="w-full max-w-sm space-y-6">
         <div className="text-center">
           <Link href="/" className="text-2xl font-bold text-blue-600">
@@ -486,40 +498,52 @@ export default function SignUpPage() {
                   className="w-full px-4 py-3 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 />
               </div>
-              <div>
-                <label htmlFor="signup-phone" className="text-xs font-medium text-gray-600 mb-1 block">
-                  Phone number <span className="text-red-400">*</span>
-                </label>
-                <input
-                  id="signup-phone"
-                  type="tel"
-                  required
-                  autoComplete="tel-national"
-                  placeholder="(555) 123-4567"
-                  value={phone}
-                  onChange={(e) => setPhone(formatPhone(e.target.value))}
-                  className="w-full px-4 py-3 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
-                <p className="text-xs text-gray-400 mt-1">
-                  We&apos;ll text a one-time code to verify it. US numbers only.
-                </p>
-              </div>
-              <div>
-                <label htmlFor="signup-dob" className="text-xs font-medium text-gray-600 mb-1 block">
-                  Date of birth <span className="text-red-400">*</span>
-                </label>
-                <input
-                  id="signup-dob"
-                  type="date"
-                  required
-                  autoComplete="off"
-                  value={dateOfBirth}
-                  max={new Date(new Date().setFullYear(new Date().getFullYear() - 18)).toISOString().split("T")[0]}
-                  min="1920-01-01"
-                  onChange={(e) => setDateOfBirth(e.target.value)}
-                  className={`w-full px-4 py-3 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${dateOfBirth ? "text-gray-900" : "text-gray-400"}`}
-                />
-                <p className="text-xs text-gray-400 mt-1">Must be 18 or older</p>
+              {/* SP-1 (S316; approved S315 strings SP1–SP4) — the phone + DOB
+                  fields grouped under an honest security justification instead
+                  of bare "required" fields. Every claim is true to code:
+                  one-account-per-phone is the anti-Sybil gate; OTP proves a
+                  real reachable person; DOB is the 18+ check. */}
+              <div className="rounded-xl border border-gray-200 bg-gray-50/60 p-4 space-y-4">
+                <div>
+                  <p className="text-[13px] font-semibold text-gray-800">Account security</p>
+                  <p className="text-xs leading-relaxed text-gray-500 mt-0.5">
+                    Your account holds your health information. We verify a phone number to keep fake
+                    accounts out and to protect yours. Never for marketing.
+                  </p>
+                </div>
+                <div>
+                  <label htmlFor="signup-phone" className="text-xs font-medium text-gray-600 mb-1 block">
+                    Phone number <span className="text-red-400">*</span>
+                  </label>
+                  <input
+                    id="signup-phone"
+                    type="tel"
+                    required
+                    autoComplete="tel-national"
+                    placeholder="(555) 123-4567"
+                    value={phone}
+                    onChange={(e) => setPhone(formatPhone(e.target.value))}
+                    className="w-full px-4 py-3 border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  />
+                  <p className="text-xs text-gray-400 mt-1">Verified once by text. One account per number.</p>
+                </div>
+                <div>
+                  <label htmlFor="signup-dob" className="text-xs font-medium text-gray-600 mb-1 block">
+                    Date of birth <span className="text-red-400">*</span>
+                  </label>
+                  <input
+                    id="signup-dob"
+                    type="date"
+                    required
+                    autoComplete="off"
+                    value={dateOfBirth}
+                    max={new Date(new Date().setFullYear(new Date().getFullYear() - 18)).toISOString().split("T")[0]}
+                    min="1920-01-01"
+                    onChange={(e) => setDateOfBirth(e.target.value)}
+                    className={`w-full px-4 py-3 border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${dateOfBirth ? "text-gray-900" : "text-gray-400"}`}
+                  />
+                  <p className="text-xs text-gray-400 mt-1">Confirms you&apos;re 18 or older.</p>
+                </div>
               </div>
               <div>
                 <label htmlFor="signup-password" className="text-xs font-medium text-gray-600 mb-1 block">
@@ -591,8 +615,6 @@ export default function SignUpPage() {
                 </label>
               </div>
 
-              <TurnstileWidget action="signup" onToken={setTurnstileToken} />
-
               <button
                 type="submit"
                 disabled={accountLoading || !tosAccepted || !privacyAccepted || !turnstileToken || (password.length > 0 && passwordErrors.length > 0)}
@@ -604,6 +626,17 @@ export default function SignUpPage() {
 
             <AuthErrorMessage error={accountError} />
 
+            {/* SP-1 (SP5, flag-gated) — the quiet fallback below the primary
+                action, never a competing mid-form option. */}
+            {anonCheck && (
+              <p className="text-center">
+                <span className="text-[15.5px] text-gray-500">Not ready for an account? </span>
+                <Link href="/check" className="text-[15.5px] font-semibold text-blue-600 hover:underline">
+                  Try a bill first — no account needed
+                </Link>
+              </p>
+            )}
+
             <div className="text-center space-y-2">
               <p className="text-sm text-gray-500">
                 Already have an account?{" "}
@@ -611,6 +644,13 @@ export default function SignUpPage() {
                   Sign in
                 </Link>
               </p>
+            </div>
+
+            {/* S316 (#4, Andrew) — the bot-check widget sits below the account
+                links, out of the form's visual path; the token still gates the
+                submit button through state exactly as before. */}
+            <div className="flex justify-center">
+              <TurnstileWidget action="signup" onToken={setTurnstileToken} />
             </div>
 
             <p className="text-xs text-gray-400 text-center">
@@ -637,6 +677,19 @@ export default function SignUpPage() {
               onResend={handleOtpResend}
             />
             <AuthErrorMessage error={accountError} />
+            {/* SP-1 (SP6 flag-independent · SP7 flag-gated) — the OTP wait is
+                the rage-quit moment; the escape routes into /check with
+                nothing wasted instead of losing the visitor entirely. */}
+            <p className="text-center text-[13px] leading-relaxed text-gray-500">
+              This one-time check keeps your account — and the health information in it — locked to you.
+            </p>
+            {anonCheck && (
+              <p className="text-center">
+                <Link href="/check" className="text-[15.5px] font-semibold text-blue-600 hover:underline">
+                  Try a bill first — no account needed
+                </Link>
+              </p>
+            )}
           </div>
         )}
       </div>

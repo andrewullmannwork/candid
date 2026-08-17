@@ -25,6 +25,10 @@ const PUBLIC_ROUTES = [
   "/api/waitlist",
   "/api/stripe/webhook",
   "/api/auth/sync",
+  // S315 — the no-account bill check: a fresh visitor arrives with no session
+  // cookie by definition. Flag OFF the page itself redirects home; once the
+  // anonymous account exists, sync sets candid_session like any auth path.
+  "/check",
   // Dev-only component-preview namespace (S121). Each /dev/* page must guard
   // itself with `if (process.env.NODE_ENV !== "development") notFound();` so the
   // route 404s in PROD builds.

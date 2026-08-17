@@ -90,6 +90,12 @@ export interface UserRow {
   // mig 166 — set on CHD erasure (consent revoke / pre account-delete), cleared
   // on re-grant. Gates parse-persist via the erasure_write_guard trigger.
   chd_erased_at: string | null;
+  // mig 229 (S315) — anonymous bill-check account; users.email holds a
+  // synthetic per-uid placeholder while true. Flipped false by the upgrade sync.
+  is_anonymous: boolean;
+  // mig 229 (S315) — typed results/deletion contact for anonymous checks.
+  // Never identity (account-link keys on the token email). Cleared on upgrade.
+  contact_email: string | null;
 }
 
 // Profiles

@@ -15,6 +15,7 @@ import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 import { DataSourceContextLine } from "@/components/data-source-context-line";
 import { ClaimHero, PlanHero, CompareBand } from "@/components/dashboard/DashDuo";
 import { StrandedPlanBanner } from "@/components/plan/StrandedPlanBanner";
+import { ReclaimCheckBanner } from "@/components/check/ReclaimCheckBanner";
 import { useClaimPipeline } from "@/lib/claims/use-claim-pipeline";
 import { useAccumulatorLedger } from "@/components/plan/use-accumulator-ledger";
 import {
@@ -342,6 +343,7 @@ export default function DashboardPage() {
           nudge: every downstream number (benefits, bill audits, recovery) is
           computed off the weaker card-derived plan until it's resolved.
           Self-gates to nothing in the normal case. */}
+      <ReclaimCheckBanner />
       <StrandedPlanBanner onDashboard />
 
       {/* Followup banner self-gates on dispute follow-up presence. */}

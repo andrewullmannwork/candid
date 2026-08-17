@@ -64,7 +64,8 @@ export const OB_CARD_COPY = {
   save: "Save details",
   /* S288 both-or-neither (copy APPROVED by Andrew S289): a divergent card +
      "Keep current plan" writes NOTHING — this is the receipt. */
-  keptNothing: "Nothing was changed — that card doesn't match the plan on file. Try again.",
+  keptNothing:
+    "Kept your current plan — its insurer is filled in below. Check the member ID and group number are from that plan's card, then save.",
   /* S288 plan-change mode — current-card framing (copy APPROVED S289). */
   currentCardEyebrow: "YOUR CURRENT CARD",
   replaceCard: "Replace card",

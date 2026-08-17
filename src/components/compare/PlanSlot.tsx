@@ -17,6 +17,7 @@
  * clear empty/active/committed states, smooth mode transitions.
  */
 
+import { PlanSearchCountLine } from "@/components/shared/PlanSearchCountLine";
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/lib/auth/auth-context";
 
@@ -360,6 +361,7 @@ function SearchActive({
 }) {
   const { user } = useAuth();
   const [results, setResults] = useState<PlanSearchResult[]>([]);
+  const [searchTotal, setSearchTotal] = useState(0);
   const [searching, setSearching] = useState(false);
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -388,8 +390,9 @@ function SearchActive({
           body: JSON.stringify({ query }),
         });
         if (res.ok) {
-          const { plans } = await res.json();
+          const { plans, total } = await res.json();
           setResults(plans || []);
+          setSearchTotal(typeof total === "number" ? total : (plans || []).length);
         }
       } catch {
         // ignore
@@ -433,6 +436,7 @@ function SearchActive({
 
       {query.length >= 3 && results.length > 0 && (
         <div className="rounded-2xl bg-white ring-1 ring-slate-200 shadow-sm max-h-72 overflow-y-auto">
+          <PlanSearchCountLine shown={results.length} total={searchTotal} />
           {results.map((plan) => (
             <button
               key={plan.id}

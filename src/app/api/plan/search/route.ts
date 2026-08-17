@@ -75,7 +75,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { query, state, planType, metalLevel, planYear, insurerHint, canonicalOnly } = await req.json();
+  const { query, state, planType, metalLevel, planYear, insurerHint, canonicalOnly, limit } = await req.json();
+  // S315 (Andrew): EVERY search surface returns the full match set — all
+  // consumers render scrollable containers and show a count line past 25.
+  // `limit` remains honored for any caller that wants fewer; 500 is the
+  // safety clamp (the whole library is ~1.3k rows; a 2-char query tokenized
+  // AND-wise rarely exceeds a few hundred).
+  const resultLimit = Math.min(500, Math.max(1, typeof limit === "number" && Number.isFinite(limit) ? Math.floor(limit) : 500));
   void canonicalOnly; // S110 Chunk D — accepted for forward-compat; this route IS canonical-only
 
   if (!query || typeof query !== "string" || query.trim().length < 2) {
@@ -133,7 +139,7 @@ export async function POST(req: NextRequest) {
        is_verified,
        field_provenance`,
     )
-    .limit(50);
+    .limit(1000);
 
   // AND every token: each .ilike() chains as a separate AND condition, so all
   // words must appear somewhere in plan_name (order-independent).
@@ -196,10 +202,11 @@ export async function POST(req: NextRequest) {
       if (a.startsWith !== b.startsWith) return a.startsWith - b.startsWith;
       if (a.badgeRank !== b.badgeRank) return a.badgeRank - b.badgeRank;
       return (a.row.plan_name || "").localeCompare(b.row.plan_name || "");
-    })
-    .slice(0, 15);
+    });
+  const totalMatches = ranked.length;
+  const limited = ranked.slice(0, resultLimit);
 
-  const results = ranked.map(({ row, badgeLevel }) => ({
+  const results = limited.map(({ row, badgeLevel }) => ({
     // S107: id IS the canonical_plan_id now (no plan_catalog indirection).
     // We keep both keys populated so /compare client code continues to read
     // `s.selected.canonicalPlanId` without any change.
@@ -219,5 +226,5 @@ export async function POST(req: NextRequest) {
     insurerName: insurerNameMap.get((row.insurer_id as string) ?? "") ?? "",
   }));
 
-  return NextResponse.json({ plans: results });
+  return NextResponse.json({ plans: results, total: totalMatches });
 }

@@ -48,6 +48,11 @@ export const CASE_EVENT_KINDS = [
   // download hook (use-case-file-download) via the case-events route, same
   // change. Count: 22 → 23.
   "case_file_downloaded",
+  // S316 — the anonymous /check "Email me my results" send (metering +
+  // check→convert funnel telemetry; the case_file_downloaded posture).
+  // Payload refs-only: { fingerprint } identifies WHICH results edition
+  // went out, never the address.
+  "check_results_emailed",
   // S312 (F2-S312.1) — the user withdrew a never-sent draft (status →
   // "cancelled"; the row becomes a read-only exhibit per the S308 void rule).
   // Its own kind: a dismissal is the user declining the letter, not an

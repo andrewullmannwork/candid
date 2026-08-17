@@ -40,6 +40,7 @@ export const EXPOSED_FLAGS = [
   "letter_requirements_v1", // S301 — each letter asks only for what it needs (CaseNeedsPanel row set; gaps + readiness floor gate server-side on the same flag)
   "bill_totals_source_v1", // S302 — "which of our two parses is right" row in the step-1 assumptions block
   "savings_math_derivation_v1", // S307 — priced-answer plan card + "Where these numbers come from" strip
+  "anonymous_bill_check_v1", // S315 — no-account bill check (/check) + landing/signup escape links
 ] as const;
 
 /**

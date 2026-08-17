@@ -323,3 +323,141 @@ export async function sendParseCompleteEmail(
     console.error("[onboarding-emails] Resend parse-complete send failed:", err);
   }
 }
+
+/**
+ * S316 A-5 — the anonymous /check results email, sent ONLY on the user's
+ * explicit "Email me my results" click (one-shot; the copy promises no
+ * follow-up and none is scheduled). Goes to users.contact_email — the address
+ * the person typed "for your results" — never the synthetic anon row email.
+ * Every dollar renders with the "up to / in question" hedge (S252 UDAP rule:
+ * no consumer-visible recovery number without an estimate qualifier).
+ * Returns true when Resend accepted the send (drives the route's 200/502).
+ */
+export async function sendCheckResultsEmail(
+  email: string,
+  params: {
+    providerName: string | null;
+    billedTotal: number | null;
+    serviceDate: string | null;
+    /** The screen's claim-level recovery + plan-share pair (live engine, via
+     *  the client's own rendered payload) — the email leads with the same
+     *  banner sentence the results page shows. Null → no recovery banner. */
+    recoveryTotal: number | null;
+    shouldOwe: number | null;
+    findings: { label: string; amount: number | null }[];
+    /** Caller-built (content-aware): identical results dedupe at Resend,
+     *  changed results re-send. */
+    idempotencyKey: string;
+  }
+): Promise<boolean> {
+  const resend = getResend();
+  if (!resend) {
+    console.warn("[onboarding-emails] RESEND_API_KEY missing — skipping check-results email");
+    return false;
+  }
+
+  const { providerName, billedTotal, serviceDate, recoveryTotal, shouldOwe, findings, idempotencyKey } = params;
+  const signupUrl = `${APP_URL}/auth/signup`;
+
+  const headerBits = [
+    providerName,
+    billedTotal != null ? `billed $${billedTotal.toFixed(2)}` : null,
+    serviceDate,
+  ].filter(Boolean);
+
+  // The results page's banner sentence, verbatim structure ("You may be able
+  // to recover…"), hedged per the standing UDAP rule. chargedYou is derived
+  // the same way the page derives it: plan share + recovery.
+  const hasRecovery = recoveryTotal != null && recoveryTotal >= 1;
+  const recoveryBanner = hasRecovery
+    ? `
+            <p style="font-size: 15px; font-weight: 600; color: #166534; margin: 0 0 4px;">
+              You may be able to recover up to $${recoveryTotal.toFixed(2)}
+            </p>
+            ${
+              shouldOwe != null
+                ? `<p style="font-size: 13px; color: #4b5563; line-height: 1.55; margin: 0 0 12px;">
+              Your plan puts your share around $${shouldOwe.toFixed(2)}, but this bill charges you $${(shouldOwe + recoveryTotal).toFixed(2)}.
+            </p>`
+                : ""
+            }`
+    : "";
+
+  const findingLines =
+    findings.length > 0
+      ? findings
+          .map(
+            (f) => `
+            <p style="font-size: 14px; color: #111827; line-height: 1.6; margin: 0 0 6px;">
+              &middot; ${f.label}${f.amount != null && f.amount >= 1 ? ` &mdash; up to $${f.amount.toFixed(2)} in question` : ""}
+            </p>`
+          )
+          .join("")
+      : hasRecovery
+        ? ""
+        : `
+            <p style="font-size: 14px; color: #111827; line-height: 1.6; margin: 0;">
+              Nothing stood out on this bill against the documents you provided &mdash; that&rsquo;s a good check.
+            </p>`;
+
+  try {
+    await resend.emails.send(
+      {
+        from: FROM,
+        to: email,
+        subject: "Your bill check results",
+        html: `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 480px; margin: 0 auto; padding: 40px 20px;">
+          <div style="text-align: center; margin-bottom: 32px;">
+            <h1 style="font-size: 28px; font-weight: 700; color: #1d4ed8; margin: 0;">Candid</h1>
+          </div>
+
+          <h2 style="font-size: 20px; font-weight: 600; color: #111827; margin: 0 0 12px;">Your bill check results</h2>
+
+          <p style="font-size: 15px; color: #4b5563; line-height: 1.6; margin: 0 0 16px;">
+            Hi there &mdash; here&rsquo;s what we found on the bill you checked, kept for your records.
+          </p>
+
+          <div style="background-color: #f9fafb; border: 1px solid #e5e7eb; border-radius: 10px; padding: 16px; margin: 0 0 16px;">
+            ${headerBits.length > 0 ? `<p style="font-size: 13px; color: #6b7280; margin: 0 0 10px;">${headerBits.join(" &middot; ")}</p>` : ""}
+            ${recoveryBanner}
+            ${findingLines}
+          </div>
+
+          <p style="font-size: 13px; color: #6b7280; line-height: 1.55; margin: 0 0 24px;">
+            Amounts are estimates based on the documents you uploaded and may not reflect your complete plan terms. Always verify with your insurer.
+          </p>
+
+          <div style="text-align: center; margin: 0 0 12px;">
+            <a href="${signupUrl}" style="display: inline-block; padding: 12px 28px; background-color: #2563eb; color: #ffffff; font-size: 14px; font-weight: 600; text-decoration: none; border-radius: 10px;">
+              Turn this into a dispute letter
+            </a>
+          </div>
+
+          <p style="font-size: 13px; color: #6b7280; line-height: 1.55; text-align: center; margin: 0 0 24px;">
+            Sign up with this same email address and after you verify it, we&rsquo;ll offer to bring this check into your account.
+          </p>
+
+          <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 0 0 16px;" />
+
+          <p style="font-size: 12px; color: #9ca3af; line-height: 1.5; margin: 0 0 8px;">
+            You asked for this one email on the check page. We won&rsquo;t send another. To have this check erased, reply &ldquo;delete&rdquo; or write privacy@candidclaim.com.
+          </p>
+
+          <p style="font-size: 12px; color: #d1d5db; margin: 24px 0 0; text-align: center;">
+            From, The Candid Team<br />
+            Candid is an Airgetlam Labs LLC company.
+          </p>
+        </div>
+      `,
+      },
+      {
+        idempotencyKey,
+      }
+    );
+    return true;
+  } catch (err) {
+    console.error("[onboarding-emails] Resend check-results send failed:", err);
+    return false;
+  }
+}

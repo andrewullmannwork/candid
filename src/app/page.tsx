@@ -222,6 +222,9 @@ function TopNav({ loggedIn }: { loggedIn: boolean }) {
 /* ── Hero ────────────────────────────────────────────────────────────── */
 function Hero({ loggedIn }: { loggedIn: boolean }) {
   const { enabled: freeStart } = useFeatureFlag("dispute_letters_free_start_v1");
+  // SP-1 Variant B (S315 design §7.6, Andrew-approved LP5): today's hero
+  // untouched; a quiet ghost secondary under the CTAs routes to /check.
+  const { enabled: anonCheck } = useFeatureFlag("anonymous_bill_check_v1");
   return (
     <section className="hero">
       <div className="hero-inner">
@@ -244,9 +247,17 @@ function Hero({ loggedIn }: { loggedIn: boolean }) {
               href={loggedIn ? "/upload" : "/auth/signup"}
               className="btn btn-primary btn-xl"
             >
-              {loggedIn ? "Upload a bill" : "Sign up — it's free"} {ICON.chevR}
+              {loggedIn ? "Upload a bill" : "Sign up"} {ICON.chevR}
             </Link>
-            <a href="#suite" className="btn btn-ghost btn-xl">See what you get</a>
+            {/* S316 round 2 (Andrew) — the /check entry IS the secondary
+                button, replacing "See what you get" while the anonymous
+                surface is on; flag OFF (or logged in) restores it, so the
+                hero always keeps exactly two actions. */}
+            {anonCheck && !loggedIn ? (
+              <Link href="/check" className="btn btn-ghost btn-xl">Try a bill first</Link>
+            ) : (
+              <a href="#suite" className="btn btn-ghost btn-xl">See what you get</a>
+            )}
           </div>
         </div>
         <HeroPeek />
@@ -794,6 +805,8 @@ function FAQSection() {
 
 /* ── Final CTA ───────────────────────────────────────────────────────── */
 function FinalCTASection() {
+  // SP-1 (LP6): the exit-point ghost to /check, same one-flag gate.
+  const { enabled: anonCheck } = useFeatureFlag("anonymous_bill_check_v1");
   return (
     <section className="section">
       <div className="section-narrow">
@@ -815,6 +828,18 @@ function FinalCTASection() {
             >
               See what you get
             </a>
+            {anonCheck && (
+              <Link
+                href="/check"
+                className="btn btn-ghost btn-xl"
+                style={{
+                  background: "rgba(255,255,255,0.08)", color: "#fff",
+                  border: "1px solid rgba(255,255,255,0.16)",
+                }}
+              >
+                Try a bill without an account
+              </Link>
+            )}
           </div>
         </div>
       </div>

@@ -47,6 +47,16 @@ export async function POST(req: NextRequest) {
           { status: 401 }
         );
       }
+      // S315 Tier-3 backstop: a letter demands money in the user's name — the
+      // no-account check ends at findings. The /check UI routes to signup, and
+      // the (app) shell redirects anonymous sessions; this is the fail-closed
+      // server floor beneath both.
+      if (authedUser.isAnonymous) {
+        return NextResponse.json(
+          { error: "Creating a dispute letter requires an account." },
+          { status: 403 }
+        );
+      }
       const { findingIds, letterType, insurancePlanId, certifiedMail, appealExhausted, collector, collectorFirstContactDate, denialNoticeDate } = body as {
         findingIds: string[];
         letterType?: DisputeLetterType;

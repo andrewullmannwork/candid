@@ -34,6 +34,8 @@ export const USER_OWNED_TABLES = [
   "subscription_events",
   "user_plan_cost_share_overrides", // Cost-Share v2 (mig 174), W3 route write
   "claim_case_events", // Timeline unification Phase 0 (mig 221), case-events emitter
+  "document_extraction_log", // S315 A-6 added it to the layer's union; the
+  // registry-sync guard caught the missing lint half (S316 CI) — this line IS the fix.
   // parent-join children (no user_id) — banned raw; use selectOwnedParentIds()
   "claim_line_items",
   "plan_covered_services",
