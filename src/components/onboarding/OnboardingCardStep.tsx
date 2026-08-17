@@ -395,8 +395,9 @@ export function OnboardingCardStep({
           You already have {mismatch.existingInsurer || "a plan"} on file
         </p>
         <p className="text-xs leading-relaxed text-amber-700">
-          This card looks like {mismatch.newInsurer || "a different insurer"}. Switch your active
-          plan, or keep the current one and save just the IDs.
+          This card names {mismatch.newInsurer || "a different insurer"}. Switch your active plan to
+          match the card — or keep your current plan, and we&apos;ll hold the numbers you typed so
+          you can save them under it.
         </p>
         <div className="flex flex-col gap-2 sm:flex-row">
           <button
@@ -417,10 +418,16 @@ export function OnboardingCardStep({
           </button>
           <button
             onClick={() => {
-              // S288 both-or-neither: a divergent card + "Keep" writes NOTHING.
-              // The old quiet member-ID/group attach is how mixed-identity
-              // states were born ("Blue Cross" insurer glued to a UHC plan).
-              // The pending card is discarded; the prior state stands whole.
+              // S288 both-or-neither still stands: NOTHING is written here.
+              // S316 (Andrew) — but the dead-end blank form confused: Keep now
+              // returns to the form with the CURRENT plan's insurer filled in
+              // (never the card's divergent string) and the typed IDs
+              // preserved, so the correction is one explicit save away — and
+              // that save carries the plan's own insurer, so it cannot
+              // recreate a mixed identity.
+              setMIns(mismatch.existingInsurer || "");
+              if (mismatch.pendingData.member_id) setMId(mismatch.pendingData.member_id);
+              if (mismatch.pendingData.group_number) setMGrp(mismatch.pendingData.group_number);
               setMismatch(null);
               setKeptNotice(true);
             }}

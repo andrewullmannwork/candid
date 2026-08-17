@@ -1,5 +1,6 @@
 "use client";
 
+import { PlanSearchCountLine } from "@/components/shared/PlanSearchCountLine";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useDropzone } from "react-dropzone";
 import { useAuth } from "@/lib/auth/auth-context";
@@ -27,6 +28,10 @@ export interface DocSlotValue {
   via?: "search";
   /** S286: further coverage docs on file (names) — restore + session history. */
   extraFiles?: string[];
+  /** S316 (approved mock B): the same docs with kind + parse state, rendered
+   *  as labeled rows. Preferred over extraFiles when present; extraFiles
+   *  stays for the in-step upload merge, which knows only filenames. */
+  extraDocs?: { fileName: string; kindLabel: string | null; checked: boolean }[];
   /** S286: coverage docs beyond the displayed names. */
   moreCount?: number;
 }
@@ -800,16 +805,36 @@ export function OnboardingDocStep({
             ))}
           </div>
         )}
-        {((value.extraFiles?.length ?? 0) > 0 || (value.moreCount ?? 0) > 0) && (
+        {((value.extraDocs?.length ?? 0) > 0 || (value.extraFiles?.length ?? 0) > 0 || (value.moreCount ?? 0) > 0) && (
           /* S286: the rest of the user's coverage docs, so the card answers
-             "which document(s)" — not just the latest upload. */
+             "which document(s)" — not just the latest upload. S316 (approved
+             mock B): labeled rows with kind + parse state, so a bill AND an
+             EOB both read as unmistakably already added. */
           <div className="mt-3 border-t border-gray-100 pt-2.5">
-            <p className="text-[10.5px] font-bold tracking-[0.09em] text-gray-400">ALSO ON FILE</p>
-            {value.extraFiles?.map((f, i) => (
-              <p key={i} className="mt-1 truncate text-xs text-gray-500">
-                {f}
-              </p>
-            ))}
+            <p className="text-[10.5px] font-bold tracking-[0.09em] text-blue-600">ALREADY ON YOUR ACCOUNT</p>
+            {value.extraDocs?.length
+              ? value.extraDocs.map((d, i) => (
+                  <div key={i} className="flex items-center gap-2 border-b border-gray-50 py-1.5 last:border-b-0">
+                    <svg className="shrink-0 text-emerald-600" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                      <path d="M5 13l4 4L19 7" />
+                    </svg>
+                    <p className="min-w-0 flex-1 truncate text-xs text-gray-700">
+                      {d.kindLabel ? <span className="font-semibold">{d.kindLabel}</span> : null}
+                      {d.kindLabel ? " · " : ""}
+                      <span className="text-gray-500">{d.fileName}</span>
+                    </p>
+                    {d.checked && (
+                      <span className="shrink-0 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10.5px] font-medium text-emerald-700">
+                        Checked
+                      </span>
+                    )}
+                  </div>
+                ))
+              : value.extraFiles?.map((f, i) => (
+                  <p key={i} className="mt-1 truncate text-xs text-gray-500">
+                    {f}
+                  </p>
+                ))}
             {(value.moreCount ?? 0) > 0 && (
               <p className="mt-1 text-xs text-gray-400">
                 +{value.moreCount} more document{value.moreCount === 1 ? "" : "s"}
@@ -1123,13 +1148,7 @@ export function OnboardingDocStep({
                 <>
                   {searchResults.length > 0 && (
                     <div className="mt-3 max-h-[320px] divide-y divide-gray-100 overflow-y-auto rounded-xl border border-gray-200">
-                      {searchResults.length > 25 && (
-                        <div className="sticky top-0 z-10 border-b border-gray-100 bg-gray-50/95 px-4 py-1.5 text-[11px] font-medium text-gray-500">
-                          {searchTotal > searchResults.length
-                            ? `Showing ${searchResults.length} of ${searchTotal} matches — keep typing to narrow.`
-                            : `Showing all ${searchResults.length} matches — keep typing to narrow.`}
-                        </div>
-                      )}
+                      <PlanSearchCountLine shown={searchResults.length} total={searchTotal} />
                       {searchResults.map((p) => (
                         <button
                           key={p.canonicalPlanId}

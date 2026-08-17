@@ -161,6 +161,22 @@ export function OnboardingFlow() {
           const primary = docs[0];
           if (primary) {
             const extraFiles = docs.slice(1, 4).map((d) => d.file_name || "Document");
+            // S316 (Andrew, approved mock B) — the extra docs render as
+            // labeled rows (kind + parse state), not a faint filename list;
+            // the kind label derives from the same doc_type the pool filter
+            // already reads.
+            const kindLabelOf = (t: string | null): string | null =>
+              t === "itemized_bill" ? "Itemized bill"
+              : t === "eob" ? "EOB"
+              : t === "sbc" ? "SBC"
+              : t === "plan_document" ? "Plan document"
+              : t === "eoc" ? "Plan document"
+              : null;
+            const extraDocs = docs.slice(1, 4).map((d) => ({
+              fileName: d.file_name || "Document",
+              kindLabel: kindLabelOf(d.doc_type),
+              checked: d.status === "processed",
+            }));
             // In plan-mode the +N counter must not count the bills we filtered
             // out of the pool — derive from the pool alone there.
             const moreCount =
@@ -168,11 +184,11 @@ export function OnboardingFlow() {
                 ? Math.max(0, docs.length - 1 - extraFiles.length)
                 : Math.max(0, (data.coverageDocCount ?? docs.length) - docs.length);
             if (primary.status !== "processed") {
-              setDoc({ kind: "background", fileName: primary.file_name, chips: [], extraFiles, moreCount });
+              setDoc({ kind: "background", fileName: primary.file_name, chips: [], extraFiles, extraDocs, moreCount });
             } else {
               const kind =
                 getDocTypeClass((primary.doc_type ?? "plan_document") as DocType) === "bill" ? "bill" : "plan";
-              setDoc({ kind, fileName: primary.file_name, chips: [], extraFiles, moreCount });
+              setDoc({ kind, fileName: primary.file_name, chips: [], extraFiles, extraDocs, moreCount });
               void (async () => {
                 try {
                   let chips: ObChip[] = [];
