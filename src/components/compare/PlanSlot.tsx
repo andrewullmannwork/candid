@@ -17,6 +17,7 @@
  * clear empty/active/committed states, smooth mode transitions.
  */
 
+import { PlanSearchCountLine } from "@/components/shared/PlanSearchCountLine";
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/lib/auth/auth-context";
 
@@ -435,13 +436,7 @@ function SearchActive({
 
       {query.length >= 3 && results.length > 0 && (
         <div className="rounded-2xl bg-white ring-1 ring-slate-200 shadow-sm max-h-72 overflow-y-auto">
-          {results.length > 25 && (
-            <div className="sticky top-0 z-10 border-b border-slate-100 bg-slate-50/95 px-4 py-1.5 text-[11px] font-medium text-slate-500">
-              {searchTotal > results.length
-                ? `Showing ${results.length} of ${searchTotal} matches — keep typing to narrow.`
-                : `Showing all ${results.length} matches — keep typing to narrow.`}
-            </div>
-          )}
+          <PlanSearchCountLine shown={results.length} total={searchTotal} />
           {results.map((plan) => (
             <button
               key={plan.id}

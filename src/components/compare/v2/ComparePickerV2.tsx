@@ -1,5 +1,6 @@
 "use client";
 
+import { PlanSearchCountLine } from "@/components/shared/PlanSearchCountLine";
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/lib/auth/auth-context";
 import { cn } from "@/lib/utils/cn";
@@ -256,13 +257,7 @@ function SearchPicker({
 
       {query.trim().length >= 3 && results.length > 0 && (
         <div className="rounded-xl bg-white ring-1 ring-slate-200 max-h-72 overflow-y-auto">
-          {results.length > 25 && (
-            <div className="sticky top-0 z-10 border-b border-slate-100 bg-slate-50/95 px-4 py-1.5 text-[11px] font-medium text-slate-500">
-              {searchTotal > results.length
-                ? `Showing ${results.length} of ${searchTotal} matches — keep typing to narrow.`
-                : `Showing all ${results.length} matches — keep typing to narrow.`}
-            </div>
-          )}
+          <PlanSearchCountLine shown={results.length} total={searchTotal} />
           {results.map((plan) => (
             <button
               key={plan.id}
