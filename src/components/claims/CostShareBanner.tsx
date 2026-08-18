@@ -204,8 +204,12 @@ interface CostShareBannerProps {
   /** Surface 3 (clarity redesign) — "assumptions" renders ONLY the editable
    *  "What we assumed" rows (no verdict header, no clean-state outro): the
    *  flagged-bill step rail carries the verdict in step 1, so step 2 embeds
-   *  just this card. Default "full" is the standalone verdict card. */
-  variant?: "full" | "assumptions";
+   *  just this card. Default "full" is the standalone verdict card.
+   *  S319 (unified rail) — "verdict" is the complement of "assumptions":
+   *  the verdict header + clean outro ONLY, no rows section. The unified
+   *  rail renders rows inside step 1 and this verdict card after the steps,
+   *  so the locked headline/body copy keeps its ONE home in this file. */
+  variant?: "full" | "assumptions" | "verdict";
   /**
    * S293 (#1) — the ACA block's dismissed state, LIFTED to the parent when
    * provided so the ONE pending set (pendingAssumptionFields, which the step
@@ -593,6 +597,8 @@ export function CostShareBanner({
   onAcaDismissedChange,
 }: CostShareBannerProps) {
   const assumptionsOnly = variant === "assumptions";
+  // S319 — the complement: verdict header + clean outro, no rows section.
+  const verdictOnly = variant === "verdict";
   // S293 (#1) — controlled when the parent supplies the pair (so the badge's
   // pending set sees the dismissal); internal otherwise.
   const [acaDismissedLocal, setAcaDismissedLocal] = useState(false);
@@ -1401,7 +1407,7 @@ export function CostShareBanner({
           </div>
         )}
 
-        {sectionOpen && (
+        {sectionOpen && !verdictOnly && (
           <div
             className={
               assumptionsOnly
@@ -1452,7 +1458,7 @@ export function CostShareBanner({
           </div>
         )}
 
-        {showUpdateLink && (
+        {showUpdateLink && !verdictOnly && (
           <div className="border-t border-gray-100 px-5 py-3">
             <button
               type="button"

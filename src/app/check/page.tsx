@@ -1319,16 +1319,10 @@ export default function CheckPage() {
                 }
               />
 
-              <div className="mt-7 rounded-2xl border border-blue-100 bg-gradient-to-b from-blue-50 to-white p-6 text-center sm:p-7">
-                <h3 className="text-[17px] font-bold tracking-tight text-gray-900">Keep these results and act on them</h3>
-                <p className="mx-auto mt-1.5 max-w-md text-sm leading-relaxed text-gray-500">
-                  A free account saves this check, lets you add future bills, and turns every finding into clear
-                  next steps.
-                </p>
-                <button onClick={goToSignup} className={`${BTN_PRIMARY} mt-4`}>
-                  Create your free account
-                </button>
-              </div>
+              {/* S319 (unified rail) — the bottom signup card is ABSORBED into
+                  the rail's locked step 4 ("Recover the money" carries the
+                  account ask + the LetterAccountGate buttons). One ask, one
+                  home — two competing CTAs was the drift. */}
             </div>
           )}
 

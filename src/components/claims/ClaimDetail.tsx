@@ -4,6 +4,7 @@ import { Fragment, useState, useEffect, useCallback, useMemo, useRef } from "rea
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
 import type { BillState } from "@/lib/claims/derive-bill-state";
+import { buildBillState } from "@/lib/claims/use-claim-pipeline";
 import { Disclaimer } from "@/components/shared/Disclaimer";
 import { disputeUrlForResult } from "@/lib/disputes/url";
 import { CategoryCorrectionModal } from "@/components/claims/CategoryCorrectionModal";
@@ -1495,7 +1496,26 @@ export function ClaimDetail({
       potentialRecovery: data.recovery?.potentialRecovery ?? 0,
     };
   })();
-  const billState = billStateProp ?? null;
+  // S319 (unified rail) — /check renders ClaimDetail with no precomputed
+  // billState prop, so its bills could never reach the flagged rail. When the
+  // prop is absent, derive it here from the SAME data through the SAME
+  // buildBillState the list page uses — one derivation, two callers, no
+  // drift. Engine bills only; persisted discrepancies pass empty because the
+  // live engine supersedes them for v2 bills (S290) and this payload doesn't
+  // carry them.
+  const billState =
+    billStateProp ??
+    (data.costShareBill
+      ? buildBillState(
+          {
+            id: claimId,
+            recovery: { potentialRecovery: billTotals.potentialRecovery },
+            costShareBillVerdict: data.costShareBill.verdict ?? null,
+          },
+          [],
+          (data.disputes ?? []).map((d) => ({ claimId, status: d.status })),
+        )
+      : null);
 
   // S139 B4.2 multi-line — drives chevron column + LineDrawer rendering in
   // the line-items table AND multi-line branches in FlaggedBody (different
@@ -1505,6 +1525,12 @@ export function ClaimDetail({
   // single-line treatment (no chevron column; no LineDrawer; existing
   // expansion panel preserved).
   const isFlagged = billState === "overcharge_drafted" || billState === "overcharge_no_draft";
+  // S319 (Andrew's ruling) — ONE rail for every engine-audited bill. The
+  // numbered step chrome stops being a flagged-bill privilege: needs-review
+  // bills walk the same steps (step 3 locked until their questions are
+  // answered), clean bills end at their verdict. Only pre-engine bills (no
+  // costShareBill payload — flag-OFF/error fallback) keep the classic view.
+  const railUnified = data.costShareBill != null;
   const flaggedLineCount = primaryLineItems.filter((li) => {
     const refund = li.recovery?.refundComponent ?? 0;
     const forgive = li.recovery?.forgivenessComponent ?? 0;
@@ -2199,7 +2225,10 @@ export function ClaimDetail({
   // (§4.4: consume, never re-derive). null = not on file; scripts degrade to
   // the prep-chip path, never invented values.
   const guidedCtx: GuideFillContext | null = (() => {
-    if (!guidedOn || !isFlagged) return null;
+    // S319 — anonymous (/check) sessions never get the guided phone/letter
+    // packs: step 4 renders as the locked account ask instead (the letter
+    // gate's rail form), so the packs would be dead weight behind it.
+    if (!guidedOn || !isFlagged || anonymousDraftGate != null) return null;
     const meta = (claim.metadata as Record<string, unknown>) ?? {};
     const patient = (meta.patient as Record<string, unknown> | undefined) ?? {};
     const provider = (meta.provider as Record<string, unknown> | undefined) ?? {};
@@ -2871,7 +2900,7 @@ export function ClaimDetail({
           money. The savings number is DERIVED from steps 1-2, so it now lands
           after the user has confirmed the inputs rather than before.
           Clean/needs-review states keep the classic table-first order. */}
-      {isFlagged && (
+      {railUnified && (
         <div className="mt-6">
           {railHasAssumptions && data.costShareBill && (
             <RailStep
@@ -3102,75 +3131,23 @@ export function ClaimDetail({
           header — the questions gate the math, so they come first. Carries the
           verdict + Verified stamp itself, so it replaces the legacy
           CleanBody/ReviewBody when the flag is ON; OFF → absent → today's UI. */}
-      {data.costShareBill && !isFlagged && (
-        <CostShareBanner
-          verdict={data.costShareBill.verdict}
-          assumptions={bannerAssumptions}
-          overrides={effectiveCostShareOverrides}
-          recoverable={billTotals.potentialRecovery}
-          correctShare={billTotals.shouldOwe}
-          charged={billTotals.shouldOwe + billTotals.potentialRecovery}
-          unpricedShare={unpricedShare}
-          fmtMoney={fmtMoney}
-          onOverride={submitCostShareOverride}
-                onConfirmDefaults={confirmAssumptionDefaults}
-                onOptimistic={(patch) => setAssumptionOptimistic((prev) => ({ ...prev, ...patch }))}
-                pendingFields={assumptionsPendingFields}
-                estimateRows={estimateRateRows}
-                onConfirmEstimate={handleConfirmCoverage}
-                confirmingEstimateId={confirmingCoverageId}
-                acaLines={acaAskLines}
-                planIdentity={
-                  planCandidates
-                    ? {
-                        label: planIdentityLabel,
-                        year: claimServiceYear,
-                        planYearMismatch,
-                        onChange: () => setRepinOpen(true),
-                        // S310 (F14a) — insurer-name fix on the pinned-plan row.
-                        insurerName: pinnedInsurerName,
-                        onSaveInsurerName: saveInsurerName,
-                      }
-                    : null
-                }
-                acaDismissed={acaDismissed}
-                onAcaDismissedChange={setAcaDismissed}
-                flagUnanswered={assumptionsEngaged}
-          pendingKey={csOverridePending}
-          errorMsg={csOverrideError}
-          onShouldBeCovered={() => bannerTargetLineId && openCorrectionModal(bannerTargetLineId)}
-          onAddPlanDetails={(target) => {
-            // S290 — honor the clicked chip: its lineId first, then a slug
-            // lookup, then the legacy bannerTargetLineId fallback. Fixes the
-            // answer landing under a DIFFERENT line's service.
-            const line =
-              (target?.lineId ? primaryLineItems.find((li) => li.id === target.lineId) : null) ??
-              (target?.serviceSlug
-                ? primaryLineItems.find((li) => li.service_slug === target.serviceSlug)
-                : null) ??
-              (bannerTargetLineId
-                ? primaryLineItems.find((li) => li.id === bannerTargetLineId)
-                : null);
-            if (line?.service_slug) setAddPlanDetailsLineId(line.id);
-            else if (bannerTargetLineId) openCorrectionModal(bannerTargetLineId);
-          }}
-          statedServiceCosts={statedServiceCosts}
-          initiallyReviewed={!!(claim.metadata as Record<string, unknown> | null)?.assumptionsReviewedAt}
-          onUploadEob={() => router.push("/upload?type=eob")}
-          onBack={onBack}
-        />
-      )}
+      {/* S319 (unified rail) — the classic full-variant banner that rendered
+          here for non-flagged engine bills is GONE: its rows live in step 1
+          (the one assumptions-variant call above), and its verdict header +
+          clean outro render as the variant="verdict" card AFTER the steps —
+          see below, before the legacy (!costShareBill) branches. */}
 
       {/* Step-3 body wrapper — indents the line-items table into the rail on
-          flagged bills; a no-op pair of divs otherwise. */}
-      <div className={isFlagged ? "relative pb-[30px]" : undefined}>
-        {isFlagged && (
+          every engine bill (S319 unified rail; was flagged-only); a no-op
+          pair of divs for legacy pre-engine bills. */}
+      <div className={railUnified ? "relative pb-[30px]" : undefined}>
+        {railUnified && (
           <span className="absolute -top-4 bottom-1 left-[14px] hidden w-[1.5px] bg-gray-200 sm:block" aria-hidden />
         )}
         {/* S297 — step-2 body: hidden while the done step is collapsed (the
             outer wrapper + connector stay, keeping the rail continuous). */}
         {svcBodyVisible && (
-        <div className={isFlagged ? "sm:ml-[43px]" : undefined}>
+        <div className={railUnified ? "sm:ml-[43px]" : undefined}>
       {/* Session 86 round 6 — responsive layout strategy:
           • md+ (≥768px) → 7-column table with single-line headers, raw
             "Billed" amount, all numeric columns aligned. Math explained
@@ -4115,19 +4092,42 @@ export function ClaimDetail({
         )}{/* /S297 svcBodyVisible */}
       </div>{/* /step-3 body wrapper */}
 
-      {isFlagged && (
+      {/* S319 (unified rail) — a needs-review bill shows this step LOCKED: the
+          number is visible, the reveal waits on the answers above (the S291
+          confirm-then-reveal rule expressed as a step state instead of a
+          whole different page layout). Clean bills skip it — their rail ends
+          at the verdict card below. */}
+      {railUnified && (isFlagged || billState === "needs_review") && (
         <RailStep
           n={railStepSave}
+          locked={!isFlagged}
+          last={!isFlagged}
           // S297 (Andrew E2E) — any engagement PAST this step (a 4a attest/
           // answer/skip, or a drafted letter) greens it: you've seen the
           // number and moved on. Flag OFF keeps the drafted-only rule.
           done={
-            hasDraftedDispute ||
-            (guidedCtx != null && (guidedPack.done > 0 || guidedPack.concluded))
+            isFlagged &&
+            (hasDraftedDispute ||
+              (guidedCtx != null && (guidedPack.done > 0 || guidedPack.concluded)))
           }
           title="What you could save"
-          sub="Candid compared every line of this bill against your plan's policies"
+          sub={
+            isFlagged
+              ? "Candid compared every line of this bill against your plan's policies"
+              : undefined
+          }
         >
+        {!isFlagged && (
+          <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50/60 px-4 py-3 text-[13px] leading-relaxed text-gray-500">
+            Answer the questions above and Candid prices this bill against your plan.
+          </div>
+        )}
+        {/* S319 — the priced body renders only once the bill is actually
+            flagged; the locked state above owns the un-priced presentation
+            (an under-$10 recovery on a needs-review bill must not leak the
+            emerald bar into a locked step). */}
+        {isFlagged && (
+          <>
         {billTotals.potentialRecovery >= 1 && (
           <div className="flex flex-col gap-4 rounded-2xl border border-emerald-300 bg-gradient-to-br from-emerald-50 to-teal-50/50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-center gap-3.5">
@@ -4530,6 +4530,8 @@ export function ClaimDetail({
         )}
             </>
           )}
+          </>
+        )}
         </RailStep>
       )}
 
@@ -4544,6 +4546,27 @@ export function ClaimDetail({
           S302 — 4b renders ONLY while no letter exists. Once one does, the rail
           owns its send step, so the a/b split has nothing left to split and the
           phone step is simply step 4. */}
+      {/* S319 (/check) — the anonymous step 4: locked, numbered, and honest
+          about why. The body is Andrew's approved copy + the EXISTING
+          LetterAccountGate node the caller already passes (same signup flow,
+          email prefilled, the anonymous session upgrades in place and every
+          answer above carries over). Replaces the guided packs AND the
+          classic recover step for anonymous sessions — one account ask. */}
+      {railUnified && isFlagged && anonymousDraftGate != null && (
+        <RailStep n={railStepRecover} locked title="Recover the money" last>
+          <div className="rounded-xl border border-blue-200 bg-gradient-to-b from-blue-50 to-white px-4 py-3.5">
+            <div className="text-[14px] font-bold text-gray-900">
+              Call scripts and dispute letters need a free account.
+            </div>
+            <p className="mt-1 text-[13px] leading-relaxed text-gray-600">
+              Your audit carries over — a free account saves this bill and unlocks the letter and phone script built
+              from it.
+            </p>
+            <div className="mt-3">{anonymousDraftGate}</div>
+          </div>
+        </RailStep>
+      )}
+
       {isFlagged && guidedCtx && (() => {
         const muted4b = !(
           guidedPack.outcome === "no" ||
@@ -4694,7 +4717,7 @@ export function ClaimDetail({
           </>
         );
       })()}
-      {isFlagged && !guidedCtx && !railExtends && hasContestableCharges && (
+      {isFlagged && !guidedCtx && !railExtends && hasContestableCharges && anonymousDraftGate == null && (
         <RailStep
           n={railStepRecover}
           done={hasDraftedDispute}
@@ -4814,6 +4837,35 @@ export function ClaimDetail({
           }
         }}
       />
+
+      {/* S319 (unified rail) — the verdict card for non-flagged engine bills:
+          the header + clean outro the classic full-variant banner used to
+          carry, re-homed AFTER the steps (mock panels A/C). variant="verdict"
+          renders NO rows — those live in step 1 — so the locked headline/body
+          copy keeps its one home in CostShareBanner. */}
+      {railUnified && !isFlagged && (
+        <div className="mt-2">
+          <CostShareBanner
+            variant="verdict"
+            verdict={data.costShareBill!.verdict}
+            assumptions={bannerAssumptions}
+            overrides={effectiveCostShareOverrides}
+            recoverable={billTotals.potentialRecovery}
+            correctShare={billTotals.shouldOwe}
+            charged={billTotals.shouldOwe + billTotals.potentialRecovery}
+            unpricedShare={unpricedShare}
+            fmtMoney={fmtMoney}
+            onOverride={submitCostShareOverride}
+            pendingKey={csOverridePending}
+            errorMsg={csOverrideError}
+            onShouldBeCovered={() => bannerTargetLineId && openCorrectionModal(bannerTargetLineId)}
+            onAddPlanDetails={() => undefined}
+            statedServiceCosts={statedServiceCosts}
+            onUploadEob={() => router.push("/upload?type=eob")}
+            onBack={onBack}
+          />
+        </div>
+      )}
 
       {billState === "needs_review" && !data.costShareBill && (() => {
         // Synthesize a "Specific blockers" list from line-item state so the
