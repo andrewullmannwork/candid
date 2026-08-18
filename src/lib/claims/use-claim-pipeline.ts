@@ -97,7 +97,10 @@ export interface PipelineClaimSummary {
   reviewNeededCount?: number;
   /** S290 — live Cost-Share v2 signals from the list route. Non-null ONLY when
    *  the flag is ON and the engine ran; null → legacy derivation unchanged. */
-  costShareBillVerdict?: "correct" | "confident" | "insufficient" | "recovery" | null;
+  // S319 — "not_covered" joined: the detail payload's verdict union carries it
+  // (ClaimDetail now self-derives billState through buildBillState), and the
+  // derivation only ever tests for "insufficient", so it flows harmlessly.
+  costShareBillVerdict?: "correct" | "confident" | "insufficient" | "recovery" | "not_covered" | null;
   openQuestionCount?: number | null;
   reviewLineItems?: Array<{
     id: string;
@@ -186,9 +189,19 @@ export interface ClaimPipeline {
  * shape into AuditFinding[] consumed by `deriveBillState()`.
  */
 export function buildBillState(
-  claim: PipelineClaimSummary,
+  // S319 (unified rail) — the exact subset this function reads. The list page
+  // keeps passing its full PipelineClaimSummary (structurally satisfies this);
+  // ClaimDetail's self-derivation (/check renders it with no list payload)
+  // constructs just these fields instead of stubbing a dozen unused ones.
+  claim: Pick<PipelineClaimSummary, "id"> &
+    Partial<{
+      recovery: { potentialRecovery: number } | null;
+      potentialSavings: number;
+      reviewNeededCount: number;
+      costShareBillVerdict: PipelineClaimSummary["costShareBillVerdict"];
+    }>,
   allDiscrepancies: Array<{ claim_id?: string; tier?: number | null; status?: string | null }>,
-  allDisputes: PipelineDispute[],
+  allDisputes: Array<Pick<PipelineDispute, "claimId" | "status">>,
 ): BillState {
   const claimDiscrepancies = allDiscrepancies.filter((d) => d.claim_id === claim.id);
   const claimDisputes = allDisputes.filter((d) => d.claimId === claim.id);

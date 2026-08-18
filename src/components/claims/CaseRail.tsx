@@ -58,6 +58,7 @@ export function RailStep({
   done,
   attention,
   skipped,
+  locked,
   right,
   last,
   headerOnly,
@@ -80,6 +81,14 @@ export function RailStep({
    * a declined step must not read as a performed one. `done` wins if both set.
    */
   skipped?: boolean;
+  /**
+   * S319 — a FUTURE step: visible and numbered but not yet available (grey
+   * badge keeping its number, grey title). Distinct from `skipped` (dash =
+   * the user declined it) — locked means the rail itself hasn't unlocked it
+   * (savings before the questions are answered; recovery before an account).
+   * `done`/`attention`/`skipped` win if set.
+   */
+  locked?: boolean;
   right?: React.ReactNode;
   last?: boolean;
   headerOnly?: boolean;
@@ -116,7 +125,9 @@ export function RailStep({
                 ? "bg-gray-300 text-gray-600 shadow-none"
                 : attention
                   ? "bg-amber-500 shadow-[0_2px_8px_rgba(245,158,11,0.28)]"
-                  : "bg-blue-600 shadow-[0_2px_8px_rgba(37,99,235,0.25)]")
+                  : locked
+                    ? "bg-gray-300 text-gray-600 shadow-none"
+                    : "bg-blue-600 shadow-[0_2px_8px_rgba(37,99,235,0.25)]")
           }
         >
           {done ? "\u2713" : skipped ? "\u2013" : n}
@@ -126,7 +137,7 @@ export function RailStep({
             sliver through the rail line; now the right cluster wraps below
             instead (flex-wrap) and the title keeps a readable column. */}
         <div className="min-w-[12rem] flex-1 pt-0.5">
-          <div className="text-[16.5px] font-bold tracking-[-0.005em] text-gray-900">{title}</div>
+          <div className={`text-[16.5px] font-bold tracking-[-0.005em] ${locked && !done && !attention ? "text-gray-400" : "text-gray-900"}`}>{title}</div>
           {sub && <div className="mt-0.5 text-[13px] leading-normal text-gray-500">{sub}</div>}
         </div>
         {/* S297 (Andrew) — three responsive states in pure CSS:
