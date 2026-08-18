@@ -113,7 +113,13 @@ export function Row({
             ) : null}
           </div>
         </div>
-        <div className="ml-auto pt-1">{control}</div>
+        {/* min-w-0 + max-w-full let a truncatable control (DoneEdit's pill)
+            actually ellipsize once it wraps to its own line — without them the
+            wrapped line sizes to content and a long plan name runs to the card
+            edge with no "…" (Andrew's Leg-6 screenshot). Buttons are
+            unaffected: wrap absorbs the squeeze before any shrink pressure
+            reaches them. */}
+        <div className="ml-auto min-w-0 max-w-full pt-1">{control}</div>
       </div>
       {below != null ? <div className="mt-3 pl-12">{below}</div> : null}
     </div>
