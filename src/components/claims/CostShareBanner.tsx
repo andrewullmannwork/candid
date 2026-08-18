@@ -184,6 +184,12 @@ interface CostShareBannerProps {
     rateText: string;
     serviceSlug: string | null;
   }> | null;
+  /** S319 — the aca_preventive ask's line attribution, built by ClaimDetail
+   *  from the SAME per-line assumptions the count reads (lineId stamped at
+   *  bannerAssumptions build; rangeText = the savings-derivation cell text).
+   *  Render-only: the count, answer, and dismiss machinery are unchanged, and
+   *  an empty list renders the box exactly as before. */
+  acaLines?: Array<{ lineId: string; serviceLabel: string; rangeText: string | null }> | null;
   /** S310 F16 — the S154 confirm (ClaimDetail's handleConfirmCoverage). */
   onConfirmEstimate?: (lineId: string) => void | Promise<void>;
   /** S310 F16 — the in-flight confirm's line id (ClaimDetail's pending state). */
@@ -575,6 +581,7 @@ export function CostShareBanner({
   onAddPlanDetails,
   statedServiceCosts,
   estimateRows,
+  acaLines,
   onConfirmEstimate,
   confirmingEstimateId,
   initiallyReviewed,
@@ -1337,6 +1344,20 @@ export function CostShareBanner({
       done: false,
       node: (
               <div className="mt-3 rounded-xl border border-blue-200 bg-blue-50 p-3 text-[13px] text-blue-900">
+                {/* S319 — the attribution the assumptions always carried: one
+                    header per affected bill line, naming the line and the same
+                    $0–$X its PLAN SAYS cell shows. Still ONE question, ONE
+                    counted ask; an empty list renders the box as before. */}
+                {(acaLines ?? []).length > 0 && (
+                  <div className="mb-1.5 space-y-0.5">
+                    {(acaLines ?? []).map((l) => (
+                      <p key={l.lineId} className="font-bold leading-snug">
+                        {l.serviceLabel}
+                        {l.rangeText ? ` — plan says ${l.rangeText}` : ""}
+                      </p>
+                    ))}
+                  </div>
+                )}
                 <p className="leading-relaxed">
                   Most health plans must cover preventive care — annual checkups, vaccines, screenings — for free. That
                   applies to employer and marketplace plans, but not short-term or health-sharing plans. Which kind is this?

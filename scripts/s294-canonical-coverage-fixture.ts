@@ -339,6 +339,32 @@ const meta = (rows: Array<{ slug: string; deductibleApplies?: boolean | null; co
   check("9g floor is inclusive (0.85 passes, resolver parity)", decideAccumulatorCarry(link("c1", 0.85), link("c1", 0.85), F) === "carry");
 }
 
+// ── 10. S319 — the attributed ACA ask joins the estimates band ──────────────
+// The aca_preventive assumption arrives PER-LINE (bannerAssumptions stamps
+// lineId), but the question is PLAN-level: however many lines carry it, it is
+// ONE ask, ONE count (S292 badge ⟺ band). Estimates rows count per-line beside
+// it; a hidden question ("Not sure") never counts — the same visibility const
+// now also gates the table-row subtitle, so nothing can point at a hidden box.
+{
+  const NO_OV = { deductibleMet: null, deductibleMetAsOf: null, oopMet: null, oopMetAsOf: null, userNetworkOverride: null };
+  const aca = (lineId: string) =>
+    ({ field: "aca_preventive", assumed: "unknown", value: null, correctable: true, reason: "aca_status_unknown", lineId }) as never;
+  const VIS = { deductibleAppliesRowVisible: true, acaRowVisible: true };
+  const HIDDEN = { deductibleAppliesRowVisible: true, acaRowVisible: false };
+
+  const co = pendingAssumptionFields([aca("lineA")], NO_OV, { label: "Some Plan" }, VIS, null, [{ lineId: "lineB" }]);
+  check("10a aca + estimates co-presence: both keys pend", co.has("aca_preventive") && co.has("estimate:lineB"), [...co]);
+
+  const multi = pendingAssumptionFields([aca("lineA"), aca("lineB")], NO_OV, { label: "Some Plan" }, VIS);
+  check("10b N attributed lines, ONE counted ask", multi.has("aca_preventive") && [...multi].filter((k) => k === "aca_preventive").length === 1, [...multi]);
+
+  const hidden = pendingAssumptionFields([aca("lineA"), aca("lineB")], NO_OV, { label: "Some Plan" }, HIDDEN);
+  check("10c dismissed/hidden question never counts", !hidden.has("aca_preventive"), [...hidden]);
+
+  const owned = pendingAssumptionFields([aca("lineA")], NO_OV, { label: "Some Plan" }, VIS, null, []);
+  check("10d aca-owned line subsumed from estimates: exactly the one ask", owned.has("aca_preventive") && ![...owned].some((k) => k.startsWith("estimate:")), [...owned]);
+}
+
 if (fails.length) {
   console.error(`\ns294 canonical-coverage fixture: ${pass} passed, ${fails.length} failed`);
   for (const f of fails) console.error("  " + f);

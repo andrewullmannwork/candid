@@ -1956,8 +1956,38 @@ export function ClaimDetail({
         : rate;
   };
 
+  // S319 (Andrew's retest ruling) — the preventive ask, attributed to its
+  // line(s). Each line's aca_preventive assumption already arrives per-line
+  // (bannerAssumptions stamps lineId + serviceLabel at build); the ACA box
+  // rendered on mere existence and discarded that attribution, so a line could
+  // show "$0–$X" with nothing at the line saying which answer pins it. One
+  // entry per affected LINE — still ONE counted ask (the question is
+  // plan-level; S292 badge ⟺ band untouched). rangeText reads the SAME
+  // savings-derivation row the PLAN SAYS cell renders: one producer, so the
+  // box header and the cell can never disagree.
+  const acaAskLines = bannerAssumptions
+    .filter((a) => a.field === "aca_preventive")
+    .map((a) => {
+      const sRow = savingsDerivation?.rows.find((r) => r.id === a.lineId) ?? null;
+      return {
+        lineId: a.lineId,
+        serviceLabel: a.serviceLabel,
+        rangeText: sRow?.unpriced === true ? sRow.planAmountText : null,
+      };
+    });
+  const acaAskLineIds = new Set(acaAskLines.map((l) => l.lineId));
+  // One source for "the ACA question is on screen" — the pending count, the
+  // box, and the cell subtitle all read this, so none can point at a hidden
+  // question ("Not sure" retires all three together).
+  const acaAskVisible = acaAskLines.length > 0 && !acaDismissed;
+
   const estimateRateRows = primaryLineItems
-    .filter((li) => li.coverageNeedsConfirmation === true)
+    // S319 one-line-one-ask — while the ACA question owns a line, that line's
+    // estimates row is subsumed (display mirrors the engine, where the mandate
+    // outranks an unconfirmed guess — the S318 State-3 precedence). Answering
+    // "Short-term / health-sharing" removes the aca assumption on refetch and
+    // the estimates row returns here by itself.
+    .filter((li) => li.coverageNeedsConfirmation === true && !acaAskLineIds.has(li.id))
     .map((li) => ({
       lineId: li.id,
       serviceLabel:
@@ -2006,8 +2036,8 @@ export function ClaimDetail({
           deductibleAppliesRowVisible: statedServiceCosts.some(
             (sc) => sc.costProvenance === "user" && sc.deductibleApplies == null && sc.serviceSlug != null,
           ),
-          acaRowVisible:
-            bannerAssumptions.some((a) => a.field === "aca_preventive") && !acaDismissed,
+          // S319 — hoisted to the ONE shared const (box, count, cell subtitle).
+          acaRowVisible: acaAskVisible,
         },
         // S302 — same object the banner renders from, so the badge and the row
         // can never disagree about whether the question is outstanding.
@@ -2896,6 +2926,7 @@ export function ClaimDetail({
                 estimateRows={estimateRateRows}
                 onConfirmEstimate={handleConfirmCoverage}
                 confirmingEstimateId={confirmingCoverageId}
+                acaLines={acaAskLines}
                 totalsSource={totalsSourceRow}
                 planIdentity={
                   planCandidates
@@ -3088,6 +3119,7 @@ export function ClaimDetail({
                 estimateRows={estimateRateRows}
                 onConfirmEstimate={handleConfirmCoverage}
                 confirmingEstimateId={confirmingCoverageId}
+                acaLines={acaAskLines}
                 planIdentity={
                   planCandidates
                     ? {
@@ -3453,6 +3485,13 @@ export function ClaimDetail({
                       <div className={`tabular-nums font-semibold ${!planSaysUnpriced && shouldOwe === 0 ? "text-green-700" : "text-gray-900"}`}>{planSaysAmountText}</div>
                       {planSaysCell && (
                         <div className="mt-0.5 text-[10px] leading-tight text-gray-400">{planSaysCell}</div>
+                      )}
+                      {/* S319 — the table-row tie back to the ACA question: an
+                          unpriced preventive line names what pins its range.
+                          Gated on the SAME visibility const as the box itself,
+                          so this can never point at a dismissed question. */}
+                      {!planSaysCell && planSaysUnpriced && acaAskVisible && acaAskLineIds.has(item.id) && (
+                        <div className="mt-0.5 text-[10px] leading-tight text-amber-700">preventive question pending</div>
                       )}
                     </dd>
                   </div>
