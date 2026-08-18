@@ -118,6 +118,26 @@ export async function GET(req: NextRequest) {
     const meta = (doc.metadata as Record<string, unknown> | null) ?? {};
     if (meta.user_disambiguation) continue; // already asked and answered
 
+    // Gate 4 (S319, Andrew) — the user has MOVED ON: when two or more plans
+    // entered the account after this candidate was parsed, offering the old
+    // parse back is noise, not recovery ("I changed my plan twice since I
+    // uploaded that document — silence it"). Counts NEW plan rows since the
+    // candidate's created_at — deliberately not activation toggles between
+    // old plans, which need an event source this banner doesn't warrant.
+    // No new state: staleness self-derives, and a future re-parse of the
+    // same document starts its own fresh count.
+    const { data: newerPlans, error: newerErr } = await userScoped(supabase, userRow.id)
+      .table("insurance_plans")
+      .select("id")
+      .neq("id", cand.id)
+      .gt("created_at", cand.created_at as string)
+      .limit(2);
+    if (newerErr) {
+      console.warn("[/api/plan/stranded] newer-plan count failed:", newerErr.message);
+    } else if ((newerPlans?.length ?? 0) >= 2) {
+      continue;
+    }
+
     // plan_covered_services has no user_id — it's a parent-join child, so the
     // B1/B9 primitive (not userScoped().table()) is the sanctioned read.
     const services = await selectOwnedChildren(

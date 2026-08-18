@@ -2465,11 +2465,11 @@ export function ClaimDetail({
 
   // Disputes list — step 4 body on flagged bills, bottom "Disputes" section
   // otherwise. Defined once so both placements render identically.
-  const disputesListNodeFor = (list: ClaimData["disputes"]) =>
+  const disputesListNodeFor = (list: ClaimData["disputes"], quiet = false) =>
     list.length > 0 ? (
         <div className="mb-4">
           <h3 className="text-sm font-semibold text-gray-900 mb-2">Disputes</h3>
-          <div className="space-y-2">
+          <div className={quiet ? "rounded-xl border border-gray-100 bg-white" : "space-y-2"}>
             {list.map((d) => (
               <DisputeRow
                 key={d.id}
@@ -2480,10 +2480,14 @@ export function ClaimDetail({
                 sent={
                   railTimeline?.letters.find((l) => l.disputeId === d.id)?.latestSendAt != null
                 }
+                quiet={quiet}
               />
             ))}
           </div>
-          {/* T2.7 — bundle related bills into one consolidated dispute */}
+          {/* T2.7 — bundle related bills into one consolidated dispute.
+              S319: hidden in quiet mode — an action stub has no place in a
+              records list on a bill that checks out. */}
+          {!quiet && (
           <button
             disabled
             className="mt-3 w-full rounded-lg border border-dashed border-gray-200 bg-gray-50/60 px-3 py-2.5 text-left text-xs text-gray-500 cursor-not-allowed"
@@ -2495,6 +2499,7 @@ export function ClaimDetail({
               Group bills from the same visit (hospital + anesthesia + lab + radiology) into one dispute letter.
             </span>
           </button>
+          )}
         </div>
     ) : null;
   const disputesListNode = disputesListNodeFor(data.disputes);
@@ -4124,9 +4129,22 @@ export function ClaimDetail({
           }
         >
         {!isFlagged && (
-          <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50/60 px-4 py-3 text-[13px] leading-relaxed text-gray-500">
-            Answer the questions above and Candid prices this bill against your plan.
-          </div>
+          csOverridePending != null ? (
+            /* S319 (Andrew's T2) — honest optimism: the moment an answer is
+               in flight this step acknowledges INSTANTLY with a pricing
+               state. csOverridePending spans POST + refetch (cleared in the
+               submit's finally), so this shimmer lives exactly as long as
+               the re-derivation — no new state, and deliberately NO
+               client-predicted dollars (the S291/S314 fabrication family):
+               the emerald number arrives when the engine answers. */
+            <div className="animate-pulse rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] leading-relaxed text-gray-500">
+              Pricing this bill against your plan…
+            </div>
+          ) : (
+            <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50/60 px-4 py-3 text-[13px] leading-relaxed text-gray-500">
+              Answer the questions above and Candid prices this bill against your plan.
+            </div>
+          )
         )}
         {/* S319 — the priced body renders only once the bill is actually
             flagged; the locked state above owns the un-priced presentation
@@ -5054,7 +5072,9 @@ export function ClaimDetail({
 
       {/* Disputes on this bill — bottom section for non-flagged states
           (flagged bills surface it inside step 4 "Recover the money"). */}
-      {!isFlagged && disputesListNode && <div className="mt-8">{disputesListNode}</div>}
+      {/* S319 — non-flagged bills render dispute RECORDS (quiet rows), not
+          calls-to-action; the flagged step-4 placement keeps the full cards. */}
+      {!isFlagged && <div className="mt-8">{disputesListNodeFor(data.disputes, true)}</div>}
 
       <Disclaimer variant="coverage_check" />
 
@@ -5616,11 +5636,20 @@ function DisputeRow({
   recovery,
   hasCostShare,
   sent,
+  quiet = false,
 }: {
   dispute: { id: string; dispute_type: string; status: string; amount_disputed: number; amount_recovered: number; isStale?: boolean; chargeCount?: number };
   provider: string;
   recovery: number;
   hasCostShare: boolean;
+  /**
+   * S319 (Andrew's T3 ruling) — on a bill that "checks out", dispute rows are
+   * RECORDS, not calls-to-action: same chip vocabulary, same type/provider
+   * strings, same destination — but a one-line row with a small "View letter"
+   * link instead of a hero dollar and a full-width blue button. Flagged bills
+   * (step-4 placement) keep the actionable card, byte-identical.
+   */
+  quiet?: boolean;
   /**
    * S301 — has this letter actually been MAILED, from the projection's
    * `latestSendAt`. The badge below cannot answer that from `status`: mark-as-sent
@@ -5654,6 +5683,34 @@ function DisputeRow({
   const headline = hasCostShare ? recovery : dispute.amount_disputed;
   const fmt = (n: number) =>
     n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  if (quiet) {
+    return (
+      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 border-b border-gray-50 px-3 py-2.5 text-[13px] last:border-b-0">
+        {isStale ? (
+          <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-amber-100 px-2 py-0.5 text-[10.5px] font-bold text-amber-700">
+            <span className="h-1 w-1 rounded-full bg-amber-500" aria-hidden />
+            May need update
+          </span>
+        ) : (
+          <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10.5px] font-bold ${statusBadgeClass}`}>
+            {statusLabel}
+          </span>
+        )}
+        <span className="truncate font-semibold text-gray-900">{typeLabel}</span>
+        <span className="truncate text-xs text-gray-400">
+          {provider}
+          {chargeCount != null && chargeCount > 0 && ` · ${chargeCount} charge${chargeCount === 1 ? "" : "s"}`}
+        </span>
+        <a
+          href={`/disputes?dispute=${dispute.id}`}
+          className="ml-auto shrink-0 text-xs font-semibold text-blue-600 hover:text-blue-700"
+        >
+          View letter →
+        </a>
+      </div>
+    );
+  }
 
   return (
     <div className="rounded-2xl border border-gray-200 bg-white p-5">

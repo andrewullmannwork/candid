@@ -154,27 +154,120 @@ export function FollowupBanner() {
   const rows = claims.slice(0, MAX_ROWS);
   const overflow = claims.length - rows.length;
 
-  return (
-    <div className="mb-4 space-y-2">
-      {rows.map((group) => (
+  // S319 (Andrew) — ONE claim keeps today's single banner; two or more
+  // collapse into ONE amber container with a line per claim ("if there is
+  // more than one banner, they collapse into one banner with multiple
+  // lines"). Same grouped data, same acknowledge/dismiss handlers, same
+  // real-<a> semantics — only the frame changed. Tracker Item AA's first
+  // shape.
+  if (claims.length === 1) {
+    return (
+      <div className="mb-4">
         <FollowupRow
-          key={group.claimId}
-          group={group}
+          group={claims[0]}
           disabled={submitting !== null}
-          onDismiss={() => dismissClaim(group)}
+          onDismiss={() => dismissClaim(claims[0])}
           onOpen={openClaim}
         />
-      ))}
+      </div>
+    );
+  }
+
+  return (
+    <div className="mb-4 overflow-hidden rounded-2xl border border-amber-200 bg-gradient-to-b from-amber-50 to-white px-4 py-3.5 sm:px-5 sm:py-4">
+      <div className="flex items-center gap-3">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-amber-100 text-amber-700 ring-1 ring-amber-200">
+          <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" aria-hidden="true">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 2m6-2a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+        </div>
+        <p className="text-sm font-bold text-amber-900">
+          {claims.length} bills are waiting on responses
+        </p>
+      </div>
+      <div className="mt-2.5 divide-y divide-amber-100 border-t border-amber-100">
+        {rows.map((group) => (
+          <CollapsedFollowupLine
+            key={group.claimId}
+            group={group}
+            disabled={submitting !== null}
+            onDismiss={() => dismissClaim(group)}
+            onOpen={openClaim}
+          />
+        ))}
+      </div>
       {overflow > 0 && (
         <a
           href="/claim"
-          className="block px-1 text-xs font-medium text-amber-800 underline underline-offset-2 hover:text-amber-900"
+          className="mt-2 block text-xs font-semibold text-amber-800 underline underline-offset-2 hover:text-amber-900"
         >
           {overflow === 1
             ? "1 more bill is waiting on a response"
             : `${overflow} more bills are waiting on responses`}
         </a>
       )}
+    </div>
+  );
+}
+
+/** S319 — one claim's line inside the collapsed banner. Identical strings and
+ *  handlers to FollowupRow (the single-claim card); only the chrome shrank. */
+function CollapsedFollowupLine({
+  group,
+  disabled,
+  onDismiss,
+  onOpen,
+}: {
+  group: ClaimFollowupGroup;
+  disabled: boolean;
+  onDismiss: () => void;
+  onOpen: (group: ClaimFollowupGroup, href: string) => void;
+}) {
+  const title = group.providerName ?? "Your bill";
+  const waiting =
+    group.letterCount === 1
+      ? "1 letter waiting on a response"
+      : `${group.letterCount} letters waiting on responses`;
+  const deadline = group.nextDeadline ? parseLetterDate(group.nextDeadline) : null;
+
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2.5">
+      <div className="min-w-0 flex-1">
+        <span className="text-[13px] font-bold text-amber-900">{title}</span>
+        <span className="ml-2 text-xs text-amber-800">
+          {waiting}
+          {deadline
+            ? ` · next deadline ${deadline.toLocaleDateString("en-US", {
+                month: "short",
+                day: "numeric",
+              })}`
+            : ""}
+        </span>
+      </div>
+      {/* Same real-<a> contract as the single card: modifier clicks pass
+          through; a plain click acknowledges then navigates. */}
+      <a
+        href={`/claim?claim=${group.claimId}`}
+        onClick={(e) => {
+          if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+          e.preventDefault();
+          onOpen(group, `/claim?claim=${group.claimId}`);
+        }}
+        className="shrink-0 text-xs font-bold text-amber-700 hover:text-amber-900"
+      >
+        Open your claim →
+      </a>
+      <button
+        type="button"
+        onClick={onDismiss}
+        disabled={disabled}
+        aria-label={`Dismiss reminders for ${title}`}
+        className="shrink-0 rounded-md p-1 text-amber-700/70 transition-colors hover:bg-amber-100 hover:text-amber-900 disabled:opacity-50"
+      >
+        <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24" aria-hidden="true">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M6 6l12 12M18 6L6 18" />
+        </svg>
+      </button>
     </div>
   );
 }
