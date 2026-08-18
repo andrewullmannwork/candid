@@ -58,6 +58,26 @@ interface AddPlanDetailsModalProps {
    * whether the bill was fully answered. `null` genuinely means unanswered.
    */
   initialDeductibleApplies?: boolean | null;
+  /**
+   * S318 match+rate editor (Andrew-approved mock) — when the line is an
+   * unconfirmed secondary borrow, this SAME modal gains a "What your plan
+   * lists this under" picker above the rate: the resolver's own same-category
+   * candidate pool. Saving records the match answer (confirm + chosen slug,
+   * or reject on "none of these") through the existing confirm-coverage
+   * endpoint, alongside any typed rate (which always saves to the BILLED
+   * service's own row — never the sibling's; the S291 attribution rule).
+   * All three props absent → the modal renders byte-identically to before.
+   */
+  lineItemId?: string | null;
+  matchCandidates?: Array<{
+    slug: string;
+    label: string;
+    copay: number | null;
+    /** already normalized to 0–100 by the caller (the modal's own convention). */
+    coinsurancePercent: number | null;
+    deductibleApplies: boolean | null;
+  }> | null;
+  initialMatchedSlug?: string | null;
 }
 
 export function AddPlanDetailsModal({
@@ -72,7 +92,18 @@ export function AddPlanDetailsModal({
   initialCopay,
   initialCoinsurancePercent,
   initialDeductibleApplies = null,
+  lineItemId = null,
+  matchCandidates = null,
+  initialMatchedSlug = null,
 }: AddPlanDetailsModalProps) {
+  const matchUi = lineItemId != null && (matchCandidates?.length ?? 0) > 0;
+  const [matchedSel, setMatchedSel] = useState<string>(() =>
+    matchUi &&
+    initialMatchedSlug != null &&
+    matchCandidates!.some((c) => c.slug === initialMatchedSlug)
+      ? initialMatchedSlug
+      : (matchCandidates?.[0]?.slug ?? "none"),
+  );
   const [shareType, setShareType] = useState<"copay" | "coinsurance">(
     initialCopay == null && initialCoinsurancePercent != null ? "coinsurance" : "copay",
   );
@@ -101,7 +132,43 @@ export function AddPlanDetailsModal({
 
   const hasCost = value.trim() !== "";
   const hasLimits = deductible.trim() !== "" || oop.trim() !== "";
-  const canSave = hasCost || hasLimits;
+  // S318 — with the match section present, Save with everything empty is a
+  // real answer ("the match is right; use its listed rate"), per the approved
+  // mock: match kept + empty rate = confirm the match, borrowed rate flows.
+  const canSave = hasCost || hasLimits || matchUi;
+
+  // Andrew's rule (approved mock, State B2): picking a different service
+  // clears the rate AND the deductible answer — both are only meaningful under
+  // the match that produced them. The new pick's listed rate re-appears as
+  // information only; the inputs start empty again (the A8 no-prefill rule).
+  function handleMatchChange(next: string) {
+    if (next === matchedSel) return;
+    setMatchedSel(next);
+    setValue("");
+    setDeductibleApplies(null);
+    setDedUnsure(false);
+    setError(null);
+  }
+
+  const selectedCandidate = matchUi
+    ? (matchCandidates!.find((c) => c.slug === matchedSel) ?? null)
+    : null;
+  const listedRateText = selectedCandidate
+    ? (() => {
+        const rate =
+          selectedCandidate.copay != null
+            ? `$${selectedCandidate.copay} copay`
+            : selectedCandidate.coinsurancePercent != null
+              ? `${Math.round(selectedCandidate.coinsurancePercent)}% coinsurance`
+              : null;
+        if (!rate) return null;
+        return selectedCandidate.deductibleApplies === true
+          ? `${rate} · deductible applies`
+          : selectedCandidate.deductibleApplies === false
+            ? `${rate} · no deductible`
+            : rate;
+      })()
+    : null;
 
   async function handleSave() {
     setError(null);
@@ -205,6 +272,36 @@ export function AddPlanDetailsModal({
         }
       }
 
+      // Step 3 (S318) — the match answer, AFTER the rate write (the more
+      // valuable fact lands first). A failure here leaves any saved rate
+      // standing and the ask open — the line converges to a sane state either
+      // way (an exact manual row silences the borrow question by construction;
+      // an unconfirmed borrow keeps asking). Re-saving retries both writes
+      // (the override is an overwrite of the same row — harmless).
+      if (matchUi) {
+        const res = await fetch(
+          `/api/claims/${claimId}/line-items/${lineItemId}/confirm-coverage`,
+          {
+            method: "POST",
+            headers,
+            body: JSON.stringify(
+              matchedSel === "none"
+                ? { decision: "no_match" }
+                : { decision: "match", matchedSlug: matchedSel },
+            ),
+          },
+        );
+        if (!res.ok) {
+          setError(
+            hasCost
+              ? "Saved your rate, but couldn't record the match answer — try again."
+              : "Couldn't record the match answer — try again.",
+          );
+          setSaving(false);
+          return;
+        }
+      }
+
       // Write confirmed → show "Saved", refetch in the BACKGROUND (the slow
       // part — full claim re-fetch + cost-share recompute), then auto-close.
       // S292 (#8) — pass the saved values so the caller can render optimistically.
@@ -268,6 +365,38 @@ export function AddPlanDetailsModal({
               We&apos;ll use this to check this bill and your other bills on this plan — saved to your account.
             </p>
 
+            {/* ── S318 — the match picker (unconfirmed-borrow lines only).
+                Options are the resolver's own same-category candidate pool;
+                changing the pick clears the rate + deductible inputs (both are
+                only meaningful under the match that produced them), and the
+                new pick's listed rate appears as information, never pre-filled
+                (the A8 rule). ── */}
+            {matchUi && (
+              <div className="mt-5">
+                <p className="text-sm font-medium text-gray-800">What your plan lists this under</p>
+                <select
+                  value={matchedSel}
+                  onChange={(e) => handleMatchChange(e.target.value)}
+                  aria-label="What your plan lists this service under"
+                  className="mt-2.5 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                >
+                  {matchCandidates!.map((c) => (
+                    <option key={c.slug} value={c.slug}>
+                      {c.label}
+                    </option>
+                  ))}
+                  <option value="none">None of these — I&apos;ll set my own rate</option>
+                </select>
+                <p className="mt-1.5 text-xs text-gray-500">
+                  {matchedSel === "none"
+                    ? "Set your rate below, or upload a plan document that prices it."
+                    : listedRateText
+                      ? `${selectedCandidate!.label} is listed on your plan at ${listedRateText}.`
+                      : `${selectedCandidate!.label} has no listed rate on your plan — set yours below.`}
+                </p>
+              </div>
+            )}
+
             {/* ── Step 1 — service cost-share ─────────────────────────────── */}
             <div className="mt-5">
               <p className="text-sm font-medium text-gray-800">
@@ -311,6 +440,11 @@ export function AddPlanDetailsModal({
                   <span className="pr-3 text-sm font-medium text-gray-400">%</span>
                 )}
               </div>
+              {matchUi && matchedSel !== "none" && (
+                <p className="mt-1.5 text-xs text-gray-400">
+                  Leave empty to use the listed rate above.
+                </p>
+              )}
 
               {/* Deductible-applies segmented Yes / No */}
               <div className="mt-4">

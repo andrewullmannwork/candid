@@ -134,6 +134,15 @@ interface LineItem {
   // Preventive lines never emit the service_cost assumption, so inferring
   // "priced" from its absence rendered a rate-less line as priced.
   costShareRateUnknown?: boolean;
+  // S318 match+rate editor — the picker's pool (same-category covered siblings
+  // from the resolver's own prep; pick first; capped). Coinsurance is the
+  // payload's decimal 0–1 convention, normalized to percent at use sites.
+  coverageSecondaryCandidates?: Array<{
+    slug: string;
+    copay: number | null;
+    coinsurance: number | null;
+    deductibleApplies: boolean | null;
+  }> | null;
   // S135 — plan-vs-ACA override (see AcaOverride above). Drives inline override
   // message in the green plan-says box. Null when no override applies.
   acaOverride?: AcaOverride | null;
@@ -1922,6 +1931,31 @@ export function ClaimDetail({
   // Coverage badge renders from (coverageNeedsConfirmation, S154), same
   // confirm write (handleConfirmCoverage), so the card row and the badge
   // read + settle ONE row — flow by construction, no new derivations.
+  // S318 match+rate editor — the candidate's rate in the house vocabulary,
+  // deductible status included (Andrew-approved row copy: "10% coinsurance
+  // after deductible" / "$50 copay — no deductible"). Since the borrow gate,
+  // an unconfirmed line's planCoverage money is NULL, so the QUESTION's number
+  // comes from the candidate pool the route now ships — the same values the
+  // resolver borrowed from, framed as an ask instead of an answer.
+  const candidateRateText = (c: {
+    copay: number | null;
+    coinsurance: number | null;
+    deductibleApplies: boolean | null;
+  }): string | null => {
+    const rate =
+      c.copay != null
+        ? `$${fmtMoney(c.copay)} copay`
+        : c.coinsurance != null
+          ? `${Math.round(normalizeCoinsurancePct(c.coinsurance) ?? 0)}% coinsurance`
+          : null;
+    if (!rate) return null;
+    return c.deductibleApplies === true
+      ? `${rate} after deductible`
+      : c.deductibleApplies === false
+        ? `${rate} — no deductible`
+        : rate;
+  };
+
   const estimateRateRows = primaryLineItems
     .filter((li) => li.coverageNeedsConfirmation === true)
     .map((li) => ({
@@ -1931,12 +1965,20 @@ export function ClaimDetail({
       siblingLabel: li.coverageSecondaryMatchedSlug
         ? humanizeSlug(li.coverageSecondaryMatchedSlug) || null
         : null,
-      rateText:
-        li.planCoverage?.copay != null
-          ? `$${fmtMoney(li.planCoverage.copay)} copay`
-          : li.planCoverage?.coinsurance != null
-            ? `${Math.round(normalizeCoinsurancePct(li.planCoverage.coinsurance) ?? 0)}% coinsurance`
-            : "a borrowed rate",
+      rateText: (() => {
+        const picked = (li.coverageSecondaryCandidates ?? []).find(
+          (c) => c.slug === li.coverageSecondaryMatchedSlug,
+        );
+        return (
+          (picked ? candidateRateText(picked) : null) ??
+          // legacy fallback (pre-candidates payload): the line's own coverage
+          (li.planCoverage?.copay != null
+            ? `$${fmtMoney(li.planCoverage.copay)} copay`
+            : li.planCoverage?.coinsurance != null
+              ? `${Math.round(normalizeCoinsurancePct(li.planCoverage.coinsurance) ?? 0)}% coinsurance`
+              : "a borrowed rate")
+        );
+      })(),
       serviceSlug: li.service_slug ?? null,
     }));
 
@@ -3482,13 +3524,19 @@ export function ClaimDetail({
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation();
-                            handleConfirmCoverage(item.id);
+                            // S318 (mock deviation, flagged for Andrew) — the chip
+                            // used to WRITE the confirm on one click, with no
+                            // question shown (an accidental tap was an attested
+                            // answer). It now opens the match+rate editor — the
+                            // question comes to you; same one-question-one-place
+                            // goal as the mock's scroll-and-flag, with zero new
+                            // scroll plumbing.
+                            setAddPlanDetailsLineId(item.id);
                           }}
-                          disabled={confirmingCoverageId === item.id}
-                          title="We inferred this from a related covered service. Click to confirm it's right."
-                          className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-px text-[9px] font-semibold text-amber-700 cursor-pointer ring-1 ring-amber-200 hover:bg-amber-100 hover:ring-amber-300 transition-colors disabled:opacity-50"
+                          title="We inferred this from a related covered service. Click to review the match."
+                          className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-px text-[9px] font-semibold text-amber-700 cursor-pointer ring-1 ring-amber-200 hover:bg-amber-100 hover:ring-amber-300 transition-colors"
                         >
-                          {confirmingCoverageId === item.id ? "Saving…" : "Verify coverage"}
+                          Verify coverage
                         </button>
                       )}
                     </dd>
@@ -5000,6 +5048,25 @@ export function ClaimDetail({
                 ? normalizeCoinsurancePct(line.planCoverage.coinsurance)
                 : null
             }
+            /* S318 match+rate editor — present only while the line still asks
+             * (needsConfirmation): the picker section renders inside this SAME
+             * modal. A rejected line ("none of these") reopens as the plain
+             * plan-details form — the generic ask, exactly the mock's State D. */
+            lineItemId={line.id}
+            matchCandidates={
+              line.coverageNeedsConfirmation === true &&
+              (line.coverageSecondaryCandidates?.length ?? 0) > 0
+                ? line.coverageSecondaryCandidates!.map((c) => ({
+                    slug: c.slug,
+                    label: humanizeSlug(c.slug) || c.slug.replace(/_/g, " "),
+                    copay: c.copay,
+                    coinsurancePercent:
+                      c.coinsurance != null ? normalizeCoinsurancePct(c.coinsurance) : null,
+                    deductibleApplies: c.deductibleApplies,
+                  }))
+                : null
+            }
+            initialMatchedSlug={line.coverageSecondaryMatchedSlug ?? null}
             onClose={() => setAddPlanDetailsLineId(null)}
             onSaved={async () => {
               await refetchClaim();

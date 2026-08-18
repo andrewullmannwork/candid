@@ -1135,11 +1135,32 @@ export async function resolveEvidence(
           planMeta?.acaCompliant ?? null,
           gate,
         );
-        if (!sec) continue;
         if (meta.coverage_user_rejected === true) continue; // user said "doesn't match" → exclude
+        // S318 match+rate editor — the user's stored pick (coverage_user_matched_slug,
+        // written with the confirm mark) outranks AND outlives the resolver's own
+        // pick, so the letter cites the sibling the user actually chose — the same
+        // lookup-with-fallback the money gate (resolveLinePrep) runs, which is what
+        // keeps the screen and the letter agreeing on the chosen slug. Unknown slug
+        // → resolver pick; resolver null + no usable pick → skip, as before.
+        const userPick =
+          meta.coverage_user_confirmed === true &&
+          typeof meta.coverage_user_matched_slug === "string"
+            ? ((planMeta?.coveredMeta ?? []).find(
+                (c) => c.slug === meta.coverage_user_matched_slug,
+              ) ?? null)
+            : null;
+        const effective = userPick
+          ? {
+              coverage: userPick.coverage,
+              matchedSlug: userPick.slug,
+              source: "secondary_match" as const,
+              confidence: sec?.confidence ?? ("estimate" as const),
+            }
+          : sec;
+        if (!effective) continue;
         if (meta.coverage_user_confirmed === true) {
           // "matches" → cite it (Case-2 bullet); recompute the cost-share delta.
-          const pb = buildSecondaryPlanBenefit(sec, planYear);
+          const pb = buildSecondaryPlanBenefit(effective, planYear);
           ev.planBenefit = pb;
           const expected = computeExpectedPatientCost(pb, ev.billedAmount);
           ev.expectedPatientCost = expected;
@@ -1152,17 +1173,17 @@ export async function resolveEvidence(
           // S314 — price the question. Same derivation the confirmed branch
           // runs, computed WITHOUT writing planBenefit/discrepancyAmount, so
           // the line stays uncited and uncounted (see projectedDiscrepancy).
-          const projectedBenefit = buildSecondaryPlanBenefit(sec, planYear);
+          const projectedBenefit = buildSecondaryPlanBenefit(effective, planYear);
           const projectedExpected = computeExpectedPatientCost(
             projectedBenefit,
             ev.billedAmount,
           );
           ev.secondaryCoverageVerify = {
-            matchedSlug: sec.matchedSlug ?? "preventive_care",
-            matchedServiceName: sec.matchedSlug
-              ? humanizeSlug(sec.matchedSlug)
+            matchedSlug: effective.matchedSlug ?? "preventive_care",
+            matchedServiceName: effective.matchedSlug
+              ? humanizeSlug(effective.matchedSlug)
               : "preventive care (ACA $0)",
-            costShareLabel: secondaryCostShareLabel(sec.coverage),
+            costShareLabel: secondaryCostShareLabel(effective.coverage),
             projectedDiscrepancy:
               projectedExpected != null && ev.actualPatientCost != null
                 ? Math.max(0, ev.actualPatientCost - projectedExpected)

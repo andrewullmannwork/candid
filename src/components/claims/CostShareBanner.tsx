@@ -1284,22 +1284,22 @@ export function CostShareBanner({
                     <button
                       type="button"
                       onClick={() => onAddPlanDetails({ lineId: er.lineId, serviceSlug: er.serviceSlug })}
-                      className="text-[13px] font-medium text-blue-600 hover:text-blue-700"
+                      className="whitespace-nowrap text-[13px] font-medium text-blue-600 hover:text-blue-700"
                     >
-                      Edit
+                      That&apos;s not right
                     </button>
                   </span>
                 }
               >
-                {/* S318 (Andrew-approved copy) — since the borrow gate, an
-                    unconfirmed borrow's rate is NOT used in any money, so the
-                    old "we're using its X rate" asserted something no longer
-                    true. The approved string names the candidate match and
-                    asks; it deliberately carries no number (the money is
-                    nulled until confirmed — the ask card on the dispute page
-                    still shows the candidate rate). */}
+                {/* S318 match+rate editor (Andrew-approved mock, State A) — the
+                    question now carries the candidate's rate WITH deductible
+                    status ("10% coinsurance after deductible"), sourced from
+                    the candidate pool the route ships — a number framed as an
+                    ask, never flowing into any money until answered. "That's
+                    not right" opens the editor (the existing plan-details
+                    modal grown a match picker). */}
                 {er.siblingLabel
-                  ? `Your plan doesn't list ${er.serviceLabel.toLowerCase()} directly. Its closest match is ${er.siblingLabel} — confirm that rate or set the real one.`
+                  ? `Your plan doesn't list ${er.serviceLabel.toLowerCase()} directly. Its closest match is ${er.siblingLabel} — ${er.rateText}. Does that match?`
                   : `We're using an estimated rate for ${er.serviceLabel.toLowerCase()}: ${er.rateText}. Confirm it or set the real rate.`}
               </Row>
       ),

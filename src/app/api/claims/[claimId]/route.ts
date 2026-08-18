@@ -607,6 +607,36 @@ export async function GET(
       // sibling slug we matched to (e.g. annual_physical → preventive_care), so
       // the UI can show "Covered — via Preventive Care" rather than a direct hit.
       coverageSecondaryMatchedSlug: secondaryMatchedSlug,
+      // S318 match+rate editor — the picker's pool: the plan's own same-category
+      // covered siblings (the resolver's candidate set, from the SAME prep the
+      // borrow ran against), current pick first, capped, display-only. The
+      // coinsurance stays the payload's decimal 0–1 convention (the client
+      // normalizes to percent, as it already does for planCoverage).
+      coverageSecondaryCandidates: (() => {
+        const lineSlug = (item as Record<string, unknown>).service_slug as string | null;
+        if (secondaryConfidence == null || !lineSlug) return null;
+        const cat = csPrepInputs.billSlugMeta.get(lineSlug)?.category ?? null;
+        if (!cat) return null;
+        const seen = new Set<string>();
+        const pool = csPrepInputs.coveredMeta
+          .filter((c) => c.category === cat && !seen.has(c.slug) && (seen.add(c.slug), true))
+          .map((c) => ({
+            slug: c.slug,
+            copay: c.coverage.copay ?? null,
+            coinsurance: c.coverage.coinsurance ?? null,
+            deductibleApplies: c.coverage.deductibleApplies ?? null,
+          }));
+        pool.sort((a, b) =>
+          a.slug === secondaryMatchedSlug
+            ? -1
+            : b.slug === secondaryMatchedSlug
+              ? 1
+              : a.slug < b.slug
+                ? -1
+                : 1,
+        );
+        return pool.length > 0 ? pool.slice(0, 8) : null;
+      })(),
       // S154 — secondary-match gate outcome. `estimate` = identified but the
       // borrowed cost-share is ambiguous → the UI shows a "Verify coverage"
       // affordance. S318 — the money now matches the label: resolveLinePrep
