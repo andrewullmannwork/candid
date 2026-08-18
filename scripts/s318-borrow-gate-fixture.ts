@@ -164,6 +164,7 @@ console.log("\n── case 1: undecided estimate borrow → identity yes, money 
   check("coverageSource stays secondary_match", r.coverageSource === "secondary_match");
   check("service_cost assumption pending", pendingServiceCost(r.result));
   check("shouldOwe NOT grounded", r.result.shouldOweGrounded === false);
+  check("engine exports rateUnknown=true (S318 display signal)", r.result.rateUnknown === true);
   check("precise dollar NOT assertable", !isPreciseDollarAssertable(r.result));
   check(
     "verdict never affirmative off a guess",
@@ -179,6 +180,7 @@ console.log("\n── case 2: user-CONFIRMED estimate borrow → the borrowed ra
   check("borrowed deductibleApplies intact", r.coverage?.deductibleApplies === true);
   check("identity intact", r.secondaryMatchedSlug === "advanced_imaging");
   check("no pending service_cost assumption", !pendingServiceCost(r.result));
+  check("engine exports rateUnknown=false (confirmed rate is usable)", r.result.rateUnknown === false);
 }
 
 console.log("\n── case 3: user-REJECTED borrow → dropped entirely, even a confident one ──");
@@ -188,6 +190,7 @@ console.log("\n── case 3: user-REJECTED borrow → dropped entirely, even a 
   check("estimate borrow: no matched slug", est.secondaryMatchedSlug === null);
   check("estimate borrow: no confidence", est.secondaryConfidence === null);
   check("estimate borrow: service_cost pending (ask returns)", pendingServiceCost(est.result));
+  check("estimate borrow: rateUnknown exported true", est.result.rateUnknown === true);
   check("estimate borrow: not assertable", !isPreciseDollarAssertable(est.result));
   const conf = resolveLineCostShare(
     makeRaw({ coverage_user_rejected: true }, "pcp_visit"),

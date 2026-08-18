@@ -486,6 +486,7 @@ export async function GET(
     let lineCostShareVerdict: CostShareVerdict | null = null;
     let lineCostShareAssumptions: CostShareAssumption[] | null = null;
     let lineInsurerDiscrepancy: InsurerDiscrepancy | null = null;
+    let lineCostShareRateUnknown: boolean | null = null;
     if (costShareV2) {
       // §18.9 — shared resolution layer (parity-locked vs the prior inline assembly,
       // scripts/calibration/fixtures/cost-share-v2/resolve-parity.ts). allowed is the
@@ -510,6 +511,7 @@ export async function GET(
       lineCostShareVerdict = cs.verdict;
       lineCostShareAssumptions = cs.assumptions;
       lineInsurerDiscrepancy = cs.insurerDiscrepancy;
+      lineCostShareRateUnknown = cs.rateUnknown;
       // G7 (Ship Gate) — server-side recall-loss telemetry. The OLD deductible-
       // blind synthesis fired a "mystery gap" when billed>0 & insurer $0 &
       // owed $0; log when that shape holds but the engine cleared the line
@@ -641,6 +643,10 @@ export async function GET(
             costShareVerdict: lineCostShareVerdict,
             costShareAssumptions: lineCostShareAssumptions,
             insurerDiscrepancy: lineInsurerDiscrepancy,
+            // S318 — the engine's own "no usable rate" fact (rateUnknown), so
+            // the client's rateKnown reads the fact instead of inferring it
+            // from the service_cost assumption preventive lines never emit.
+            costShareRateUnknown: lineCostShareRateUnknown,
           }
         : {}),
       codeIdentity: flywheelEnabled

@@ -130,6 +130,10 @@ interface LineItem {
   // "Verify coverage" affordance; demoted in disputes until confirmed.
   coverageConfidence?: "confident" | "estimate" | null;
   coverageNeedsConfirmation?: boolean;
+  // S318 — the engine's own "no usable rate" fact (CostShareV2Result.rateUnknown).
+  // Preventive lines never emit the service_cost assumption, so inferring
+  // "priced" from its absence rendered a rate-less line as priced.
+  costShareRateUnknown?: boolean;
   // S135 — plan-vs-ACA override (see AcaOverride above). Drives inline override
   // message in the green plan-says box. Null when no override applies.
   acaOverride?: AcaOverride | null;
@@ -1550,9 +1554,15 @@ export function ClaimDetail({
           // rate →" chip that already exists, and the plan card picks up its
           // own honesty marker (", so far") because not every charged line is
           // priced. Same field, same question, same answer as the letter.
+          // S318 — plus the engine's own fact: preventive lines skip the
+          // service_cost assumption by design, so a rate-less preventive line
+          // read as priced and the table asserted "PLAN SAYS $197.77 · no
+          // copay" off a null coverage (surfaced by the borrow gate's live
+          // test — the rejected annual_physical line).
           rateKnown:
             !hasPendingAssumption(li.costShareAssumptions, "service_cost") &&
-            li.coverageNeedsConfirmation !== true,
+            li.coverageNeedsConfirmation !== true &&
+            li.costShareRateUnknown !== true,
           copay: li.planCoverage?.copay ?? null,
           coinsurance: pct != null ? pct / 100 : null,
           covered: li.planCoverage?.covered ?? null,
@@ -3148,8 +3158,16 @@ export function ClaimDetail({
           // S309 F2 — the PLAN-SAYS sub-line, from the SAME derivation the
           // "What you could save" strip renders (one wording source; null when
           // the savings flag is OFF or the line is unpriced/not-covered).
-          const planSaysCell =
-            savingsDerivation?.rows.find((r) => r.id === item.id)?.planTermCell ?? null;
+          // S318 — the whole row, so the amount cell can render the strip's own
+          // unpriced range ("$0–$X") instead of asserting the engine's
+          // conservative BOUND as "PLAN SAYS $197.77" on a line whose rate we
+          // don't know. Same derivation, so the two surfaces cannot disagree.
+          const savingsRow = savingsDerivation?.rows.find((r) => r.id === item.id) ?? null;
+          const planSaysCell = savingsRow?.planTermCell ?? null;
+          const planSaysUnpriced = savingsRow?.unpriced === true;
+          const planSaysAmountText = planSaysUnpriced
+            ? savingsRow!.planAmountText
+            : `$${fmtMoney(shouldOwe)}`;
           const rawInsurancePaid = item.insurance_paid || 0;
           const hasGap = billed > 0 && rawInsurancePaid === 0 && owed === 0;
           // Cost-Share v2 (S214) — when the engine ran (verdict present), the
@@ -3300,7 +3318,7 @@ export function ClaimDetail({
                   <div className="flex justify-between gap-3">
                     <dt className="text-gray-500 uppercase tracking-wider">Plan says</dt>
                     <dd className="text-right">
-                      <div className={`tabular-nums font-semibold ${shouldOwe === 0 ? "text-green-700" : "text-gray-900"}`}>${fmtMoney(shouldOwe)}</div>
+                      <div className={`tabular-nums font-semibold ${!planSaysUnpriced && shouldOwe === 0 ? "text-green-700" : "text-gray-900"}`}>{planSaysAmountText}</div>
                       {planSaysCell && (
                         <div className="mt-0.5 text-[10px] leading-tight text-gray-400">{planSaysCell}</div>
                       )}
@@ -3500,10 +3518,14 @@ export function ClaimDetail({
                     same derivation as the savings strip. */}
                 <div
                   className="text-right"
-                  title={`Per your plan, you should owe $${fmtMoney(shouldOwe)} for this service.`}
+                  title={
+                    planSaysUnpriced
+                      ? (savingsRow?.planDetail ?? "We don't know your rate for this service yet.")
+                      : `Per your plan, you should owe $${fmtMoney(shouldOwe)} for this service.`
+                  }
                 >
-                  <div className={`text-sm font-bold tabular-nums whitespace-nowrap ${shouldOwe === 0 ? "text-emerald-700" : "text-gray-900"}`}>
-                    ${fmtMoney(shouldOwe)}
+                  <div className={`text-sm font-bold tabular-nums whitespace-nowrap ${!planSaysUnpriced && shouldOwe === 0 ? "text-emerald-700" : "text-gray-900"}`}>
+                    {planSaysAmountText}
                   </div>
                   {planSaysCell && (
                     <div className="mt-0.5 text-[10px] leading-tight text-gray-400">
