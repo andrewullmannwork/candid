@@ -1272,8 +1272,15 @@ export function CostShareBanner({
                   </span>
                 }
               >
+                {/* S318 (Andrew-approved copy) — since the borrow gate, an
+                    unconfirmed borrow's rate is NOT used in any money, so the
+                    old "we're using its X rate" asserted something no longer
+                    true. The approved string names the candidate match and
+                    asks; it deliberately carries no number (the money is
+                    nulled until confirmed — the ask card on the dispute page
+                    still shows the candidate rate). */}
                 {er.siblingLabel
-                  ? `Your plan doesn't list ${er.serviceLabel.toLowerCase()} directly, so we're using its ${er.siblingLabel} rate: ${er.rateText}. Confirm it or set the real rate.`
+                  ? `Your plan doesn't list ${er.serviceLabel.toLowerCase()} directly. Its closest match is ${er.siblingLabel} — confirm that rate or set the real one.`
                   : `We're using an estimated rate for ${er.serviceLabel.toLowerCase()}: ${er.rateText}. Confirm it or set the real rate.`}
               </Row>
       ),
