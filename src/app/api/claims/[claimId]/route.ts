@@ -607,9 +607,12 @@ export async function GET(
       coverageSecondaryMatchedSlug: secondaryMatchedSlug,
       // S154 — secondary-match gate outcome. `estimate` = identified but the
       // borrowed cost-share is ambiguous → the UI shows a "Verify coverage"
-      // affordance and the dispute pipeline demotes it below cite-grade until
-      // confirmed. `coverageNeedsConfirmation` folds in whether the user has
-      // already confirmed this line (one-time; cleared by the confirm endpoint).
+      // affordance. S318 — the money now matches the label: resolveLinePrep
+      // nulls an unconfirmed estimate borrow's cost-share (so shouldOwe stays
+      // conservative/ungrounded and no letter asserts it), and the evidence
+      // side cites the borrow only after the user confirms (S154 gate).
+      // `coverageNeedsConfirmation` folds in whether the user has already
+      // confirmed this line (one-time; cleared by the confirm endpoint).
       coverageConfidence: secondaryConfidence,
       coverageNeedsConfirmation:
         secondaryConfidence === "estimate" &&
