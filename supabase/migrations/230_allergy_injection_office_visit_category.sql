@@ -1,0 +1,63 @@
+-- 230 — S317: allergy_injection is a medical benefit, not a pharmacy tier.
+--
+-- WHY. `service_catalog.category` is the candidate pool for the secondary
+-- coverage borrow (`resolveSecondaryCoverage`, src/lib/audit/coverage-loader.ts):
+-- when a plan states no price for a service, we borrow a SAME-CATEGORY sibling's
+-- cost-share. `allergy_injection` sat in category 'rx' beside the drug tiers, so
+-- an office-administered allergy shot competed against generic / preferred /
+-- non-preferred / specialty drugs for its price.
+--
+-- Measured on real DEV data (S317): every ambiguous ("estimate") borrow in the
+-- entire database was this one slug, resolving to `non_preferred_brand_rx`. The
+-- deciding trigram score was 0.025 — a single incidental shared trigram ("on ")
+-- — while every other rx candidate scored exactly 0.0. The winner was textual
+-- noise plus the alphabetical tiebreak, over a candidate pool whose copays span
+-- $0–$6,550. Nothing in that pool resembles an allergy shot.
+--
+-- EVIDENCE for the new home. Allergen immunotherapy is billed as a MEDICAL
+-- benefit: administration CPT 95115/95117 and antigen preparation CPT 95165,
+-- office-setting professional services reimbursed per prepared dosage unit —
+-- not an NDC pharmacy fill adjudicated through a PBM formulary, which is what
+-- every other 'rx' slug describes. Standard SBC "Common Medical Events" tables
+-- carry no allergy row; a physician-administered shot falls under the office /
+-- specialist visit rows. The original 'rx' placement (mig 148 line ~280) reasoned
+-- "allergy serum billed separately from a visit" — an inference from the word
+-- "serum", not from how the service is actually priced.
+--
+-- WHY A RECATEGORIZE AND NOT A RELATIONSHIP EDGE. `concept_relationships` holds
+-- 17 rows, all 'is_a', and NOTHING reads it at request time (its sole call site
+-- writes on admin merge). Routing the borrow through it would mean new code in
+-- the hot claim-GET path plus an invented relationship_type with no precedent
+-- for how far to trust it — and would leave the miscategorization in place for
+-- every OTHER reader of category. This fixes the cause, in the field that is
+-- already the mechanism.
+--
+-- SAFETY. Data-only; no schema change (Rule #7 untouched). 'office_visit' is
+-- already a populated, valid category, so no CHECK constraint moves. Coverage
+-- rows key on slug / service_id and never on category — the precedent mig 150
+-- states this explicitly — and `allergy_injection` currently has ZERO rows in
+-- both plan_covered_services and canonical_plan_services, so nothing repoints.
+-- Precedent for recategorizing in place: migs 105, 148, 150.
+--
+-- USER-VISIBLE EFFECTS (all wrong → right): the /compare accordion moves it from
+-- "Prescriptions" to "Office visits"; the dashboard tile moves from Rx to Office;
+-- the extraction prompt's vocabulary block lists it beside the visit slugs rather
+-- than the drug tiers. Every consumer of category was walked at S317; no gaps.
+--
+-- ⚠ NOT FIXED HERE (separate, larger — logged for a future session): the catalog
+-- carries TWO disconnected slugs for this concept. `allergy_treatment`
+-- (category 'other') is the plan-document parser's exclusive target, while
+-- `allergy_injection` is the bill/claim-side target. A plan whose SBC explicitly
+-- states allergy coverage therefore stores it where a bill line can never
+-- exact-match it. That is a slug-identity problem, not a category one, and this
+-- migration does not close it.
+--
+-- ROLLBACK (documented, not executed):
+--   UPDATE public.service_catalog SET category = 'rx'
+--    WHERE slug = 'allergy_injection';
+
+UPDATE public.service_catalog
+   SET category = 'office_visit',
+       updated_at = NOW()
+ WHERE slug = 'allergy_injection'
+   AND category IS DISTINCT FROM 'office_visit';

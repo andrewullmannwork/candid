@@ -47,6 +47,29 @@ export const OB_COPY = {
   planModeTitle: "Update your plan",
   planModeSub:
     "Replace your plan or insurance card by uploading a document or searching Candid's library.",
+  /* S317 (Andrew, approved) — the plan-change page does two different jobs under
+     one heading, and the card block had no heading at all, so it read as more of
+     the plan form. Two titled sections, each stating what it changes and what it
+     does not. ADDITIVE keys: the S289-approved strings above and in OB_DOC_COPY
+     are untouched, so the signup flow and both verbatim fixtures are unaffected. */
+  coverageModeTitle: "Update your coverage",
+  coverageModeSub:
+    "Change the plan we check your bills against, or update the ID numbers on your card.",
+  planSectionTitle: "Update your plan",
+  planSectionSub: "Sets your deductible, out-of-pocket max, and what's covered.",
+  cardSectionTitle: "Update your insurance card",
+  cardSectionSub:
+    "The ID numbers a provider or insurer asks you for. Doesn't change your coverage terms.",
+  /* S317 — fires only after a plan change in this session (an event, not a
+     standing todo), so it retires with the event and asks again on the next
+     change. Member ID is deliberately NOT pre-filled anywhere: a new plan almost
+     always means a new member number, so carrying the old one over would assert
+     something we do not know. The insurer DOES prefill from the new plan. */
+  cardPromptTitle: "Does your card still match?",
+  cardPromptBody:
+    "Your plan changed, so the IDs on your card probably did too. These are what we put on letters to your insurer.",
+  cardPromptUpdate: "Update card",
+  cardPromptSkip: "Skip for now",
 } as const;
 
 /** Step names shown in the progress row. */
@@ -83,6 +106,16 @@ export const OB_DOC_COPY = {
     { tag: "PLAN DOC", items: "Deductibles · OOP max · covered services" },
     { tag: "BILL · EOB", items: "Line-item overcharge audit, on the spot" },
   ],
+  /* S317 (Andrew) — plan-change mode variants. The shared strings above stay
+     exactly as S289 approved them because in SIGNUP they are correct: there you
+     genuinely may upload a plan document or a bill. On a plan change a bill is
+     not the job, so advertising a line-item audit is noise. Mode-specific keys
+     rather than edits, so signup and both verbatim fixtures are untouched. */
+  planModeExplainer: [
+    { tag: "PLAN DOC", items: "Deductibles · OOP max · covered services" },
+  ],
+  planModeDropTitle: "Drop your plan document",
+  planModeSearchToggle: "No document handy? Search Candid's library instead",
   /* S288 plan-library search (upload's peer alternative) — copy APPROVED by
      Andrew S289 (2026-07-27); fixture-asserted verbatim. */
   searchToggle: "No document handy? Search for your plan instead",

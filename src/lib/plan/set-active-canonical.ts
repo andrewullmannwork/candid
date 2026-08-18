@@ -21,7 +21,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { userScoped } from "@/lib/security/user-scoped";
-import { adoptUnlinkedClaims } from "@/lib/claims/claim-plan-link";
+import { adoptUnlinkedClaims, repointClaimsFromDeactivatedPlans } from "@/lib/claims/claim-plan-link";
 import { decideCardPreservation } from "@/lib/plan/insurer-match";
 import {
   canonicalLinkFields,
@@ -129,6 +129,17 @@ export async function setActiveCanonicalPlan(
     .limit(1)
     .maybeSingle();
 
+  // S317 — capture who is active BEFORE deactivating. Once the UPDATE lands
+  // these rows are indistinguishable from plans deactivated weeks ago, and the
+  // claims still pointing at them are what silently lose their cost basis (see
+  // repointClaimsFromDeactivatedPlans). Read-only; failure just yields an empty
+  // list and the repoint below no-ops.
+  const { data: previouslyActive } = await userScoped(supabase, userId)
+    .table("insurance_plans")
+    .select("id")
+    .eq("is_active", true);
+  const previouslyActiveIds: string[] = (previouslyActive ?? []).map((p: { id: string }) => p.id);
+
   // Single-active-plan guard: deactivate ALL the user's active rows first
   // (mirrors /api/profile force_plan_switch + extraction-dedup).
   const { error: deactivateErr } = await userScoped(supabase, userId)
@@ -204,6 +215,9 @@ export async function setActiveCanonicalPlan(
 
   // S315 — a plan just became active: unlinked claims adopt it (fail-soft).
   await adoptUnlinkedClaims(supabase, userId, activePlanId);
+  // S317 — and claims linked to the plan we just switched AWAY from follow it,
+  // instead of being left resolving coverage against an is_active=false row.
+  await repointClaimsFromDeactivatedPlans(supabase, userId, previouslyActiveIds, activePlanId);
 
   return { ok: true, insurancePlanId: activePlanId, cardCleared };
 }

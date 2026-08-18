@@ -9,7 +9,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase/server";
-import { adoptUnlinkedClaims } from "@/lib/claims/claim-plan-link";
+import { adoptUnlinkedClaims, repointClaimsFromDeactivatedPlans } from "@/lib/claims/claim-plan-link";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { decideCardPreservation } from "@/lib/plan/insurer-match";
 
@@ -238,6 +238,17 @@ export async function POST(req: NextRequest) {
       priorActiveSource = (priorActive?.source as string | null) ?? null;
     }
 
+    // S317 — who is active BEFORE the deactivation, so the claims pointing at
+    // those rows can follow the new plan rather than resolving coverage against
+    // an is_active=false one. This seam is reachable straight from /check (the
+    // "use this document" SBC path), so a second bill hits it.
+    const { data: activeBeforeRows } = await supabase
+      .from("insurance_plans")
+      .select("id")
+      .eq("user_id", doc.user_id)
+      .eq("is_active", true);
+    const activeBeforeIds: string[] = (activeBeforeRows ?? []).map((p: { id: string }) => p.id);
+
     // Deactivate old plans
     await supabase
       .from("insurance_plans")
@@ -265,6 +276,13 @@ export async function POST(req: NextRequest) {
     if (!repointErr) {
       // S315 — a plan just became active: unlinked claims adopt it.
       await adoptUnlinkedClaims(supabase, doc.user_id as string, doc.linked_insurance_plan_id as string);
+      // S317 — claims on the plan(s) just deactivated follow it too.
+      await repointClaimsFromDeactivatedPlans(
+        supabase,
+        doc.user_id as string,
+        activeBeforeIds,
+        doc.linked_insurance_plan_id as string,
+      );
     }
     if (repointErr) {
       console.error(

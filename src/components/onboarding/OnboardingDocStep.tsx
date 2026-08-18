@@ -79,6 +79,14 @@ export function OnboardingDocStep({
   searchSeed,
   emphasizeCurrent,
   onCardCleared,
+  /* S317 — copy overrides for plan-change mode. Optional BY DESIGN: the default
+     is the S289-approved signup copy, which is correct wherever it is omitted,
+     so an absent prop is a right answer rather than a silent gap. The mode-aware
+     parent decides; this component stays presentational (same shape as
+     `searchSeed`). */
+  explainerRows = OB_DOC_COPY.explainer,
+  dropTitle = OB_DOC_COPY.dropTitle,
+  searchToggleLabel = OB_DOC_COPY.searchToggle,
 }: {
   value: DocSlotValue | null;
   onDone: (v: DocSlotValue) => void;
@@ -95,6 +103,9 @@ export function OnboardingDocStep({
   /** S288 (e3e): the server cleared the card IDs (cross-insurer switch) —
    *  the flow mirrors it by clearing its card slot. */
   onCardCleared?: () => void;
+  explainerRows?: readonly { tag: string; items: string }[];
+  dropTitle?: string;
+  searchToggleLabel?: string;
 }) {
   const { user } = useAuth();
 
@@ -871,7 +882,7 @@ export function OnboardingDocStep({
     <>
       {/* Quiet doc-type explainer (design default: table style) */}
       <div className="mb-5 grid grid-cols-[auto_1fr] items-baseline gap-x-3.5 gap-y-1.5">
-        {OB_DOC_COPY.explainer.map((row) => (
+        {explainerRows.map((row) => (
           <div key={row.tag} className="contents">
             <div className="text-[10.5px] font-bold tracking-[0.09em] text-gray-400">{row.tag}</div>
             <div className="text-[13px] font-medium text-gray-700">{row.items}</div>
@@ -1084,7 +1095,7 @@ export function OnboardingDocStep({
               </svg>
             </span>
             <div>
-              <p className="text-[15px] font-semibold text-gray-900">{OB_DOC_COPY.dropTitle}</p>
+              <p className="text-[15px] font-semibold text-gray-900">{dropTitle}</p>
               <p className="mt-1 text-[13px] text-gray-400">
                 or <span className="font-semibold text-blue-600">{OB_DOC_COPY.browse}</span> ·{" "}
                 {OB_DOC_COPY.dropSub}
@@ -1100,7 +1111,7 @@ export function OnboardingDocStep({
                 onClick={openSearch}
                 className="rounded-[10px] px-3 py-2 text-[13.5px] font-semibold text-blue-600 transition-colors hover:bg-blue-50"
               >
-                {OB_DOC_COPY.searchToggle}
+                {searchToggleLabel}
               </button>
             </div>
           ) : (

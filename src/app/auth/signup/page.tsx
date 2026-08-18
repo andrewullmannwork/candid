@@ -56,6 +56,7 @@ interface SignUpProgress {
 export default function SignUpPage() {
   const router = useRouter();
   const {
+    user,
     signUpStart,
     signUpStartGoogle,
     signUpFinish,
@@ -66,6 +67,26 @@ export default function SignUpPage() {
   // SP-1 (S316) — the two /check escape links ride the anonymous-check flag;
   // the security-framing copy below is flag-independent trust polish.
   const { enabled: anonCheck } = useFeatureFlag("anonymous_bill_check_v1");
+
+  // S317 (Andrew) — a visitor who arrived from /check already ran a bill check;
+  // "Try a bill first" invites them to redo the thing that sent them here. The
+  // signal is the anonymous session itself (the same `user.isAnonymous` /check
+  // reads for isFullAccount), so the offer survives for genuine first-timers
+  // and disappears only for the people it would confuse.
+  //
+  // LATCHED, not read live. `linkWithCredential` flips isAnonymous to false the
+  // instant the account links, which happens BEFORE the OTP step renders — so a
+  // live read would quietly restore the SP7 escape for precisely the population
+  // it exists to hide it from. One mount spans form → OTP, so latching on first
+  // sight covers exactly the right span. (Clicking it there wouldn't strand
+  // them — /check now redirects a full account to /upload — but offering "no
+  // account needed" to someone one step from finishing their account is the
+  // same wrong offer, one screen later.)
+  const [fromAnonCheck, setFromAnonCheck] = useState(false);
+  useEffect(() => {
+    if (user?.isAnonymous) setFromAnonCheck(true);
+  }, [user?.isAnonymous]);
+  const offerCheckEscape = anonCheck && !fromAnonCheck;
 
   // Account creation state
   const [email, setEmail] = useState("");
@@ -215,7 +236,7 @@ export default function SignUpPage() {
       return;
     }
     if (!turnstileToken) {
-      setAccountError("Please check 'Verify you are human' above to continue.");
+      setAccountError("'Verify you are human' to continue.");
       return;
     }
     const pwErrors = validatePassword(password);
@@ -317,7 +338,7 @@ export default function SignUpPage() {
 
   async function doGoogleSignIn() {
     if (!turnstileToken) {
-      setAccountError("Please check 'Verify you are human' above to continue.");
+      setAccountError("'Verify you are human' to continue.");
       return;
     }
     setGoogleLoading(true);
@@ -439,8 +460,17 @@ export default function SignUpPage() {
               <h1 className="text-2xl font-bold text-gray-900">
                 Create your account
               </h1>
+              {/* S317 (Andrew) — a visitor arriving with an anonymous session has
+                  already run a check, so "get started" is wrong for them and the
+                  page reads as a dead end (S317 B1 routes them here from any
+                  (app) route). The subtitle slot answers the question they
+                  actually have — where did my review go — instead of adding a
+                  line. Voice matches the results card's existing "A free account
+                  saves this check, lets you add future bills…". */}
               <p className="mt-2 text-sm text-gray-500 leading-relaxed">
-                Set up your profile and upload your bills to get started with Candid.
+                {fromAnonCheck
+                  ? "Your bill review is complete. A free account saves it and lets you add more bills."
+                  : "Set up your profile and upload your bills to get started with Candid."}
               </p>
             </div>
 
@@ -615,6 +645,18 @@ export default function SignUpPage() {
                 </label>
               </div>
 
+              {/* S317 (Andrew) — the bot check is the last thing before the
+                  primary action, directly under the consent boxes. The submit
+                  button is ALREADY disabled until `turnstileToken` lands, so
+                  adjacency is what makes that gate legible: verify, then the
+                  button lights up. Supersedes the S316 placement below the
+                  account links, where the widget sat far from the button whose
+                  disabled state it explains. No margin of its own — the form's
+                  space-y-4 owns the rhythm on both sides. */}
+              <div className="flex justify-center">
+                <TurnstileWidget action="signup" onToken={setTurnstileToken} />
+              </div>
+
               <button
                 type="submit"
                 disabled={accountLoading || !tosAccepted || !privacyAccepted || !turnstileToken || (password.length > 0 && passwordErrors.length > 0)}
@@ -627,8 +669,9 @@ export default function SignUpPage() {
             <AuthErrorMessage error={accountError} />
 
             {/* SP-1 (SP5, flag-gated) — the quiet fallback below the primary
-                action, never a competing mid-form option. */}
-            {anonCheck && (
+                action, never a competing mid-form option. S317: withheld from
+                visitors who arrived from /check (see `offerCheckEscape`). */}
+            {offerCheckEscape && (
               <p className="text-center">
                 <span className="text-[15.5px] text-gray-500">Not ready for an account? </span>
                 <Link href="/check" className="text-[15.5px] font-semibold text-blue-600 hover:underline">
@@ -644,13 +687,6 @@ export default function SignUpPage() {
                   Sign in
                 </Link>
               </p>
-            </div>
-
-            {/* S316 (#4, Andrew) — the bot-check widget sits below the account
-                links, out of the form's visual path; the token still gates the
-                submit button through state exactly as before. */}
-            <div className="flex justify-center">
-              <TurnstileWidget action="signup" onToken={setTurnstileToken} />
             </div>
 
             <p className="text-xs text-gray-400 text-center">
@@ -679,11 +715,13 @@ export default function SignUpPage() {
             <AuthErrorMessage error={accountError} />
             {/* SP-1 (SP6 flag-independent · SP7 flag-gated) — the OTP wait is
                 the rage-quit moment; the escape routes into /check with
-                nothing wasted instead of losing the visitor entirely. */}
+                nothing wasted instead of losing the visitor entirely. S317:
+                withheld from visitors who arrived from /check — they are mid-
+                upgrade FROM a check, so the offer points backwards. */}
             <p className="text-center text-[13px] leading-relaxed text-gray-500">
               This one-time check keeps your account — and the health information in it — locked to you.
             </p>
-            {anonCheck && (
+            {offerCheckEscape && (
               <p className="text-center">
                 <Link href="/check" className="text-[15.5px] font-semibold text-blue-600 hover:underline">
                   Try a bill first — no account needed

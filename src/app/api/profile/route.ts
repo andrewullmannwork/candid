@@ -2,7 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { userScoped, selectOwnedChildren, upsertOwnedChildren } from "@/lib/security/user-scoped";
-import { adoptUnlinkedClaims, repointOrphanedActivePlan } from "@/lib/claims/claim-plan-link";
+import {
+  adoptUnlinkedClaims,
+  repointClaimsFromDeactivatedPlans,
+  repointOrphanedActivePlan,
+} from "@/lib/claims/claim-plan-link";
 import { loadPlanCoverageMeta } from "@/lib/audit/coverage-loader";
 import { normalizeCoinsuranceForStorage } from "@/lib/billing/coinsurance";
 import { matchInsurerCatalog } from "@/lib/plan/insurer-match";
@@ -40,7 +44,12 @@ export async function GET(req: NextRequest) {
 
   const { data: user } = await supabase
     .from("users")
-    .select("id, onboarding_completed_at")
+    // S317 — contact_email (mig 229) rides along: it is the typed results
+    // contact an anonymous /check visitor already gave us, and re-asking for it
+    // on their next bill is the "we already know this" failure. Null for every
+    // full account (the upgrade sync clears it once users.email is real), so
+    // this is additive and inert for existing consumers.
+    .select("id, onboarding_completed_at, contact_email")
     .eq("firebase_uid", decoded.uid)
     .single();
 
@@ -208,6 +217,9 @@ export async function GET(req: NextRequest) {
     // /onboarding restore card. Older API consumers simply ignore these.
     recentCoverageDocs: coverageDocs ?? [],
     coverageDocCount: coverageDocCount ?? coverageDocs?.length ?? 0,
+    // S317 additive — the anonymous visitor's typed results contact, so /check
+    // can prefill it on a second bill instead of asking again.
+    contactEmail: user.contact_email ?? null,
   });
 }
 
@@ -621,6 +633,18 @@ export async function POST(req: NextRequest) {
         existingPlan = plan;
       }
 
+      // S317 — capture every active plan BEFORE the two deactivation points
+      // below (the force_plan_switch branch and the pre-insert race guard).
+      // Once either UPDATE lands these rows look identical to plans retired
+      // weeks ago, and the claims still pointing at them are what silently lose
+      // their cost basis. Read-only; on failure the list is empty and the
+      // repoint after the insert no-ops.
+      const { data: activeBefore } = await userScoped(supabase, user.id)
+        .table("insurance_plans")
+        .select("id")
+        .eq("is_active", true);
+      const activeBeforeIds: string[] = (activeBefore ?? []).map((p: { id: string }) => p.id);
+
       // If force_plan_switch, deactivate old plan before creating new one
       if (force_plan_switch && existingProfile?.active_insurance_plan_id) {
         await userScoped(supabase, user.id)
@@ -768,6 +792,9 @@ export async function POST(req: NextRequest) {
 
             // S315 — a plan just became active: unlinked claims adopt it.
             await adoptUnlinkedClaims(supabase, user.id, newPlan.id);
+            // S317 — and claims on the plan(s) we just deactivated follow it,
+            // instead of resolving coverage against an is_active=false row.
+            await repointClaimsFromDeactivatedPlans(supabase, user.id, activeBeforeIds, newPlan.id);
 
             // Create plan_covered_services rows for copays
             await syncCopayServices(supabase, user.id, newPlan.id, { copay_primary, copay_specialist, copay_er, copay_urgent_care, copay_rx }, isCardScan);

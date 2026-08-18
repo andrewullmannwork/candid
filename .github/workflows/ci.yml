@@ -232,6 +232,28 @@ jobs:
         # an ANSWERED row that never blocks Done.
         run: npx tsx scripts/s294-canonical-coverage-fixture.ts
 
+      - name: Plan-flow unification verbatim copy fixture (S289)
+        # Asserts Andrew-approved plan-change copy VERBATIM, and was never wired
+        # here. The cost: S316 rewrote OB_CARD_COPY.keptNothing (the card-mismatch
+        # honesty rider) without updating its assertion, so this sat RED from S316
+        # through the #297 merge and shipped to PROD — invisible, because nothing
+        # ran it. Approved copy no test enforces is just a comment (the S308
+        # letter-recovery lesson, red ~14 sessions for the same reason).
+        # Offline: its only supabase reference is `import type`, erased at compile.
+        # ⚠ 31 of 34 scripts/*fixture*.ts remain unwired. These two are the ones
+        # S317 verified personally; auditing the rest is a logged follow-up, not
+        # a blind bulk-add (some need credentials, and a red one added silently
+        # teaches everyone to ignore the pipeline).
+        run: npx tsx scripts/plan-flow-unification-fixture.ts
+
+      - name: Simplified onboarding fixture (S285)
+        # Its own step, not folded into the one above: `bash -e` aborts a
+        # multi-command step at the first failure, which would hide this one's
+        # result exactly when a copy change broke both. One fixture per step is
+        # also this file's existing convention.
+        # Offline: reads the committed 208 migration off disk; no network.
+        run: npx tsx scripts/onboarding-simplified-fixture.ts
+
       - name: Type check
         run: npx tsc --noEmit
 

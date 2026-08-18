@@ -4855,10 +4855,36 @@ export function ClaimDetail({
             serviceSlug={line.service_slug}
             serviceLabel={humanizeSlug(line.service_slug) || line.description || "this service"}
             getAuthToken={getAuthToken}
-            initialCopay={line.planCoverage?.copay ?? null}
-            initialDeductibleApplies={line.planCoverage?.deductibleApplies ?? null}
+            /* S317 — NEVER seed this form from a borrowed cost-share.
+             *
+             * When no plan row states this service, `resolveSecondaryCoverage`
+             * borrows a same-category sibling's terms and labels the result
+             * `coverageConfidence: "estimate"` + `coverageNeedsConfirmation`.
+             * That labelling is correct and this modal IS its remedy — but the
+             * modal was prefilling the borrowed number into the very field it
+             * exists to ask about.
+             *
+             * Measured cost (Andrew, S317): a basic-imaging line on a plan
+             * holding `advanced_imaging` $400 and `diagnostic_test` $50 borrowed
+             * the ADVANCED copay — the resolver returns `advanced_imaging`/400/
+             * estimate, proven by running it — and offered $400 as the default
+             * answer for an ultrasound worth $50. 8× wrong, pre-filled.
+             *
+             * Worse than the display: `saveProfile` writes what's in this form
+             * as `source:'manual', confidence:0.9`. Accepting the prefill
+             * launders an explicitly-ambiguous borrow into USER-ATTESTED plan
+             * data — the S291 fabricated-value class, on a new surface. An
+             * empty field is what "we don't know, please tell us" honestly
+             * looks like.
+             *
+             * A `confident` resolution still seeds normally: that is a direct
+             * plan hit or an unambiguous borrow, and re-typing it is friction. */
+            initialCopay={line.coverageConfidence === "estimate" ? null : line.planCoverage?.copay ?? null}
+            initialDeductibleApplies={
+              line.coverageConfidence === "estimate" ? null : line.planCoverage?.deductibleApplies ?? null
+            }
             initialCoinsurancePercent={
-              line.planCoverage?.coinsurance != null
+              line.coverageConfidence !== "estimate" && line.planCoverage?.coinsurance != null
                 ? normalizeCoinsurancePct(line.planCoverage.coinsurance)
                 : null
             }

@@ -14,6 +14,7 @@ import {
   obDobToIso,
   obFmtMoney,
   obZipOk,
+  OB_DOC_COPY,
   type ClaimChipSource,
   type HouseholdId,
   type ObChip,
@@ -22,6 +23,7 @@ import {
   type SituationId,
 } from "@/lib/onboarding/simplified";
 import { getDocTypeClass, type DocType } from "@/lib/classifier/doc-type-vocabulary";
+import { Banner } from "@/components/banner";
 import { OnboardingCardStep, type CardSlotValue } from "./OnboardingCardStep";
 import { OnboardingDocStep, type DocSlotValue } from "./OnboardingDocStep";
 import { OnboardingAboutStep, type AboutState } from "./OnboardingAboutStep";
@@ -82,6 +84,17 @@ export function OnboardingFlow() {
   // S288: profile-derived search seed (plan_name > insurer) — the card slot's
   // own values win over this when the card step ran this session.
   const [profileSeed, setProfileSeed] = useState<string | null>(null);
+  /* S317 — the post-plan-change card prompt. Session-scoped by design (see
+     OB_COPY.cardPromptTitle): it answers an event, so it dies with the event. */
+  const [cardPromptOpen, setCardPromptOpen] = useState(false);
+  const cardSectionRef = useRef<HTMLDivElement | null>(null);
+  // S317 (Andrew) — the insurer we already hold, threaded to the card step so a
+  // visitor who has given us a plan doesn't retype it. Deliberately NOT
+  // `profileSeed`: that one is `plan_name || insurer` and would drop a plan name
+  // into an insurer field. Same source as the card chips below, so the two
+  // renderings of "who insures you" cannot disagree. Null for a raw signup with
+  // no plan, which is what makes this self-scoping — no origin detection.
+  const [planInsurer, setPlanInsurer] = useState<string | null>(null);
   const prefillFiredRef = useRef(false);
 
   // One consent instance for both upload surfaces — a grant in step 1 covers
@@ -129,6 +142,7 @@ export function OnboardingFlow() {
         if (cancelled) return;
         const prof = data.profile;
         setProfileSeed(prof?.plan_name || prof?.insurer || null);
+        setPlanInsurer(prof?.insurer || null);
 
         if (data.hasCard === true || prof?.member_id) {
           const chips: ObChip[] = [];
@@ -464,15 +478,34 @@ export function OnboardingFlow() {
                card, each with its own Replace; Done/Cancel exit to origin. ── */
             <div>
               <h1 className="mb-2 text-[27px] font-bold leading-[1.15] tracking-tight text-gray-900">
-                {OB_COPY.planModeTitle}
+                {OB_COPY.coverageModeTitle}
               </h1>
-              <p className="mb-6 text-[14.5px] leading-relaxed text-gray-500">{OB_COPY.planModeSub}</p>
+              <p className="mb-6 text-[14.5px] leading-relaxed text-gray-500">{OB_COPY.coverageModeSub}</p>
+              {/* S317 (Andrew, approved) — the page does two jobs; each gets a
+                  heading that states what it changes and what it doesn't. The
+                  bill/EOB affordances are withheld here (plan-mode copy props):
+                  a line-item audit isn't this page's job, and the shared signup
+                  strings stay exactly as S289 approved them. */}
+              <h2 className="mb-1 text-[16px] font-bold tracking-tight text-gray-900">
+                {OB_COPY.planSectionTitle}
+              </h2>
+              <p className="mb-3 text-[13px] leading-relaxed text-gray-500">{OB_COPY.planSectionSub}</p>
               <OnboardingDocStep
                 value={doc}
+                explainerRows={OB_DOC_COPY.planModeExplainer}
+                dropTitle={OB_DOC_COPY.planModeDropTitle}
+                searchToggleLabel={OB_DOC_COPY.planModeSearchToggle}
                 searchSeed={card?.planName || card?.insurer || profileSeed}
                 emphasizeCurrent
                 onCardCleared={() => setCard(null)}
-                onDone={(v) =>
+                onDone={(v) => {
+                  // S317 — a plan change just landed, so the IDs on the card are
+                  // now suspect. Session state, deliberately: the prompt answers
+                  // an EVENT that just happened, so it retires with the event and
+                  // needs no persistence, no schema, and no "remembered forever"
+                  // problem. A later plan change asks again because it is a new
+                  // event — which is exactly the "per plan change" behaviour.
+                  setCardPromptOpen(true);
                   setDoc((prev) => {
                     if (!prev) return v;
                     const prevNames = [prev.fileName, ...(prev.extraFiles ?? [])].filter(
@@ -483,13 +516,45 @@ export function OnboardingFlow() {
                       extraFiles: prevNames.slice(0, 3),
                       moreCount: (prev.moreCount ?? 0) + Math.max(0, prevNames.length - 3),
                     };
-                  })
-                }
+                  });
+                }}
                 onReplace={() => setDoc(null)}
                 hasConsented={hasConsented}
                 grantConsent={grantConsent}
               />
-              <div className="mt-6">
+              <div className="mt-8" ref={cardSectionRef}>
+                <h2 className="mb-1 text-[16px] font-bold tracking-tight text-gray-900">
+                  {OB_COPY.cardSectionTitle}
+                </h2>
+                <p className="mb-3 text-[13px] leading-relaxed text-gray-500">{OB_COPY.cardSectionSub}</p>
+                {/* S317 (Andrew, approved mock) — after a plan change the card's
+                    IDs are probably stale, and those IDs are what letters to the
+                    insurer carry. Amber = worth your attention, never a block:
+                    "Skip for now" leaves the card exactly as it was and nothing
+                    is written either way. Uses the shared Banner (tone="warn"
+                    already carries the amber tokens + typed primary/ghost
+                    actions) rather than a bespoke amber block. */}
+                {cardPromptOpen && (
+                  <div className="mb-4">
+                    <Banner
+                      tone="warn"
+                      title={OB_COPY.cardPromptTitle}
+                      body={OB_COPY.cardPromptBody}
+                      action={{
+                        label: OB_COPY.cardPromptUpdate,
+                        onClick: () => {
+                          setCardPromptOpen(false);
+                          cardSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+                        },
+                      }}
+                      secondary={{
+                        label: OB_COPY.cardPromptSkip,
+                        variant: "ghost",
+                        onClick: () => setCardPromptOpen(false),
+                      }}
+                    />
+                  </div>
+                )}
                 <OnboardingCardStep
                   value={card}
                   emphasizeCurrent
@@ -497,6 +562,7 @@ export function OnboardingFlow() {
                   onReplace={() => setCard(null)}
                   hasConsented={hasConsented}
                   grantConsent={grantConsent}
+                  planInsurer={planInsurer}
                 />
               </div>
               <div className="mt-8 flex flex-col gap-3.5">
@@ -537,6 +603,7 @@ export function OnboardingFlow() {
                     onReplace={() => setCard(null)}
                     hasConsented={hasConsented}
                     grantConsent={grantConsent}
+                    planInsurer={planInsurer}
                   />
                   <div className="mt-8 flex flex-col gap-3.5">
                     {card ? (

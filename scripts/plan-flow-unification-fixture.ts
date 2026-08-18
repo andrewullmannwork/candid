@@ -195,9 +195,18 @@ const CANON_TERMS = {
       "Replace your plan or insurance card by uploading a document or searching Candid's library.",
     ],
     [
+      // S317 — re-baselined to the S316 copy. The old expectation ("Nothing was
+      // changed — that card doesn't match the plan on file. Try again.") described
+      // behaviour S316 deliberately replaced: the banner had been promising an
+      // ID-save that Keep does not perform, so Keep now prefills the current
+      // plan's insurer and asks the user to check the IDs. The string moved and
+      // this assertion did not, leaving the fixture red from S316 through the
+      // #297 merge — invisible because this fixture is NOT in the CI battery
+      // (.github/workflows/ci.yml). Wiring it is logged as a follow-up; a fixture
+      // nothing runs is a fixture that rots (the S308 letter-recovery lesson).
       "OB_CARD_COPY.keptNothing",
       OB_CARD_COPY.keptNothing,
-      "Nothing was changed — that card doesn't match the plan on file. Try again.",
+      "Kept your current plan — its insurer is filled in below. Check the member ID and group number are from that plan's card, then save.",
     ],
     ["OB_CARD_COPY.currentCardEyebrow", OB_CARD_COPY.currentCardEyebrow, "YOUR CURRENT CARD"],
     ["OB_CARD_COPY.replaceCard", OB_CARD_COPY.replaceCard, "Replace card"],

@@ -704,7 +704,7 @@ function UploadForm() {
     }
   }
 
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+  const { getRootProps, getInputProps, isDragActive, open: openFilePicker } = useDropzone({
     onDrop,
     accept: {
       "application/pdf": [".pdf"],
@@ -1279,11 +1279,15 @@ function UploadForm() {
         {dropStage === "idle" && (
           <DropIdle
             kind={activePickerKey === "bill" ? "bill" : "plan"}
-            onPickFile={() => {
-              /* useDropzone's getInputProps + click() native opens the picker; getRootProps wraps this container so an outer click triggers it. We can rely on that. */
-              const input = (document.querySelector('input[type="file"]') as HTMLInputElement) ?? null;
-              input?.click();
-            }}
+            /* S317 — react-dropzone's own `open`. Replaces a global
+               `document.querySelector('input[type="file"]')`, which grabbed the
+               FIRST file input anywhere in the document: correct only while this
+               page has exactly one, and silently wrong the moment another
+               mounts. (The comment it carried was also wrong — DropIdle's button
+               calls stopPropagation, so the root click it claimed to rely on
+               never fires.) /check hit the same class with a no-op handler and
+               had no working browse at all. */
+            onPickFile={openFilePicker}
             tipsOpen={showTips === activePickerKey}
             onToggleTips={() =>
               setShowTips((s) => (s === activePickerKey ? null : activePickerKey))

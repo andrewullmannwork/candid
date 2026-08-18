@@ -40,6 +40,7 @@ import {
   type ValidityGateInput,
 } from "@/lib/parser/cf40-v4";
 import { toPlanDocType, type PlanDocType } from "@/lib/parser/doctype-expected-counts";
+import { repointClaimsFromDeactivatedPlans } from "@/lib/claims/claim-plan-link";
 
 // ── CF-40 v4 (S73.5 D1) — Plan-document-only smart-skip whitelist ─────────────
 //
@@ -953,7 +954,17 @@ export async function linkDocumentToCanonical(
       // disagrees with canonical), insert with is_active=false too — user must
       // confirm via "Use this plan?" prompt before activation.
       const shouldActivate = !isComparisonUpload && !smartSkipMismatch;
+      // S317 — captured under the SAME `shouldActivate` guard as the
+      // deactivation, so comparison uploads and smart-skip mismatches (which
+      // never deactivate anything) leave this empty and strand nothing.
+      let activeBeforeIds: string[] = [];
       if (shouldActivate) {
+        const { data: activeBeforeRows } = await supabase
+          .from("insurance_plans")
+          .select("id")
+          .eq("user_id", doc.user_id)
+          .eq("is_active", true);
+        activeBeforeIds = (activeBeforeRows ?? []).map((p: { id: string }) => p.id);
         await supabase.from("insurance_plans")
           .update({ is_active: false })
           .eq("user_id", doc.user_id)
@@ -1000,6 +1011,14 @@ export async function linkDocumentToCanonical(
         if (identifiers.insurer) profileUpdate.insurer = identifiers.insurer;
         if (identifiers.planName) profileUpdate.plan_name = identifiers.planName;
         await supabase.from("profiles").update(profileUpdate).eq("user_id", doc.user_id);
+        // S317 — claims on the plan(s) this one supersedes follow it, rather
+        // than resolving coverage against an is_active=false row.
+        await repointClaimsFromDeactivatedPlans(
+          supabase,
+          doc.user_id as string,
+          activeBeforeIds,
+          targetPlanId as string,
+        );
       }
     }
 

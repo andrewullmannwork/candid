@@ -125,9 +125,23 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   // S315 — anonymous bill-check accounts live on /check only (design §7.1:
   // one upload surface per audience). The main app shell is account territory;
   // the upgrade (linkWithCredential) flips isAnonymous and opens it.
+  //
+  // S317 (Andrew) — that upgrade is the answer, so send them to it. Reaching
+  // for /upload or any other (app) route is someone asking for the account
+  // surface; bouncing them sideways to /check answers a question they didn't
+  // ask and hides the one route that would actually help. Signup is now
+  // anonymous-aware (S316): linking the credential keeps the same uid, so the
+  // bill, plan and claims they already have carry over with nothing lost.
+  //
+  // Signup withholds its "Try a bill first" escape from anyone holding an
+  // anonymous session (offerCheckEscape) — correct, since re-offering the thing
+  // they just did is the confusion this whole arc started from. So the landing
+  // reassures instead: signup's subtitle swaps to "Your bill review is complete.
+  // A free account saves it and lets you add more bills." (Andrew, S317) for
+  // exactly this visitor. Their check is intact and /check resumes it.
   const isAnonymousUser = !!user?.isAnonymous;
   useEffect(() => {
-    if (isAnonymousUser) router.replace("/check");
+    if (isAnonymousUser) router.replace("/auth/signup");
   }, [isAnonymousUser, router]);
 
   const showCubeLoader = useMinHoldLoading(loading);
