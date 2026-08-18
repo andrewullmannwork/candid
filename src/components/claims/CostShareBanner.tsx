@@ -452,7 +452,16 @@ export function pendingAssumptionFields(
   for (const a of assumptions) {
     // S308 (tracker AU) — an ANSWERED rate (reason ∈ ANSWERED_REASONS) is
     // visible history with an Edit affordance, never an open question.
-    if (a.field === "service_cost" && !ANSWERED_REASONS.has(a.reason)) {
+    // S318 (Andrew) — one line, ONE ask: while the specific match+rate row
+    // (estimate:<lineId>) is asking about this line, the generic service_cost
+    // key is SUBSUMED by it — same rule as the row render, so the badge count
+    // and the card can never disagree (the S292 invariant). Rejection removes
+    // the estimate row and this key returns.
+    if (
+      a.field === "service_cost" &&
+      !ANSWERED_REASONS.has(a.reason) &&
+      !(estimateRows ?? []).some((er) => er.lineId === a.lineId)
+    ) {
       pending.add(`service_cost:${a.serviceSlug ?? a.serviceLabel}`);
     }
   }
@@ -695,7 +704,18 @@ export function CostShareBanner({
   // the S263 single-target probe generalized). Assumption-answered rows are
   // deliberately NOT rendered from assumptions here or they would duplicate
   // the stated rows; the emission still drives every non-card consumer.
-  const pendingServiceCostChips = serviceCostChips.filter((c) => !ANSWERED_REASONS.has(c.reason));
+  // S318 (Andrew, from his live drive) — one line, ONE ask: while the specific
+  // match+rate row (the estimates row) is asking about a line, the generic
+  // Plan-cost row for that SAME line is subsumed — its "Add details" opens the
+  // very editor the specific row's "That's not right" opens, so two rows were
+  // two doors to one question and the count said 4 when there were 3.
+  // Rejection removes the estimates row and the generic ask returns (State D).
+  // Mirrored in pendingAssumptionFields so the badge and the card agree.
+  const pendingServiceCostChips = serviceCostChips.filter(
+    (c) =>
+      !ANSWERED_REASONS.has(c.reason) &&
+      !(estimateRows ?? []).some((er) => er.lineId === c.lineId),
+  );
 
   // Display values. S304 — one source: `overrides` already carries any
   // answer this click made, merged by the caller.
@@ -1272,7 +1292,12 @@ export function CostShareBanner({
                 icon={DocIcon}
                 label={`Estimated rate — ${er.serviceLabel}`}
                 control={
-                  <span className="inline-flex flex-none items-center gap-2">
+                  /* S318 — flex-wrap, not flex-none: the relabeled second
+                     button ("That's not right") is longer than the old "Edit",
+                     and a no-shrink pair overflowed the card edge at mid
+                     widths (Andrew's screenshot). Wrapping keeps both inside
+                     the card, right-aligned, at any width. */
+                  <span className="inline-flex flex-wrap items-center justify-end gap-2">
                     <button
                       type="button"
                       disabled={confirming || !onConfirmEstimate}
