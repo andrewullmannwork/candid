@@ -57,6 +57,7 @@ import {
   buildPlanDocIdentityProvenance,
 } from "@/lib/parser/provenance-builders";
 import { loadValidServiceSlugs, enqueueUnknownServiceSlug } from "@/lib/parser/service-catalog-slugs";
+import { repointClaimsFromDeactivatedPlans } from "@/lib/claims/claim-plan-link";
 import {
   commitUploadAndEvaluateCorroboration,
   PHASE_4_0_6_PLAN_IDENTITY_FIELDS_SBC,
@@ -1297,7 +1298,18 @@ export async function processPlanDocumentData(
       // For comparison uploads: never deactivate the user's existing primary
       // plan. The new comparison row inserts with is_active=false (per planInsert
       // above), so coexistence is automatic.
+      // S317 — captured inside the SAME guard that does the deactivation, so
+      // the comparison / mismatch / seedMode exclusions hold for the repoint
+      // too: those branches never deactivate, so nothing is ever stranded and
+      // this list stays empty.
+      let activeBeforeIds: string[] = [];
       if (!mismatchData && !isComparisonUpload && !options?.seedMode) {
+        const { data: activeBeforeRows } = await supabase
+          .from("insurance_plans")
+          .select("id")
+          .eq("user_id", doc.user_id)
+          .eq("is_active", true);
+        activeBeforeIds = (activeBeforeRows ?? []).map((p: { id: string }) => p.id);
         // Deactivate old plans (but don't delete — data stays for platform).
         // seedMode (cold-start regen): skip — don't deactivate the admin's other seed plans ×N docs.
         await supabase
@@ -1330,6 +1342,14 @@ export async function processPlanDocumentData(
         if (planInsert.insurer_name) profileUpdate.insurer = planInsert.insurer_name;
         if (planInsert.plan_name) profileUpdate.plan_name = planInsert.plan_name;
         await supabase.from("profiles").update(profileUpdate).eq("user_id", doc.user_id);
+        // S317 — claims linked to the plan this document supersedes follow it,
+        // instead of resolving coverage against an is_active=false row.
+        await repointClaimsFromDeactivatedPlans(
+          supabase,
+          doc.user_id as string,
+          activeBeforeIds,
+          newPlan.id as string,
+        );
       }
     } // end else (create new plan)
 

@@ -279,6 +279,23 @@ export default function CheckPage() {
   const [claimId, setClaimId] = useState<string | null>(null);
   const [claimDosYear, setClaimDosYear] = useState<number | null>(null);
 
+  // S317 (Andrew) — a returning anonymous visitor's finished check. This page
+  // mounted at "entry" unconditionally, so anyone who left and came back (the
+  // signup escape link, the back button, a re-typed URL) met a blank upload box
+  // while their parsed bill, picked plan and findings sat on the account
+  // unsurfaced — the only way forward being to upload the same bill again.
+  const [resumeClaimId, setResumeClaimId] = useState<string | null>(null);
+  const [resumeDismissed, setResumeDismissed] = useState(false);
+  const resumeProbedRef = useRef(false);
+
+  // S317 (Andrew) — the plan this visitor already told us about. A second bill
+  // in the same session used to re-ask for the insurer from an empty search box
+  // even though the plan was active on the account. Held as identity only (name
+  // + insurer); nothing is re-written when they keep it, because the plan is
+  // already active — "Use this plan" is a navigation, not a save.
+  const [knownPlan, setKnownPlan] = useState<{ name: string; insurer: string | null } | null>(null);
+  const [changingPlan, setChangingPlan] = useState(false);
+
   // identity step
   const [query, setQuery] = useState("");
   const [stateFilter, setStateFilter] = useState("");
@@ -288,6 +305,12 @@ export default function CheckPage() {
   const [yearRelaxed, setYearRelaxed] = useState(false);
   const [identityDone, setIdentityDone] = useState<"picked" | "uploaded" | "skipped" | null>(null);
   const [missMode, setMissMode] = useState(false);
+  /** S317 — showing the already-chosen plan instead of the search. Named once so
+   *  the card's presence and the search's absence can never disagree, and so
+   *  `missMode` (the no-match path) always wins: a visitor who reached it is
+   *  telling us the known plan is not the answer. Declared after `missMode`
+   *  deliberately — it reads it. */
+  const keepingKnownPlan = !!knownPlan && !changingPlan && !missMode;
 
   // upgrade panel (A-4)
   // S316 — the screen's own recovery summary (ClaimDetail reports what it
@@ -354,6 +377,64 @@ export default function CheckPage() {
     if (!enabled) router.replace("/");
     else if (isFullAccount) router.replace("/upload");
   }, [settled, enabled, isFullAccount, router]);
+
+  // S317 — does this anonymous visitor already have a check? Asks the SAME
+  // endpoint the signed-in app uses (GET /api/claims: auth-gated, resolves the
+  // user from the Firebase uid, and already returns S307 case-aware deduped
+  // rows newest-first) — an anonymous token authenticates against it like any
+  // other, so there is no new endpoint and no second notion of "your bills".
+  //
+  // Fail-soft by construction: any non-OK response, parse failure or throw
+  // leaves `resumeClaimId` null and the ordinary entry screen renders. A
+  // convenience lookup must never stand between someone and checking a bill.
+  //
+  // Fires once per mount (the ref), and only for an anonymous session — a full
+  // account has already been redirected to /upload above. During a first-time
+  // check the probe runs before any claim exists and correctly finds nothing;
+  // the offer appears only on a LATER visit, which is exactly the trip that
+  // used to dead-end.
+  useEffect(() => {
+    if (!settled || !enabled) return;
+    if (!user?.isAnonymous || resumeProbedRef.current) return;
+    resumeProbedRef.current = true;
+    let cancelled = false;
+    (async () => {
+      try {
+        const idToken = await user.firebaseUser.getIdToken();
+        const res = await fetch("/api/claims?limit=1", {
+          headers: { Authorization: `Bearer ${idToken}` },
+        });
+        if (res.ok) {
+          const data = (await res.json().catch(() => ({}))) as { claims?: { id?: string }[] };
+          const newest = data.claims?.[0]?.id;
+          if (!cancelled && newest) setResumeClaimId(newest);
+        }
+
+        // S317 — the same hydration /onboarding already runs, for the same
+        // reason: everything this visitor has told us once should not be asked
+        // again. `contactEmail` is mig 229's typed results contact; the active
+        // plan is the one they picked on their first bill.
+        const pr = await fetch("/api/profile", { headers: { Authorization: `Bearer ${idToken}` } });
+        if (!pr.ok) return;
+        const pd = (await pr.json().catch(() => ({}))) as {
+          contactEmail?: string | null;
+          insurancePlan?: { plan_name?: string | null; insurer_name?: string | null } | null;
+        };
+        if (cancelled) return;
+        // `prev ||` so a value typed while this was in flight always wins.
+        if (pd.contactEmail) setEmail((prev) => prev || pd.contactEmail!);
+        const planName = pd.insurancePlan?.plan_name;
+        if (planName) {
+          setKnownPlan({ name: planName, insurer: pd.insurancePlan?.insurer_name ?? null });
+        }
+      } catch {
+        /* fail-soft — the entry screen renders exactly as before */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [settled, enabled, user]);
 
   // ── upload one file through the existing pipeline ──
   const uploadFile = useCallback(
@@ -787,6 +868,24 @@ export default function CheckPage() {
               candid
             </Link>
             <div className="flex items-center gap-4">
+              {/* S317 (Andrew) — the plan step was a one-way door: no way back to
+                  the bill, on any step. Everything needed already lives in state
+                  (stagedFile / documentId / claimId), so stepping back is a phase
+                  change and loses nothing.
+                  Deliberately ONLY on `identity`: the results phase already has
+                  ClaimDetail's own "Change your plan" back control, and a second
+                  header control doing the same thing is two derivations of one
+                  action. `parsing`/`confirmGap` are transient — there is no
+                  stable step behind them to return to. */}
+              {phase === "identity" && (
+                <button
+                  type="button"
+                  onClick={() => setPhase("entry")}
+                  className="text-xs font-medium text-gray-400 transition hover:text-gray-600"
+                >
+                  ← Back
+                </button>
+              )}
               <StepPills phase={phase} />
               {!user && phase === "entry" && (
                 <Link href="/auth/signin" className="text-xs font-medium text-gray-400 transition hover:text-gray-600">
@@ -814,6 +913,42 @@ export default function CheckPage() {
                 We only flag what your documents prove.
               </div>
 
+              {/* S317 — OFFER, never a silent jump (the S291 StrandedPlanBanner
+                  idiom): reopening someone's own results is their choice, and
+                  "Check a different bill" leaves the upload path below exactly
+                  as it was. Resuming reuses the normal terminal state — same
+                  claimId, same phase, same ClaimDetail — so nothing new exists
+                  to render a finished check. */}
+              {resumeClaimId && !resumeDismissed && (
+                <div className="animate-fade-in mt-5 rounded-xl border border-blue-100 bg-blue-50 p-4">
+                  <h2 className="text-[15px] font-bold tracking-tight text-gray-900">
+                    You already checked a bill
+                  </h2>
+                  <p className="mt-0.5 text-[13px] leading-relaxed text-gray-600">
+                    Pick up where you left off, or start a new check.
+                  </p>
+                  <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setClaimId(resumeClaimId);
+                        setPhase("results");
+                      }}
+                      className={BTN_PRIMARY}
+                    >
+                      See my results
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setResumeDismissed(true)}
+                      className={BTN_GHOST}
+                    >
+                      Check a different bill
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <div className="mt-6">
                 {busy && fileName ? (
                   <DropUploading fileName={fileName} uploadProgress={uploadProgress} onCancel={() => {}} />
@@ -825,7 +960,7 @@ export default function CheckPage() {
                     ) : stagedFile ? (
                       <StagedFileChip file={stagedFile} onRemove={() => setStagedFile(null)} />
                     ) : (
-                      <DropIdle kind="bill" onPickFile={() => {}} tipsOpen={false} onToggleTips={() => {}} />
+                      <DropIdle kind="bill" onPickFile={billDrop.open} tipsOpen={false} onToggleTips={() => {}} />
                     )}
                   </div>
                 )}
@@ -926,7 +1061,45 @@ export default function CheckPage() {
                 We compare your bill against your plan&apos;s own terms — never a look-alike.
               </p>
 
-              {!missMode ? (
+              {/* S317 (Andrew) — a second bill in the same session already has a
+                  plan on the account; re-asking from an empty search box throws
+                  away something they told us. Keeping it writes NOTHING: the plan
+                  is already active, so this advances exactly as a fresh pick does
+                  (identityDone "picked" → results). Changing it falls straight
+                  through to the unchanged search below, so the miss path, the
+                  upload path and the skip path all keep working untouched. */}
+              {keepingKnownPlan && (
+                <div className="mt-5 rounded-xl border border-blue-100 bg-blue-50 p-4">
+                  <p className="text-[10.5px] font-bold tracking-[0.09em] text-blue-600">
+                    THE PLAN YOU CHOSE
+                  </p>
+                  <p className="mt-1 text-[15px] font-semibold text-gray-900">{knownPlan.name}</p>
+                  {knownPlan.insurer && (
+                    <p className="text-[13px] text-gray-500">{knownPlan.insurer}</p>
+                  )}
+                  <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIdentityDone("picked");
+                        setPhase("results");
+                      }}
+                      className={BTN_PRIMARY}
+                    >
+                      Use this plan
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setChangingPlan(true)}
+                      className={BTN_GHOST}
+                    >
+                      Choose a different plan
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {keepingKnownPlan ? null : !missMode ? (
                 <>
                   <div className="mt-5 flex gap-2.5">
                     <div className="relative min-w-0 flex-1">
@@ -1079,7 +1252,7 @@ export default function CheckPage() {
                         ) : sbcStaged ? (
                           <StagedFileChip file={sbcStaged} onRemove={() => setSbcStaged(null)} />
                         ) : (
-                          <DropIdle kind="plan" onPickFile={() => {}} tipsOpen={false} onToggleTips={() => {}} />
+                          <DropIdle kind="plan" onPickFile={sbcDrop.open} tipsOpen={false} onToggleTips={() => {}} />
                         )}
                       </div>
                     )}

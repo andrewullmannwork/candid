@@ -102,6 +102,81 @@ export async function repointOrphanedActivePlan(
 }
 
 /**
+ * Move every claim pointing at a plan that was just DEACTIVATED onto the plan
+ * that just became active (S317).
+ *
+ * The gap this closes: `setActiveCanonicalPlan` deactivates all active rows,
+ * activates the new one, then calls `adoptUnlinkedClaims` — which is NULL-only
+ * by design. Claims already linked to the plan the user just switched AWAY from
+ * were therefore left pointing at an `is_active=false` row, so every plan-scoped
+ * read (cost share, coverage, the audit) resolved against a dead plan and the
+ * costs stopped loading. Measured on a real DEV session: two claims stranded on
+ * the prior plan while `profiles.active_insurance_plan_id` correctly named the
+ * new one. This is NOT anon-specific — the authed "Change plan" flow runs the
+ * same shared function and stranded claims the same way.
+ *
+ * Sibling to `adoptUnlinkedClaims` rather than a widening of it: that function's
+ * NULL-only contract is deliberate and documented ("a set pointer is NEVER
+ * clobbered"), and folding two different questions into one predicate is how
+ * these grow un-reviewable. Same posture as its sibling — ownership-checked
+ * target, batch update, `plan_repinned` spine events, fail-soft, returns 0 on
+ * any failure.
+ *
+ * Unconditional on year, deliberately: per this module's own header, prior-year
+ * claims adopting a current plan is the labeled-proxy case the S313
+ * plan_year_authority machinery already handles at the READ layer. A link is a
+ * pointer, not an assertion of authority — and refusing it strands the claim on
+ * a dead plan, which is strictly worse.
+ */
+export async function repointClaimsFromDeactivatedPlans(
+  supabase: SupabaseClient,
+  userId: string,
+  fromPlanIds: readonly string[],
+  toPlanId: string,
+): Promise<number> {
+  try {
+    const stale = fromPlanIds.filter((id) => id && id !== toPlanId);
+    if (stale.length === 0) return 0;
+    const { data: target } = await userScoped(supabase, userId)
+      .table("insurance_plans")
+      .select("id")
+      .eq("id", toPlanId)
+      .maybeSingle();
+    if (!target) return 0;
+    const { data: stranded, error: selErr } = await userScoped(supabase, userId)
+      .table("claims")
+      .select("id")
+      .in("insurance_plan_id", stale);
+    if (selErr || !stranded || stranded.length === 0) return 0;
+    const ids = stranded.map((c: { id: string }) => c.id);
+    const { error: updErr } = await userScoped(supabase, userId)
+      .table("claims")
+      .update({ insurance_plan_id: toPlanId })
+      .in("id", ids);
+    if (updErr) {
+      console.warn("[claim-plan-link] repoint update failed:", updErr.message);
+      return 0;
+    }
+    await emitCaseEvents(
+      supabase,
+      userId,
+      ids.map((claimId: string) => ({
+        claimId,
+        kind: "plan_repinned",
+        payload: { toPlanId, via: "plan_switch_repoint" },
+      })),
+    );
+    console.log(
+      `[claim-plan-link] repointed ${ids.length} claim(s) off deactivated plan(s) → ${toPlanId} for user ${userId}`,
+    );
+    return ids.length;
+  } catch (err) {
+    console.warn("[claim-plan-link] repoint failed soft:", err instanceof Error ? err.message : err);
+    return 0;
+  }
+}
+
+/**
  * Adopt every UNLINKED claim (insurance_plan_id IS NULL) the user owns onto
  * the plan that just became active. NULL-only by design; fail-soft (an
  * activation must never 500 because adoption hiccupped); returns the count

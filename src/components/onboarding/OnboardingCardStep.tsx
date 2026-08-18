@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "@/lib/auth/auth-context";
 import { OB_CARD_COPY, type ObChip } from "@/lib/onboarding/simplified";
 import { HealthConsentModal } from "./HealthConsentModal";
@@ -93,6 +93,7 @@ export function OnboardingCardStep({
   hasConsented,
   grantConsent,
   emphasizeCurrent,
+  planInsurer,
 }: {
   value: CardSlotValue | null;
   onSaved: (v: CardSlotValue) => void;
@@ -102,6 +103,12 @@ export function OnboardingCardStep({
   /** S288 plan-change mode: render the saved card as a PROMINENT current-card
    *  card (eyebrow + a real Replace button) matching the plan card's chrome. */
   emphasizeCurrent?: boolean;
+  /** S317 — the insurer already on the account, used to seed the MANUAL entry
+   *  field (null when we hold no plan, e.g. a raw signup). REQUIRED, not
+   *  optional: an optional prop lets a call site silently omit it and compile
+   *  clean, which is how S301's `guideSteps` gap shipped. Pass `null` to mean
+   *  "nothing to seed" — never omit. */
+  planInsurer: string | null;
 }) {
   const { user } = useAuth();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -123,6 +130,23 @@ export function OnboardingCardStep({
   // is the receipt ("Nothing was changed…"). Cleared on the next save attempt.
   const [keptNotice, setKeptNotice] = useState(false);
   const [canonicalMatch, setCanonicalMatch] = useState<PendingCanonicalMatch | null>(null);
+
+  // S317 (Andrew) — seed the MANUAL insurer field from the plan we already hold,
+  // so someone who arrived from /check (or any path that left a plan on the
+  // account) doesn't retype what we know. Three properties this has to keep:
+  //   · once only — `planInsurer` arrives async with the parent's profile
+  //     fetch, and a late arrival must never overwrite a field mid-typing;
+  //   · never clobber — the `prev ||` guard defers to anything already there;
+  //   · SCAN PATH UNTOUCHED — `mIns` feeds only the manual save, so the S288
+  //     mismatch pre-check still compares the SCANNED card against the active
+  //     plan. Seeding that comparison would make an untouched save unable to
+  //     mismatch and would retire Keep/Switch with no symptom.
+  const insurerSeededRef = useRef(false);
+  useEffect(() => {
+    if (insurerSeededRef.current || !planInsurer) return;
+    insurerSeededRef.current = true;
+    setMIns((prev) => prev || planInsurer);
+  }, [planInsurer]);
 
   const saveProfile = useCallback(
     async (payload: Record<string, unknown>) => {
