@@ -2064,7 +2064,20 @@ export function ClaimDetail({
     const meta = (claim.metadata as Record<string, unknown>) ?? {};
     const patient = (meta.patient as Record<string, unknown> | undefined) ?? {};
     const provider = (meta.provider as Record<string, unknown> | undefined) ?? {};
-    const firstCovered = primaryLineItems.find((li) => li.planCoverage != null) ?? null;
+    // S318 — the phone script speaks "claim for <service> … my plan documents
+    // show this service is <verdict>" as ONE sentence, so the named service and
+    // the spoken verdict must come from the SAME line — and only a line whose
+    // rate is actually KNOWN. After the borrow gate, a covered row can carry no
+    // money (an unconfirmed borrow), and buildPlanSays renders that null as
+    // "$0" — a fabricated zero, spoken aloud to the insurer (before the gate it
+    // spoke the borrowed guess itself: wrong either way). The engine's
+    // rateUnknown fact picks the line; when NO line qualifies, planVerdictLabel
+    // stays null and the builder's TOTAL contract (S297) renders a prep chip
+    // instead of prose with a hole.
+    const scriptLine =
+      primaryLineItems.find(
+        (li) => li.planCoverage != null && li.costShareRateUnknown !== true,
+      ) ?? null;
     const dosMonthDay = fmtDateMonthDayUTC((claim.date_of_service as string | null) ?? null);
     const findings: GuideFinding[] = [];
     // The SAME line-level findings the dispute bundle contests (S305) — the
@@ -2086,12 +2099,15 @@ export function ClaimDetail({
       (meta.claim_number as string | undefined);
     return {
       track: guidedTrack,
-      serviceLabel: primaryLineItems[0]?.description ?? null,
+      // Paired with planVerdictLabel below (same line, see scriptLine). The
+      // line[0] fallback only feeds the no-verdict case, where the script
+      // builder already returns null.
+      serviceLabel: scriptLine?.description ?? primaryLineItems[0]?.description ?? null,
       dosLong: fmtDateLongUTC((claim.date_of_service as string | null) ?? null),
       providerName: providerName !== "Unknown Provider" ? providerName : null,
       billedAmount: billTotals.billed > 0 ? billTotals.billed : null,
       planVerdictLabel:
-        firstCovered != null ? spokenPlanSays(buildPlanSays(firstCovered.planCoverage)) : null,
+        scriptLine != null ? spokenPlanSays(buildPlanSays(scriptLine.planCoverage)) : null,
       insurerPaid: data.effectiveTotals ? billTotals.insurancePaid : null,
       patientPaid: data.effectiveTotals ? billTotals.patientPaid : null,
       accountNumber:
