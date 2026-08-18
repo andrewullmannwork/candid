@@ -58,6 +58,26 @@ interface AddPlanDetailsModalProps {
    * whether the bill was fully answered. `null` genuinely means unanswered.
    */
   initialDeductibleApplies?: boolean | null;
+  /**
+   * S318 match+rate editor (Andrew-approved mock) — when the line is an
+   * unconfirmed secondary borrow, this SAME modal gains a "What your plan
+   * lists this under" picker above the rate: the resolver's own same-category
+   * candidate pool. Saving records the match answer (confirm + chosen slug,
+   * or reject on "none of these") through the existing confirm-coverage
+   * endpoint, alongside any typed rate (which always saves to the BILLED
+   * service's own row — never the sibling's; the S291 attribution rule).
+   * All three props absent → the modal renders byte-identically to before.
+   */
+  lineItemId?: string | null;
+  matchCandidates?: Array<{
+    slug: string;
+    label: string;
+    copay: number | null;
+    /** already normalized to 0–100 by the caller (the modal's own convention). */
+    coinsurancePercent: number | null;
+    deductibleApplies: boolean | null;
+  }> | null;
+  initialMatchedSlug?: string | null;
 }
 
 export function AddPlanDetailsModal({
@@ -72,23 +92,64 @@ export function AddPlanDetailsModal({
   initialCopay,
   initialCoinsurancePercent,
   initialDeductibleApplies = null,
+  lineItemId = null,
+  matchCandidates = null,
+  initialMatchedSlug = null,
 }: AddPlanDetailsModalProps) {
+  const matchUi = lineItemId != null && (matchCandidates?.length ?? 0) > 0;
+  const [matchedSel, setMatchedSel] = useState<string>(() =>
+    matchUi &&
+    initialMatchedSlug != null &&
+    matchCandidates!.some((c) => c.slug === initialMatchedSlug)
+      ? initialMatchedSlug
+      : (matchCandidates?.[0]?.slug ?? "none"),
+  );
+  // S318 (Andrew's Save/Override design) — the picked service's LISTED values
+  // seed the inputs, so the form shows the operative answer instead of a blank
+  // that contradicted its own helper text. The seed is recomputed from the
+  // current pick (no stored flag): the save compares live values against it —
+  // untouched ⇒ "Save" ⇒ match-confirm only (value keeps PLAN provenance);
+  // changed ⇒ "Override" ⇒ the attested manual write, performed by a user the
+  // button explicitly told is overriding. The provenance distinction A8
+  // protected by keeping fields empty now lives ON the button — visible,
+  // self-testing — which is why seeding is safe here and only here.
+  const seedOf = (c: { copay: number | null; coinsurancePercent: number | null; deductibleApplies: boolean | null } | null) =>
+    c == null
+      ? null
+      : {
+          shareType: (c.copay == null && c.coinsurancePercent != null ? "coinsurance" : "copay") as
+            | "copay"
+            | "coinsurance",
+          value: c.copay != null ? String(c.copay) : c.coinsurancePercent != null ? String(c.coinsurancePercent) : "",
+          // null listed deductible seeds NOTHING-selected (the PLAN is unsure,
+          // not the user); an explicit true/false pre-selects its button.
+          ded: c.deductibleApplies,
+        };
+  const initialSeed = matchUi
+    ? seedOf(matchCandidates!.find((c) => c.slug === (initialMatchedSlug ?? matchCandidates![0].slug)) ?? matchCandidates![0])
+    : null;
   const [shareType, setShareType] = useState<"copay" | "coinsurance">(
-    initialCopay == null && initialCoinsurancePercent != null ? "coinsurance" : "copay",
+    initialSeed
+      ? initialSeed.shareType
+      : initialCopay == null && initialCoinsurancePercent != null
+        ? "coinsurance"
+        : "copay",
   );
   const [value, setValue] = useState(
-    initialCopay != null
-      ? String(initialCopay)
-      : initialCoinsurancePercent != null
-        ? String(initialCoinsurancePercent)
-        : "",
+    initialSeed
+      ? initialSeed.value
+      : initialCopay != null
+        ? String(initialCopay)
+        : initialCoinsurancePercent != null
+          ? String(initialCoinsurancePercent)
+          : "",
   );
   // S308 — "I'm not sure" is a MADE choice that keeps the value honestly null
   // (a forced Yes/No would stamp user provenance on a guess). Save requires
   // SOME choice when a rate is being saved.
   const [dedUnsure, setDedUnsure] = useState(false);
   const [deductibleApplies, setDeductibleApplies] = useState<boolean | null>(
-    initialDeductibleApplies,
+    initialSeed ? initialSeed.ded : initialDeductibleApplies,
   );
   const [showLimits, setShowLimits] = useState(false);
   const [deductible, setDeductible] = useState("");
@@ -101,7 +162,56 @@ export function AddPlanDetailsModal({
 
   const hasCost = value.trim() !== "";
   const hasLimits = deductible.trim() !== "" || oop.trim() !== "";
-  const canSave = hasCost || hasLimits;
+  // S318 — with the match section present, Save with everything empty is a
+  // real answer ("the match is right; use its listed rate"), per the approved
+  // mock: match kept + empty rate = confirm the match, borrowed rate flows.
+  const canSave = hasCost || hasLimits || matchUi;
+
+  // Andrew's rule (State B2, amended by his Save/Override design): picking a
+  // different service RE-SEEDS the inputs to the new pick's listed values —
+  // a typed override was made under the old match and never survives into the
+  // new one; the button drops back to "Save".
+  function handleMatchChange(next: string) {
+    if (next === matchedSel) return;
+    setMatchedSel(next);
+    const seed = seedOf(matchCandidates!.find((c) => c.slug === next) ?? null);
+    setShareType(seed?.shareType ?? "copay");
+    setValue(seed?.value ?? "");
+    setDeductibleApplies(seed ? seed.ded : null);
+    setDedUnsure(false);
+    setError(null);
+  }
+
+  const selectedCandidate = matchUi
+    ? (matchCandidates!.find((c) => c.slug === matchedSel) ?? null)
+    : null;
+  // The live divergence check the button reads: a non-empty value that differs
+  // from the seed (kind or amount), or a deductible answer that differs.
+  // CLEARING the value is NOT divergence — empty always means "use the listed
+  // rate" (the old rule, preserved inside the new one).
+  const seed = seedOf(selectedCandidate);
+  const valueDiverged =
+    seed != null &&
+    value.trim() !== "" &&
+    (value.trim() !== seed.value || (seed.value !== "" && shareType !== seed.shareType));
+  const dedDiverged = seed != null && (deductibleApplies ?? null) !== (seed.ded ?? null);
+  const diverged = matchUi && matchedSel !== "none" && (valueDiverged || dedDiverged);
+  const listedRateText = selectedCandidate
+    ? (() => {
+        const rate =
+          selectedCandidate.copay != null
+            ? `$${selectedCandidate.copay} copay`
+            : selectedCandidate.coinsurancePercent != null
+              ? `${Math.round(selectedCandidate.coinsurancePercent)}% coinsurance`
+              : null;
+        if (!rate) return null;
+        return selectedCandidate.deductibleApplies === true
+          ? `${rate} · deductible applies`
+          : selectedCandidate.deductibleApplies === false
+            ? `${rate} · no deductible`
+            : rate;
+      })()
+    : null;
 
   async function handleSave() {
     setError(null);
@@ -139,6 +249,14 @@ export function AddPlanDetailsModal({
       }
     }
 
+    // S318 (Save/Override) — a deductible change with the rate CLEARED can't
+    // write (the override route saves the pair); ask for the rate instead of
+    // silently dropping the answer.
+    if (matchUi && matchedSel !== "none" && diverged && !hasCost) {
+      setError("Enter the rate too — the deductible answer saves with it.");
+      return;
+    }
+
     setSaving(true);
     try {
       const token = await getAuthToken();
@@ -152,8 +270,14 @@ export function AddPlanDetailsModal({
         Authorization: `Bearer ${token}`,
       };
 
+      // S318 (Save/Override) — UNTOUCHED listed values save NOTHING here: the
+      // match confirmation (Step 3) is the whole answer, and the value keeps
+      // its plan provenance (the seeded numbers are the plan's own row — an
+      // untouched Save must not convert them into "the user told us").
+      const untouchedListed = matchUi && matchedSel !== "none" && !diverged;
+
       // Step 1 — the service's cost-share (await: the quick, honest confirmation).
-      if (hasCost && cost !== null) {
+      if (hasCost && cost !== null && !untouchedListed) {
         // S308 (Andrew) — the deductible half is REQUIRED ENGAGEMENT: the
         // answer changes what you owe, so a rate never saves with the question
         // silently skipped. "I'm not sure" is the honest escape (saves the
@@ -205,12 +329,45 @@ export function AddPlanDetailsModal({
         }
       }
 
+      // Step 3 (S318) — the match answer, AFTER the rate write (the more
+      // valuable fact lands first). A failure here leaves any saved rate
+      // standing and the ask open — the line converges to a sane state either
+      // way (an exact manual row silences the borrow question by construction;
+      // an unconfirmed borrow keeps asking). Re-saving retries both writes
+      // (the override is an overwrite of the same row — harmless).
+      if (matchUi) {
+        const res = await fetch(
+          `/api/claims/${claimId}/line-items/${lineItemId}/confirm-coverage`,
+          {
+            method: "POST",
+            headers,
+            body: JSON.stringify(
+              matchedSel === "none"
+                ? { decision: "no_match" }
+                : { decision: "match", matchedSlug: matchedSel },
+            ),
+          },
+        );
+        if (!res.ok) {
+          setError(
+            hasCost
+              ? "Saved your rate, but couldn't record the match answer — try again."
+              : "Couldn't record the match answer — try again.",
+          );
+          setSaving(false);
+          return;
+        }
+      }
+
       // Write confirmed → show "Saved", refetch in the BACKGROUND (the slow
       // part — full claim re-fetch + cost-share recompute), then auto-close.
       // S292 (#8) — pass the saved values so the caller can render optimistically.
       setSaved(true);
+      // S318 — the untouched-listed path saved NO manual values, so it must
+      // not hand the seeded numbers to the caller as if it had (they'd render
+      // optimistically as a user-stated row that doesn't exist).
       void onSaved(
-        hasCost && cost !== null
+        hasCost && cost !== null && !untouchedListed
           ? {
               serviceSlug,
               copay: shareType === "copay" ? cost : null,
@@ -267,6 +424,38 @@ export function AddPlanDetailsModal({
             <p className="mt-2 text-[13px] leading-relaxed text-gray-500">
               We&apos;ll use this to check this bill and your other bills on this plan — saved to your account.
             </p>
+
+            {/* ── S318 — the match picker (unconfirmed-borrow lines only).
+                Options are the resolver's own same-category candidate pool;
+                changing the pick clears the rate + deductible inputs (both are
+                only meaningful under the match that produced them), and the
+                new pick's listed rate appears as information, never pre-filled
+                (the A8 rule). ── */}
+            {matchUi && (
+              <div className="mt-5">
+                <p className="text-sm font-medium text-gray-800">What your plan lists this under</p>
+                <select
+                  value={matchedSel}
+                  onChange={(e) => handleMatchChange(e.target.value)}
+                  aria-label="What your plan lists this service under"
+                  className="mt-2.5 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                >
+                  {matchCandidates!.map((c) => (
+                    <option key={c.slug} value={c.slug}>
+                      {c.label}
+                    </option>
+                  ))}
+                  <option value="none">None of these — I&apos;ll set my own rate</option>
+                </select>
+                <p className="mt-1.5 text-xs text-gray-500">
+                  {matchedSel === "none"
+                    ? "Set your rate below, or upload a plan document that prices it."
+                    : listedRateText
+                      ? `${selectedCandidate!.label} is listed on your plan at ${listedRateText}.`
+                      : `${selectedCandidate!.label} has no listed rate on your plan — set yours below.`}
+                </p>
+              </div>
+            )}
 
             {/* ── Step 1 — service cost-share ─────────────────────────────── */}
             <div className="mt-5">
@@ -409,7 +598,11 @@ export function AddPlanDetailsModal({
                 disabled={saving || !canSave}
                 className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {saving ? "Saving…" : "Save"}
+                {/* S318 (Andrew) — the button IS the provenance readout:
+                    untouched listed values → "Save" (match confirm, plan
+                    provenance); any changed number/answer → "Override" (the
+                    attested write, announced). */}
+                {saving ? "Saving…" : diverged ? "Override" : "Save"}
               </button>
             </div>
           </>

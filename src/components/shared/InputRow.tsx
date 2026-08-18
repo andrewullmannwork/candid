@@ -92,8 +92,16 @@ export function Row({
           : "border-t border-gray-100 py-3.5"
       }
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex min-w-0 items-start gap-3">
+      {/* S318 — flex-wrap + a flex-basis on the text column: when the card is
+          too narrow for text + control side by side, the CONTROL WRAPS BELOW
+          (ml-auto keeps it right-aligned on its own line) instead of either
+          failure mode we shipped on the way here — the control's intrinsic
+          width collapsing the text to one word per line (the original), or a
+          min-w-0 control slot letting buttons bleed past the card edge
+          (Andrew's screenshot). Same wrap idiom as the estimates row's
+          control pair. */}
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex min-w-0 flex-[1_1_16rem] items-start gap-3">
           <IconChip>{icon}</IconChip>
           <div className="min-w-0 pt-0.5">
             <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
@@ -105,10 +113,13 @@ export function Row({
             ) : null}
           </div>
         </div>
-        {/* S318 — min-w-0 lets a truncatable control (DoneEdit's ellipsizing
-            pill) actually shrink; without it the control's intrinsic width won
-            every squeeze and the label column collapsed word-per-line. */}
-        <div className="min-w-0 pt-1">{control}</div>
+        {/* min-w-0 + max-w-full let a truncatable control (DoneEdit's pill)
+            actually ellipsize once it wraps to its own line — without them the
+            wrapped line sizes to content and a long plan name runs to the card
+            edge with no "…" (Andrew's Leg-6 screenshot). Buttons are
+            unaffected: wrap absorbs the squeeze before any shrink pressure
+            reaches them. */}
+        <div className="ml-auto min-w-0 max-w-full pt-1">{control}</div>
       </div>
       {below != null ? <div className="mt-3 pl-12">{below}</div> : null}
     </div>

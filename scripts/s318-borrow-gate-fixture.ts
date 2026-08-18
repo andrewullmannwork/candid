@@ -231,6 +231,33 @@ console.log("\n── case 6: exact plan row → marks never consulted ──");
   check("exact match flagged exact", plain.exactCoverageMatch === true);
 }
 
+console.log("\n── case 8: user-CHOSEN sibling (match+rate editor) → their pick prices the line ──");
+{
+  const r = resolveLineCostShare(
+    makeRaw({ coverage_user_confirmed: true, coverage_user_matched_slug: "diagnostic_test" }),
+    makePrep(),
+    ctx,
+    "detail",
+  );
+  check("chosen sibling's rate flows ($50, not the resolver's $400 pick)", r.coverage?.copay === 50);
+  check("matched slug is the USER's choice", r.secondaryMatchedSlug === "diagnostic_test");
+  check("source stays secondary_match", r.coverageSource === "secondary_match");
+  const unknown = resolveLineCostShare(
+    makeRaw({ coverage_user_confirmed: true, coverage_user_matched_slug: "not_a_real_slug" }),
+    makePrep(),
+    ctx,
+    "detail",
+  );
+  check("unknown stored slug falls back to the resolver pick", unknown.coverage?.copay === 400 && unknown.secondaryMatchedSlug === "advanced_imaging");
+  const rej = resolveLineCostShare(
+    makeRaw({ coverage_user_rejected: true, coverage_user_matched_slug: "diagnostic_test" }),
+    makePrep(),
+    ctx,
+    "detail",
+  );
+  check("reject outranks a stale stored pick", rej.coverage === null && rej.secondaryMatchedSlug === null);
+}
+
 console.log("\n── case 7: malformed metadata → undecided (fail-closed) ──");
 {
   const garbage = resolveLineCostShare(makeRaw("not-an-object"), makePrep(), ctx, "detail");

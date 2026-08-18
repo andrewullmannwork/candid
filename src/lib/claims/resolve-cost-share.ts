@@ -284,6 +284,18 @@ export function resolveLinePrep(
       const liMeta = (raw.metadata as Record<string, unknown> | null) ?? {};
       const userConfirmed = liMeta.coverage_user_confirmed === true;
       const userRejected = liMeta.coverage_user_rejected === true;
+      // S318 match+rate editor — the user's CHOSEN sibling (stored by the
+      // confirm-coverage endpoint alongside the confirm mark) outranks the
+      // resolver's own pick, and deliberately does not depend on the resolver
+      // still returning anything: their answer outlives matcher/pool changes.
+      // Unknown/absent slug falls through to the resolver pick (fail-safe).
+      const userMatchedSlug =
+        userConfirmed && typeof liMeta.coverage_user_matched_slug === "string"
+          ? (liMeta.coverage_user_matched_slug as string)
+          : null;
+      const userChosen = userMatchedSlug
+        ? prep.coveredMeta.find((c) => c.slug === userMatchedSlug) ?? null
+        : null;
       // Rejected = "this match is wrong", per line, not per candidate — so no
       // re-borrow from a refreshed pool either (mirrors evidence-resolver's
       // exclude). The line falls through to ACA/unknown and the panel's
@@ -297,7 +309,14 @@ export function resolveLinePrep(
             prep.planAcaCompliant,
             prep.secondaryGate,
           );
-      if (sec) {
+      if (userChosen) {
+        // The user's confirmed pick prices the line — full borrow from THEIR
+        // sibling, whatever the resolver would pick today.
+        rawPlanCoverage = userChosen.coverage;
+        secondaryMatchedSlug = userChosen.slug;
+        secondaryCoverageSource = "secondary_match";
+        secondaryConfidence = sec?.confidence ?? "estimate";
+      } else if (sec) {
         const undecidedEstimate = sec.confidence === "estimate" && !userConfirmed;
         if (undecidedEstimate && acaCoverage) {
           // A preventive line the ACA already prices: the mandate outranks an

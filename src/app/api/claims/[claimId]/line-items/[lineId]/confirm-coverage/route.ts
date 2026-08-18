@@ -53,7 +53,7 @@ export async function POST(
 
   const { claimId, lineId } = await params;
 
-  let body: { confirmed?: unknown; decision?: unknown } = {};
+  let body: { confirmed?: unknown; decision?: unknown; matchedSlug?: unknown } = {};
   try {
     body = await req.json();
   } catch {
@@ -70,6 +70,18 @@ export async function POST(
         : body.confirmed === false
           ? "clear"
           : "match";
+  // S318 match+rate editor — an optional CHOSEN sibling rides a match
+  // decision (the user picked a different same-category service than the
+  // resolver). Shape-validated only; the read side (resolveLinePrep + the
+  // evidence resolver) looks the slug up in the plan's own covered pool and
+  // falls back to the resolver pick when it doesn't resolve — so a stale or
+  // bogus value degrades to today's behavior, never to trust.
+  const matchedSlug =
+    decision === "match" &&
+    typeof body.matchedSlug === "string" &&
+    /^[a-z0-9_]{1,64}$/.test(body.matchedSlug)
+      ? body.matchedSlug
+      : null;
 
   const supabase = createServerClient();
 
@@ -115,16 +127,22 @@ export async function POST(
     nextMeta.coverage_confirmed_at = new Date().toISOString();
     delete nextMeta.coverage_user_rejected;
     delete nextMeta.coverage_rejected_at;
+    // S318 — a provided pick is stored; ABSENT leaves any stored pick standing
+    // (a plain "Looks right" confirms what the row currently shows, which IS
+    // the stored pick once one exists — the gate renders from it).
+    if (matchedSlug) nextMeta.coverage_user_matched_slug = matchedSlug;
   } else if (decision === "no_match") {
     nextMeta.coverage_user_rejected = true;
     nextMeta.coverage_rejected_at = new Date().toISOString();
     delete nextMeta.coverage_user_confirmed;
     delete nextMeta.coverage_confirmed_at;
+    delete nextMeta.coverage_user_matched_slug;
   } else {
     delete nextMeta.coverage_user_confirmed;
     delete nextMeta.coverage_confirmed_at;
     delete nextMeta.coverage_user_rejected;
     delete nextMeta.coverage_rejected_at;
+    delete nextMeta.coverage_user_matched_slug;
   }
 
   // B9 B1.2 — child WRITE via the parent-scoped primitive: verifies claimId is
