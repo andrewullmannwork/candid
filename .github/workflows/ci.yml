@@ -254,6 +254,20 @@ jobs:
         # Offline: reads the committed 208 migration off disk; no network.
         run: npx tsx scripts/onboarding-simplified-fixture.ts
 
+      - name: Borrow-gate fixture (S318)
+        # The three-state money gate on secondary-coverage borrows
+        # (resolveLinePrep): an undecided `estimate` borrow keeps its identity
+        # but carries NO money (in + OON) — the service_cost assumption fires,
+        # shouldOwe stays ungrounded, no letter asserts the dollar; a
+        # user-CONFIRMED borrow flows in full; a user-REJECTED borrow drops
+        # entirely (even a confident one); an ACA fallback outranks an
+        # unconfirmed borrow with NO manufactured acaOverride; exact plan rows
+        # never consult the marks; malformed metadata fails closed. The letter
+        # cap reads this same derivation, and the cap is the one surface the
+        # user cannot see (the S318 launch gate).
+        # Offline: constructs prep/ctx in memory; pure imports; no network.
+        run: npx tsx scripts/s318-borrow-gate-fixture.ts
+
       - name: Type check
         run: npx tsc --noEmit
 

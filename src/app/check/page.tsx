@@ -318,6 +318,10 @@ export default function CheckPage() {
   const [resultsSummary, setResultsSummary] = useState<{
     potentialRecovery: number;
     shouldOwe: number;
+    /** S318 — the approved floor–ceiling share sentence's inputs (see
+     *  ClaimDetail.onResultsSummary). */
+    pricedFloor?: number | null;
+    unpricedCount?: number;
     lines: { label: string; amount: number | null }[];
   } | null>(null);
 

@@ -39,13 +39,20 @@ export function DoneChip({ label }: { label: string }) {
 
 /** "✓ <label> · Edit" — a resolved row that stays editable. */
 export function DoneEdit({ label, onEdit }: { label: string; onEdit: () => void }) {
+  // S318 — a long label (the plan row's full plan name) used to be
+  // whitespace-nowrap on the whole pill, so at mid widths the control demanded
+  // its full intrinsic width and the Row's description column collapsed to a
+  // one-word-per-line sliver. The pill now ellipsizes under pressure (title
+  // recovers the full text on hover; the plan row's own description repeats
+  // the full name anyway) and the Edit button never shrinks. Short labels
+  // render byte-identically.
   return (
-    <span className="inline-flex items-center gap-2.5 whitespace-nowrap">
-      <span className="inline-flex items-center gap-1 text-[13px] font-medium text-emerald-600">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M5 13l4 4L19 7" /></svg>
-        {label}
+    <span className="inline-flex min-w-0 items-center gap-2.5">
+      <span className="inline-flex min-w-0 items-center gap-1 text-[13px] font-medium text-emerald-600" title={label}>
+        <svg className="flex-none" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M5 13l4 4L19 7" /></svg>
+        <span className="truncate">{label}</span>
       </span>
-      <button type="button" onClick={onEdit} className="text-[13px] font-medium text-blue-600 hover:text-blue-700">Edit</button>
+      <button type="button" onClick={onEdit} className="flex-none text-[13px] font-medium text-blue-600 hover:text-blue-700">Edit</button>
     </span>
   );
 }

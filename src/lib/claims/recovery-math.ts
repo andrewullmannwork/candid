@@ -493,6 +493,17 @@ export interface CostShareV2Result extends RecoveryMetrics {
    * can still mask an OON line while this is true; see `isPreciseDollarAssertable`.
    */
   shouldOweGrounded: boolean;
+  /**
+   * S318 — TRUE when the engine had NO usable rate for this line (no per-service
+   * terms, or a phase needed a copay/coinsurance we don't have), so `shouldOwe`
+   * is the conservative full-allowed BOUND, not a plan-stated share. Exported as
+   * the engine's own fact because the display was inferring it from a side
+   * effect (the pending `service_cost` assumption) that preventive lines
+   * deliberately never emit — so a preventive line with no rate rendered as
+   * priced ("PLAN SAYS $197.77 · no copay" off a null coverage). One producer,
+   * every "is this line priced?" consumer reads THIS.
+   */
+  rateUnknown: boolean;
   /** amount of `allowed` that went toward the deductible on this line (for cross-line threading). */
   deductibleConsumed: number;
   /**
@@ -700,6 +711,8 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
       insurerDiscrepancy: null,
       assumptions: [],
       shouldOweGrounded: true,
+      // A no-charge line asks no rate question — $0 is the whole answer.
+      rateUnknown: false,
       deductibleConsumed: 0,
       coverageDecision,
     };
@@ -1132,6 +1145,7 @@ export function computeCostShareV2(args: ComputeCostShareV2Args): CostShareV2Res
     insurerDiscrepancy,
     assumptions,
     shouldOweGrounded,
+    rateUnknown: serviceCostUnknown || costShareUnknown,
     deductibleConsumed: round2(deductibleConsumed),
     coverageDecision,
   };

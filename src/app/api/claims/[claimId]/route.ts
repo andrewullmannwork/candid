@@ -486,6 +486,7 @@ export async function GET(
     let lineCostShareVerdict: CostShareVerdict | null = null;
     let lineCostShareAssumptions: CostShareAssumption[] | null = null;
     let lineInsurerDiscrepancy: InsurerDiscrepancy | null = null;
+    let lineCostShareRateUnknown: boolean | null = null;
     if (costShareV2) {
       // §18.9 — shared resolution layer (parity-locked vs the prior inline assembly,
       // scripts/calibration/fixtures/cost-share-v2/resolve-parity.ts). allowed is the
@@ -510,6 +511,7 @@ export async function GET(
       lineCostShareVerdict = cs.verdict;
       lineCostShareAssumptions = cs.assumptions;
       lineInsurerDiscrepancy = cs.insurerDiscrepancy;
+      lineCostShareRateUnknown = cs.rateUnknown;
       // G7 (Ship Gate) — server-side recall-loss telemetry. The OLD deductible-
       // blind synthesis fired a "mystery gap" when billed>0 & insurer $0 &
       // owed $0; log when that shape holds but the engine cleared the line
@@ -607,9 +609,12 @@ export async function GET(
       coverageSecondaryMatchedSlug: secondaryMatchedSlug,
       // S154 — secondary-match gate outcome. `estimate` = identified but the
       // borrowed cost-share is ambiguous → the UI shows a "Verify coverage"
-      // affordance and the dispute pipeline demotes it below cite-grade until
-      // confirmed. `coverageNeedsConfirmation` folds in whether the user has
-      // already confirmed this line (one-time; cleared by the confirm endpoint).
+      // affordance. S318 — the money now matches the label: resolveLinePrep
+      // nulls an unconfirmed estimate borrow's cost-share (so shouldOwe stays
+      // conservative/ungrounded and no letter asserts it), and the evidence
+      // side cites the borrow only after the user confirms (S154 gate).
+      // `coverageNeedsConfirmation` folds in whether the user has already
+      // confirmed this line (one-time; cleared by the confirm endpoint).
       coverageConfidence: secondaryConfidence,
       coverageNeedsConfirmation:
         secondaryConfidence === "estimate" &&
@@ -638,6 +643,10 @@ export async function GET(
             costShareVerdict: lineCostShareVerdict,
             costShareAssumptions: lineCostShareAssumptions,
             insurerDiscrepancy: lineInsurerDiscrepancy,
+            // S318 — the engine's own "no usable rate" fact (rateUnknown), so
+            // the client's rateKnown reads the fact instead of inferring it
+            // from the service_cost assumption preventive lines never emit.
+            costShareRateUnknown: lineCostShareRateUnknown,
           }
         : {}),
       codeIdentity: flywheelEnabled

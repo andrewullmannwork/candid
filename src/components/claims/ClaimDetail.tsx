@@ -130,6 +130,10 @@ interface LineItem {
   // "Verify coverage" affordance; demoted in disputes until confirmed.
   coverageConfidence?: "confident" | "estimate" | null;
   coverageNeedsConfirmation?: boolean;
+  // S318 — the engine's own "no usable rate" fact (CostShareV2Result.rateUnknown).
+  // Preventive lines never emit the service_cost assumption, so inferring
+  // "priced" from its absence rendered a rate-less line as priced.
+  costShareRateUnknown?: boolean;
   // S135 — plan-vs-ACA override (see AcaOverride above). Drives inline override
   // message in the green plan-says box. Null when no override applies.
   acaOverride?: AcaOverride | null;
@@ -464,6 +468,48 @@ function isQualityReporting(item: LineItem, findingCount: number): boolean {
   return isCatII || (noCharges && findingCount === 0);
 }
 
+/**
+ * S318 — ONE per-line "is this line's rate known?" predicate, shared by the
+ * savings-derivation rows, the banner's unpriced-share range, and the results-
+ * email summary (which runs in the hooks region, BEFORE savingsDerivation
+ * exists — the first draft moved the email effect below the derivation and
+ * created a conditional hook, which the rules-of-hooks lint caught).
+ * S314 wired coverageNeedsConfirmation; S318 added the engine's own
+ * rateUnknown fact (preventive lines never emit the service_cost assumption).
+ */
+function lineRateKnown(li: LineItem): boolean {
+  return (
+    !hasPendingAssumption(li.costShareAssumptions, "service_cost") &&
+    li.coverageNeedsConfirmation !== true &&
+    li.costShareRateUnknown !== true
+  );
+}
+
+/**
+ * S318 — the floor–ceiling share sentence's totals (Andrew-approved copy):
+ * floor = the priced lines' shouldOwe sum, count = unpriced charged lines.
+ * Charged set replicates the savings derivation's exactly (primary partition
+ * via isQualityReporting, then billed > 0), so the two can never disagree;
+ * the ceiling stays the engine's conservative claim total at the call sites.
+ */
+function computeUnpricedShareTotals(
+  lineItems: LineItem[],
+): { floor: number; count: number } | null {
+  const charged = lineItems.filter((li) => {
+    const findingCount = ((li.metadata?.auditFindings || []) as AuditFinding[]).length;
+    return !isQualityReporting(li, findingCount) && (li.billed_amount ?? 0) > 0;
+  });
+  const unpriced = charged.filter((li) => !lineRateKnown(li));
+  if (unpriced.length === 0) return null;
+  const floor =
+    Math.round(
+      charged
+        .filter(lineRateKnown)
+        .reduce((s, li) => s + (li.recovery?.shouldOwe ?? 0), 0) * 100,
+    ) / 100;
+  return { floor, count: unpriced.length };
+}
+
 export function ClaimDetail({
   claimId,
   onBack,
@@ -497,6 +543,10 @@ export function ClaimDetail({
   onResultsSummary?: (s: {
     potentialRecovery: number;
     shouldOwe: number;
+    /** S318 — priced-lines floor + unpriced count, so the email can render the
+     *  approved floor–ceiling share sentence. Null/0 when everything is priced. */
+    pricedFloor?: number | null;
+    unpricedCount?: number;
     lines: { label: string; amount: number | null }[];
   }) => void;
   /**
@@ -1241,6 +1291,9 @@ export function ClaimDetail({
 
   // S316 — surface the rendered recovery summary to the caller (the /check
   // results email mails EXACTLY what this screen shows — one derivation).
+  // S318 — carries the floor/count for the approved range sentence, via the
+  // module-scope helper (NOT savingsDerivation, which is declared after the
+  // early returns — reading it here would be a conditional hook or a TDZ).
   useEffect(() => {
     if (!data || !onResultsSummary) return;
     const lines = (data.lineItems ?? [])
@@ -1249,12 +1302,17 @@ export function ClaimDetail({
         label: (li.description as string) || "Charge",
         amount: li.recovery?.potentialRecovery ?? null,
       }));
+    const unpricedTotals = savingsDerivationFlag.enabled
+      ? computeUnpricedShareTotals(data.lineItems ?? [])
+      : null;
     onResultsSummary({
       potentialRecovery: data.recovery?.potentialRecovery ?? 0,
       shouldOwe: data.recovery?.shouldOwe ?? 0,
+      pricedFloor: unpricedTotals?.floor ?? null,
+      unpricedCount: unpricedTotals?.count ?? 0,
       lines,
     });
-  }, [data, onResultsSummary]);
+  }, [data, onResultsSummary, savingsDerivationFlag.enabled]);
 
   // Cost-Share v2 — multi-charge bills start with their line rows collapsed so
   // the bill isn't too busy (single-charge bills stay expanded). Runs once when
@@ -1550,9 +1608,13 @@ export function ClaimDetail({
           // rate →" chip that already exists, and the plan card picks up its
           // own honesty marker (", so far") because not every charged line is
           // priced. Same field, same question, same answer as the letter.
-          rateKnown:
-            !hasPendingAssumption(li.costShareAssumptions, "service_cost") &&
-            li.coverageNeedsConfirmation !== true,
+          // S318 — the shared module-scope predicate (also feeds the banner's
+          // unpriced-share range + the results-email totals): includes the
+          // engine's own rateUnknown fact, because preventive lines skip the
+          // service_cost assumption by design and a rate-less preventive line
+          // read as priced ("PLAN SAYS $197.77 · no copay" off a null
+          // coverage — the borrow gate's live test surfaced it).
+          rateKnown: lineRateKnown(li),
           copay: li.planCoverage?.copay ?? null,
           coinsurance: pct != null ? pct / 100 : null,
           covered: li.planCoverage?.covered ?? null,
@@ -1582,6 +1644,21 @@ export function ClaimDetail({
   // track, its rail-offer reason, and the panel (ONE derivation — the same
   // model field the split renders).
   const overpaidToProvider = savingsDerivation?.bill.paidSplit?.overpaid ?? 0;
+
+  // S318 (Andrew-approved copy) — when unpriced lines exist, the share
+  // sentence becomes a floor–ceiling range: floor/count from the module-scope
+  // helper (the SAME totals the email effect reports), the first unpriced
+  // service's display label joined from the derivation's own row. Gated on
+  // savingsDerivation so flag-OFF keeps today's sentences everywhere.
+  const unpricedShare = (() => {
+    if (!savingsDerivation) return null;
+    const totals = computeUnpricedShareTotals(data.lineItems ?? []);
+    if (!totals) return null;
+    return {
+      ...totals,
+      serviceLabel: savingsDerivation.rows.find((r) => r.unpriced)?.label ?? null,
+    };
+  })();
 
   // S310 — the hero banner's party-named sub-spans (insurer slice · provider
   // slice · balance slice), each already null under $1 in the derivation.
@@ -2054,7 +2131,20 @@ export function ClaimDetail({
     const meta = (claim.metadata as Record<string, unknown>) ?? {};
     const patient = (meta.patient as Record<string, unknown> | undefined) ?? {};
     const provider = (meta.provider as Record<string, unknown> | undefined) ?? {};
-    const firstCovered = primaryLineItems.find((li) => li.planCoverage != null) ?? null;
+    // S318 — the phone script speaks "claim for <service> … my plan documents
+    // show this service is <verdict>" as ONE sentence, so the named service and
+    // the spoken verdict must come from the SAME line — and only a line whose
+    // rate is actually KNOWN. After the borrow gate, a covered row can carry no
+    // money (an unconfirmed borrow), and buildPlanSays renders that null as
+    // "$0" — a fabricated zero, spoken aloud to the insurer (before the gate it
+    // spoke the borrowed guess itself: wrong either way). The engine's
+    // rateUnknown fact picks the line; when NO line qualifies, planVerdictLabel
+    // stays null and the builder's TOTAL contract (S297) renders a prep chip
+    // instead of prose with a hole.
+    const scriptLine =
+      primaryLineItems.find(
+        (li) => li.planCoverage != null && li.costShareRateUnknown !== true,
+      ) ?? null;
     const dosMonthDay = fmtDateMonthDayUTC((claim.date_of_service as string | null) ?? null);
     const findings: GuideFinding[] = [];
     // The SAME line-level findings the dispute bundle contests (S305) — the
@@ -2076,12 +2166,15 @@ export function ClaimDetail({
       (meta.claim_number as string | undefined);
     return {
       track: guidedTrack,
-      serviceLabel: primaryLineItems[0]?.description ?? null,
+      // Paired with planVerdictLabel below (same line, see scriptLine). The
+      // line[0] fallback only feeds the no-verdict case, where the script
+      // builder already returns null.
+      serviceLabel: scriptLine?.description ?? primaryLineItems[0]?.description ?? null,
       dosLong: fmtDateLongUTC((claim.date_of_service as string | null) ?? null),
       providerName: providerName !== "Unknown Provider" ? providerName : null,
       billedAmount: billTotals.billed > 0 ? billTotals.billed : null,
       planVerdictLabel:
-        firstCovered != null ? spokenPlanSays(buildPlanSays(firstCovered.planCoverage)) : null,
+        scriptLine != null ? spokenPlanSays(buildPlanSays(scriptLine.planCoverage)) : null,
       insurerPaid: data.effectiveTotals ? billTotals.insurancePaid : null,
       patientPaid: data.effectiveTotals ? billTotals.patientPaid : null,
       accountNumber:
@@ -2156,7 +2249,12 @@ export function ClaimDetail({
               !reason && t.party === "insurer" && billTotals.potentialRecovery >= 1
                 ? {
                     title: null,
-                    detail: `Your plan puts your share around $${fmtMoney(billTotals.shouldOwe)}, but this bill charges you $${fmtMoney(billTotals.shouldOwe + billTotals.potentialRecovery)} — the appeal asks for the $${fmtMoney(billTotals.potentialRecovery)} difference.`,
+                    // S318 (Andrew-approved) — with unpriced lines, the share is a
+                    // floor–ceiling range and the ask names what confirming buys.
+                    detail:
+                      unpricedShare && unpricedShare.count > 0
+                        ? `This bill charges you $${fmtMoney(billTotals.shouldOwe + billTotals.potentialRecovery)}, but your plan puts your share at $${fmtMoney(unpricedShare.floor)}–$${fmtMoney(billTotals.shouldOwe)}. The appeal asks for the $${fmtMoney(billTotals.potentialRecovery)} we can already prove — confirm your rate to see if you're owed more.`
+                        : `Your plan puts your share around $${fmtMoney(billTotals.shouldOwe)}, but this bill charges you $${fmtMoney(billTotals.shouldOwe + billTotals.potentialRecovery)} — the appeal asks for the $${fmtMoney(billTotals.potentialRecovery)} difference.`,
                   }
                 : // S309 F17 — the overpayment-raised provider track speaks the
                   // engine's reason too (the F1-B pattern, live numbers).
@@ -2747,6 +2845,7 @@ export function ClaimDetail({
                 recoverable={billTotals.potentialRecovery}
                 correctShare={billTotals.shouldOwe}
                 charged={billTotals.shouldOwe + billTotals.potentialRecovery}
+                unpricedShare={unpricedShare}
                 fmtMoney={fmtMoney}
                 onOverride={submitCostShareOverride}
                 onConfirmDefaults={confirmAssumptionDefaults}
@@ -2938,6 +3037,7 @@ export function ClaimDetail({
           recoverable={billTotals.potentialRecovery}
           correctShare={billTotals.shouldOwe}
           charged={billTotals.shouldOwe + billTotals.potentialRecovery}
+          unpricedShare={unpricedShare}
           fmtMoney={fmtMoney}
           onOverride={submitCostShareOverride}
                 onConfirmDefaults={confirmAssumptionDefaults}
@@ -3148,8 +3248,16 @@ export function ClaimDetail({
           // S309 F2 — the PLAN-SAYS sub-line, from the SAME derivation the
           // "What you could save" strip renders (one wording source; null when
           // the savings flag is OFF or the line is unpriced/not-covered).
-          const planSaysCell =
-            savingsDerivation?.rows.find((r) => r.id === item.id)?.planTermCell ?? null;
+          // S318 — the whole row, so the amount cell can render the strip's own
+          // unpriced range ("$0–$X") instead of asserting the engine's
+          // conservative BOUND as "PLAN SAYS $197.77" on a line whose rate we
+          // don't know. Same derivation, so the two surfaces cannot disagree.
+          const savingsRow = savingsDerivation?.rows.find((r) => r.id === item.id) ?? null;
+          const planSaysCell = savingsRow?.planTermCell ?? null;
+          const planSaysUnpriced = savingsRow?.unpriced === true;
+          const planSaysAmountText = planSaysUnpriced
+            ? savingsRow!.planAmountText
+            : `$${fmtMoney(shouldOwe)}`;
           const rawInsurancePaid = item.insurance_paid || 0;
           const hasGap = billed > 0 && rawInsurancePaid === 0 && owed === 0;
           // Cost-Share v2 (S214) — when the engine ran (verdict present), the
@@ -3300,7 +3408,7 @@ export function ClaimDetail({
                   <div className="flex justify-between gap-3">
                     <dt className="text-gray-500 uppercase tracking-wider">Plan says</dt>
                     <dd className="text-right">
-                      <div className={`tabular-nums font-semibold ${shouldOwe === 0 ? "text-green-700" : "text-gray-900"}`}>${fmtMoney(shouldOwe)}</div>
+                      <div className={`tabular-nums font-semibold ${!planSaysUnpriced && shouldOwe === 0 ? "text-green-700" : "text-gray-900"}`}>{planSaysAmountText}</div>
                       {planSaysCell && (
                         <div className="mt-0.5 text-[10px] leading-tight text-gray-400">{planSaysCell}</div>
                       )}
@@ -3500,10 +3608,14 @@ export function ClaimDetail({
                     same derivation as the savings strip. */}
                 <div
                   className="text-right"
-                  title={`Per your plan, you should owe $${fmtMoney(shouldOwe)} for this service.`}
+                  title={
+                    planSaysUnpriced
+                      ? (savingsRow?.planDetail ?? "We don't know your rate for this service yet.")
+                      : `Per your plan, you should owe $${fmtMoney(shouldOwe)} for this service.`
+                  }
                 >
-                  <div className={`text-sm font-bold tabular-nums whitespace-nowrap ${shouldOwe === 0 ? "text-emerald-700" : "text-gray-900"}`}>
-                    ${fmtMoney(shouldOwe)}
+                  <div className={`text-sm font-bold tabular-nums whitespace-nowrap ${!planSaysUnpriced && shouldOwe === 0 ? "text-emerald-700" : "text-gray-900"}`}>
+                    {planSaysAmountText}
                   </div>
                   {planSaysCell && (
                     <div className="mt-0.5 text-[10px] leading-tight text-gray-400">
@@ -5110,7 +5222,13 @@ function buildPlanSays(planCoverage: LineItem["planCoverage"]): string {
   if (planCoverage.copay != null) parts.push(`$${planCoverage.copay} copay`);
   if (planCoverage.coinsurance != null) parts.push(`${normalizeCoinsurancePct(planCoverage.coinsurance)}% coinsurance`);
 
-  if (parts.length === 0) return "Covered · $0";
+  // S318 (Andrew-approved) — covered with NO money fields is "rate not
+  // confirmed", not "$0". This helper predates the engine's serviceCostUnknown
+  // rule ("a row that says covered but carries no cost-share VALUE counts as
+  // unknown"); since the borrow gate, that shape is a live state (an
+  // unconfirmed borrow), and "$0" here was a fabricated zero. A genuinely free
+  // service carries an explicit copay of 0 and renders "$0 copay" above.
+  if (parts.length === 0) return "Covered · rate not confirmed";
   return `Covered · ${parts.join(" · ")}`;
 }
 

@@ -597,7 +597,12 @@ export function isLiveDraftStatus(status: string | null | undefined): boolean {
 // would have reached no stored draft — the exact one-shot trap that cost three
 // review rounds at S313. Production has seen neither value, so this is still a
 // single re-draft there.
-export const LETTER_COMPOSE_VERSION = "s314.2";
+//
+// s314.2 → s318.1 — the S318 borrow gate (resolveLinePrep): an unconfirmed
+// `estimate` borrow no longer carries money into shouldOwe, so any stored
+// draft whose demand rested on a borrowed rate re-drafts once to the
+// conservative, groundable number.
+export const LETTER_COMPOSE_VERSION = "s318.1";
 
 /**
  * S312 (T4, Andrew's ruling) — the ONE lifecycle word a letter surface may

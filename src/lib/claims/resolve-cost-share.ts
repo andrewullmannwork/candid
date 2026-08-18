@@ -267,26 +267,75 @@ export function resolveLinePrep(
   let secondaryMatchedSlug: string | null = null;
   let secondaryCoverageSource: "secondary_match" | "aca_preventive" | null = null;
   let secondaryConfidence: "confident" | "estimate" | null = null;
+  const acaCoverage: PlanCoverageInput | null =
+    prep.acaFallback.byLineNumber.get(lineNumber) || null;
   if (prep.secondaryEnabled && !rawPlanCoverage && slug) {
     const meta = prep.billSlugMeta.get(slug);
     if (meta) {
-      const sec = resolveSecondaryCoverage(
-        slug,
-        meta,
-        prep.coveredMeta,
-        prep.planAcaCompliant,
-        prep.secondaryGate,
-      );
+      // S318 — the borrow gate. The user's per-line verification marks
+      // (claim_line_items.metadata, written by the confirm-coverage endpoint)
+      // now govern the MONEY, not just the label. Until this, `estimate` was
+      // write-only in the money path: a borrowed sibling's rate flowed into
+      // shouldOwe → the letter's cap whether the user had confirmed, rejected,
+      // or never seen the question — and the cap is the one surface the user
+      // cannot see, so the flywheel could never correct it. Absent or
+      // malformed metadata reads as undecided → money nulled → conservative
+      // (fail-closed toward not asserting a dollar we cannot ground).
+      const liMeta = (raw.metadata as Record<string, unknown> | null) ?? {};
+      const userConfirmed = liMeta.coverage_user_confirmed === true;
+      const userRejected = liMeta.coverage_user_rejected === true;
+      // Rejected = "this match is wrong", per line, not per candidate — so no
+      // re-borrow from a refreshed pool either (mirrors evidence-resolver's
+      // exclude). The line falls through to ACA/unknown and the panel's
+      // "Add plan details" ask returns.
+      const sec = userRejected
+        ? null
+        : resolveSecondaryCoverage(
+            slug,
+            meta,
+            prep.coveredMeta,
+            prep.planAcaCompliant,
+            prep.secondaryGate,
+          );
       if (sec) {
-        rawPlanCoverage = sec.coverage;
-        secondaryMatchedSlug = sec.matchedSlug;
-        secondaryCoverageSource = sec.source;
-        secondaryConfidence = sec.confidence;
+        const undecidedEstimate = sec.confidence === "estimate" && !userConfirmed;
+        if (undecidedEstimate && acaCoverage) {
+          // A preventive line the ACA already prices: the mandate outranks an
+          // unconfirmed guess. Skipping the borrow entirely (not nulling it)
+          // lets resolveLineCoverage take State 3 — ACA coverage, NO
+          // acaOverride — instead of manufacturing a "plan says $X" citation
+          // from a number this plan never stated for this service.
+        } else if (undecidedEstimate) {
+          // Identity survives (covered-via-<sibling> still renders and the
+          // verify ask knows what it is asking about); the money does not —
+          // in- and out-of-network. `serviceCostUnknown` (recovery-math) then
+          // fires naturally: the service_cost assumption records, the panel
+          // asks, shouldOwe stays conservative and UNGROUNDED, and the letter
+          // cannot assert the dollar. Confirming restores the full borrow
+          // (branch below); rejecting removes it (above) — the user's answer
+          // reaches every consumer of this one derivation.
+          rawPlanCoverage = {
+            ...sec.coverage,
+            copay: null,
+            coinsurance: null,
+            deductibleApplies: null,
+            outCopay: null,
+            outCoinsurance: null,
+            outDeductibleApplies: null,
+            oonPaidAtInNetwork: null,
+          };
+          secondaryMatchedSlug = sec.matchedSlug;
+          secondaryCoverageSource = sec.source;
+          secondaryConfidence = sec.confidence;
+        } else {
+          rawPlanCoverage = sec.coverage;
+          secondaryMatchedSlug = sec.matchedSlug;
+          secondaryCoverageSource = sec.source;
+          secondaryConfidence = sec.confidence;
+        }
       }
     }
   }
-  const acaCoverage: PlanCoverageInput | null =
-    prep.acaFallback.byLineNumber.get(lineNumber) || null;
   const { coverage, acaOverride } = resolveLineCoverage(
     rawPlanCoverage,
     acaCoverage,
