@@ -2326,7 +2326,13 @@ export function ClaimDetail({
   // BulkDisputeButton, which returns null with nothing in the bundle, and an
   // offer with no way to accept it is worse than no offer.
   const railOffers: RailLetterOffer[] =
-    isFlagged && caseRailFlag.enabled && hasContestableCharges
+    // S319 (Andrew, /check drive) — anonymous sessions get NO letter offers:
+    // the owed-letter band derives from FINDINGS (not existing letters), so it
+    // rendered a live blue "Draft my dispute letter" step right under the
+    // locked account ask — two step 4s, one of them a door the Tier-3 floor
+    // would slam anyway. Same one-signal rule as the guided packs: the locked
+    // step owns the whole recover slot until an account exists.
+    isFlagged && caseRailFlag.enabled && hasContestableCharges && anonymousDraftGate == null
       ? letterTracks
           .filter((t) => !partiesWithLetters.has(t.party))
           .map((t) => {
