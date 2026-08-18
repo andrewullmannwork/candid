@@ -344,6 +344,10 @@ export async function sendCheckResultsEmail(
      *  banner sentence the results page shows. Null → no recovery banner. */
     recoveryTotal: number | null;
     shouldOwe: number | null;
+    /** S318 — priced-lines floor + unpriced count; when count > 0 the share
+     *  sentence renders as the approved floor–ceiling range. */
+    pricedFloor?: number | null;
+    unpricedCount?: number;
     findings: { label: string; amount: number | null }[];
     /** Caller-built (content-aware): identical results dedupe at Resend,
      *  changed results re-send. */
@@ -356,7 +360,7 @@ export async function sendCheckResultsEmail(
     return false;
   }
 
-  const { providerName, billedTotal, serviceDate, recoveryTotal, shouldOwe, findings, idempotencyKey } = params;
+  const { providerName, billedTotal, serviceDate, recoveryTotal, shouldOwe, pricedFloor, unpricedCount, findings, idempotencyKey } = params;
   const signupUrl = `${APP_URL}/auth/signup`;
 
   const headerBits = [
@@ -377,7 +381,13 @@ export async function sendCheckResultsEmail(
             ${
               shouldOwe != null
                 ? `<p style="font-size: 13px; color: #4b5563; line-height: 1.55; margin: 0 0 12px;">
-              Your plan puts your share around $${shouldOwe.toFixed(2)}, but this bill charges you $${(shouldOwe + recoveryTotal).toFixed(2)}.
+              ${
+                (unpricedCount ?? 0) > 0 && pricedFloor != null
+                  ? // S318 (Andrew-approved range sentence; the confirm ask lives
+                    // on the results page the button below opens)
+                    `This bill charges you $${(shouldOwe + recoveryTotal).toFixed(2)}. Your plan puts your share at $${pricedFloor.toFixed(2)}&ndash;$${shouldOwe.toFixed(2)}.`
+                  : `Your plan puts your share around $${shouldOwe.toFixed(2)}, but this bill charges you $${(shouldOwe + recoveryTotal).toFixed(2)}.`
+              }
             </p>`
                 : ""
             }`

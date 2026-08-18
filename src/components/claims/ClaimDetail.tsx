@@ -468,6 +468,48 @@ function isQualityReporting(item: LineItem, findingCount: number): boolean {
   return isCatII || (noCharges && findingCount === 0);
 }
 
+/**
+ * S318 — ONE per-line "is this line's rate known?" predicate, shared by the
+ * savings-derivation rows, the banner's unpriced-share range, and the results-
+ * email summary (which runs in the hooks region, BEFORE savingsDerivation
+ * exists — the first draft moved the email effect below the derivation and
+ * created a conditional hook, which the rules-of-hooks lint caught).
+ * S314 wired coverageNeedsConfirmation; S318 added the engine's own
+ * rateUnknown fact (preventive lines never emit the service_cost assumption).
+ */
+function lineRateKnown(li: LineItem): boolean {
+  return (
+    !hasPendingAssumption(li.costShareAssumptions, "service_cost") &&
+    li.coverageNeedsConfirmation !== true &&
+    li.costShareRateUnknown !== true
+  );
+}
+
+/**
+ * S318 — the floor–ceiling share sentence's totals (Andrew-approved copy):
+ * floor = the priced lines' shouldOwe sum, count = unpriced charged lines.
+ * Charged set replicates the savings derivation's exactly (primary partition
+ * via isQualityReporting, then billed > 0), so the two can never disagree;
+ * the ceiling stays the engine's conservative claim total at the call sites.
+ */
+function computeUnpricedShareTotals(
+  lineItems: LineItem[],
+): { floor: number; count: number } | null {
+  const charged = lineItems.filter((li) => {
+    const findingCount = ((li.metadata?.auditFindings || []) as AuditFinding[]).length;
+    return !isQualityReporting(li, findingCount) && (li.billed_amount ?? 0) > 0;
+  });
+  const unpriced = charged.filter((li) => !lineRateKnown(li));
+  if (unpriced.length === 0) return null;
+  const floor =
+    Math.round(
+      charged
+        .filter(lineRateKnown)
+        .reduce((s, li) => s + (li.recovery?.shouldOwe ?? 0), 0) * 100,
+    ) / 100;
+  return { floor, count: unpriced.length };
+}
+
 export function ClaimDetail({
   claimId,
   onBack,
@@ -501,6 +543,10 @@ export function ClaimDetail({
   onResultsSummary?: (s: {
     potentialRecovery: number;
     shouldOwe: number;
+    /** S318 — priced-lines floor + unpriced count, so the email can render the
+     *  approved floor–ceiling share sentence. Null/0 when everything is priced. */
+    pricedFloor?: number | null;
+    unpricedCount?: number;
     lines: { label: string; amount: number | null }[];
   }) => void;
   /**
@@ -1245,6 +1291,9 @@ export function ClaimDetail({
 
   // S316 — surface the rendered recovery summary to the caller (the /check
   // results email mails EXACTLY what this screen shows — one derivation).
+  // S318 — carries the floor/count for the approved range sentence, via the
+  // module-scope helper (NOT savingsDerivation, which is declared after the
+  // early returns — reading it here would be a conditional hook or a TDZ).
   useEffect(() => {
     if (!data || !onResultsSummary) return;
     const lines = (data.lineItems ?? [])
@@ -1253,12 +1302,17 @@ export function ClaimDetail({
         label: (li.description as string) || "Charge",
         amount: li.recovery?.potentialRecovery ?? null,
       }));
+    const unpricedTotals = savingsDerivationFlag.enabled
+      ? computeUnpricedShareTotals(data.lineItems ?? [])
+      : null;
     onResultsSummary({
       potentialRecovery: data.recovery?.potentialRecovery ?? 0,
       shouldOwe: data.recovery?.shouldOwe ?? 0,
+      pricedFloor: unpricedTotals?.floor ?? null,
+      unpricedCount: unpricedTotals?.count ?? 0,
       lines,
     });
-  }, [data, onResultsSummary]);
+  }, [data, onResultsSummary, savingsDerivationFlag.enabled]);
 
   // Cost-Share v2 — multi-charge bills start with their line rows collapsed so
   // the bill isn't too busy (single-charge bills stay expanded). Runs once when
@@ -1554,15 +1608,13 @@ export function ClaimDetail({
           // rate →" chip that already exists, and the plan card picks up its
           // own honesty marker (", so far") because not every charged line is
           // priced. Same field, same question, same answer as the letter.
-          // S318 — plus the engine's own fact: preventive lines skip the
-          // service_cost assumption by design, so a rate-less preventive line
-          // read as priced and the table asserted "PLAN SAYS $197.77 · no
-          // copay" off a null coverage (surfaced by the borrow gate's live
-          // test — the rejected annual_physical line).
-          rateKnown:
-            !hasPendingAssumption(li.costShareAssumptions, "service_cost") &&
-            li.coverageNeedsConfirmation !== true &&
-            li.costShareRateUnknown !== true,
+          // S318 — the shared module-scope predicate (also feeds the banner's
+          // unpriced-share range + the results-email totals): includes the
+          // engine's own rateUnknown fact, because preventive lines skip the
+          // service_cost assumption by design and a rate-less preventive line
+          // read as priced ("PLAN SAYS $197.77 · no copay" off a null
+          // coverage — the borrow gate's live test surfaced it).
+          rateKnown: lineRateKnown(li),
           copay: li.planCoverage?.copay ?? null,
           coinsurance: pct != null ? pct / 100 : null,
           covered: li.planCoverage?.covered ?? null,
@@ -1592,6 +1644,21 @@ export function ClaimDetail({
   // track, its rail-offer reason, and the panel (ONE derivation — the same
   // model field the split renders).
   const overpaidToProvider = savingsDerivation?.bill.paidSplit?.overpaid ?? 0;
+
+  // S318 (Andrew-approved copy) — when unpriced lines exist, the share
+  // sentence becomes a floor–ceiling range: floor/count from the module-scope
+  // helper (the SAME totals the email effect reports), the first unpriced
+  // service's display label joined from the derivation's own row. Gated on
+  // savingsDerivation so flag-OFF keeps today's sentences everywhere.
+  const unpricedShare = (() => {
+    if (!savingsDerivation) return null;
+    const totals = computeUnpricedShareTotals(data.lineItems ?? []);
+    if (!totals) return null;
+    return {
+      ...totals,
+      serviceLabel: savingsDerivation.rows.find((r) => r.unpriced)?.label ?? null,
+    };
+  })();
 
   // S310 — the hero banner's party-named sub-spans (insurer slice · provider
   // slice · balance slice), each already null under $1 in the derivation.
@@ -2182,7 +2249,12 @@ export function ClaimDetail({
               !reason && t.party === "insurer" && billTotals.potentialRecovery >= 1
                 ? {
                     title: null,
-                    detail: `Your plan puts your share around $${fmtMoney(billTotals.shouldOwe)}, but this bill charges you $${fmtMoney(billTotals.shouldOwe + billTotals.potentialRecovery)} — the appeal asks for the $${fmtMoney(billTotals.potentialRecovery)} difference.`,
+                    // S318 (Andrew-approved) — with unpriced lines, the share is a
+                    // floor–ceiling range and the ask names what confirming buys.
+                    detail:
+                      unpricedShare && unpricedShare.count > 0
+                        ? `This bill charges you $${fmtMoney(billTotals.shouldOwe + billTotals.potentialRecovery)}, but your plan puts your share at $${fmtMoney(unpricedShare.floor)}–$${fmtMoney(billTotals.shouldOwe)}. The appeal asks for the $${fmtMoney(billTotals.potentialRecovery)} we can already prove — confirm your rate to see if you're owed more.`
+                        : `Your plan puts your share around $${fmtMoney(billTotals.shouldOwe)}, but this bill charges you $${fmtMoney(billTotals.shouldOwe + billTotals.potentialRecovery)} — the appeal asks for the $${fmtMoney(billTotals.potentialRecovery)} difference.`,
                   }
                 : // S309 F17 — the overpayment-raised provider track speaks the
                   // engine's reason too (the F1-B pattern, live numbers).
@@ -2773,6 +2845,7 @@ export function ClaimDetail({
                 recoverable={billTotals.potentialRecovery}
                 correctShare={billTotals.shouldOwe}
                 charged={billTotals.shouldOwe + billTotals.potentialRecovery}
+                unpricedShare={unpricedShare}
                 fmtMoney={fmtMoney}
                 onOverride={submitCostShareOverride}
                 onConfirmDefaults={confirmAssumptionDefaults}
@@ -2964,6 +3037,7 @@ export function ClaimDetail({
           recoverable={billTotals.potentialRecovery}
           correctShare={billTotals.shouldOwe}
           charged={billTotals.shouldOwe + billTotals.potentialRecovery}
+          unpricedShare={unpricedShare}
           fmtMoney={fmtMoney}
           onOverride={submitCostShareOverride}
                 onConfirmDefaults={confirmAssumptionDefaults}

@@ -50,6 +50,11 @@ interface CostShareBannerProps {
   recoverable: number;
   correctShare: number;
   charged: number;
+  /** S318 (Andrew-approved) — present when unpriced lines exist: the share
+   *  sentence becomes a floor–ceiling range naming what confirming buys.
+   *  floor = the priced lines' sum (savings derivation's pricedShouldOwe);
+   *  the ceiling stays `correctShare` (the engine's conservative total). */
+  unpricedShare?: { floor: number; count: number; serviceLabel: string | null } | null;
   fmtMoney: (n: number) => string;
   onOverride: (body: CostShareOverrideRequest, pendingKey: string) => void | Promise<boolean>;
   /**
@@ -547,6 +552,7 @@ export function CostShareBanner({
   recoverable,
   correctShare,
   charged,
+  unpricedShare,
   fmtMoney,
   onOverride,
   onConfirmDefaults,
@@ -896,7 +902,20 @@ export function CostShareBanner({
     }
   } else if (verdict === "recovery") {
     headline = `You may be able to recover ${money(recoverable)}`;
-    body = `Your plan puts your share around ${money(correctShare)}, but this bill charges you ${money(charged)}.${sectionOpen ? " Here's what we based that on:" : ""}`;
+    // S318 (Andrew-approved) — with unpriced lines the share is a RANGE, not a
+    // settled number: the old sentence presented the conservative ceiling as
+    // "your share" while it was composed of worst-case bounds for rates the
+    // user hasn't confirmed. "below" points at the checklist that follows, so
+    // the "Here's what we based that on:" connective is dropped on this branch
+    // (Andrew's call).
+    body =
+      unpricedShare && unpricedShare.count > 0
+        ? `This bill charges you ${money(charged)}. Your plan puts your share at ${money(unpricedShare.floor)}–${money(correctShare)} — confirm ${
+            unpricedShare.count === 1 && unpricedShare.serviceLabel
+              ? `your ${unpricedShare.serviceLabel} rate`
+              : `${unpricedShare.count} unpriced rates`
+          } below.`
+        : `Your plan puts your share around ${money(correctShare)}, but this bill charges you ${money(charged)}.${sectionOpen ? " Here's what we based that on:" : ""}`;
   } else if (verdict === "not_covered") {
     headline = "This charge is expected";
     body = "Your plan doesn't cover this service, so this cost is yours — nothing to dispute. If you believe it should be covered, tell us and we'll take another look.";

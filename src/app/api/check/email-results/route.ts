@@ -95,6 +95,10 @@ export async function POST(req: NextRequest) {
       summary?: {
         potentialRecovery?: number;
         shouldOwe?: number;
+        // S318 — priced-lines floor + unpriced count (the approved range
+        // sentence); sanitized like every other number below.
+        pricedFloor?: number | null;
+        unpricedCount?: number;
         lines?: { label?: string; amount?: number | null }[];
       };
     };
@@ -106,6 +110,14 @@ export async function POST(req: NextRequest) {
       typeof v === "number" && Number.isFinite(v) && v >= 0 && v < 10_000_000 ? v : null;
     const recoveryTotal = num(summary?.potentialRecovery);
     const shouldOwe = num(summary?.shouldOwe);
+    const pricedFloor = num(summary?.pricedFloor);
+    const unpricedCount =
+      typeof summary?.unpricedCount === "number" &&
+      Number.isInteger(summary.unpricedCount) &&
+      summary.unpricedCount >= 0 &&
+      summary.unpricedCount <= 100
+        ? summary.unpricedCount
+        : 0;
     const screenLines = (Array.isArray(summary?.lines) ? summary.lines : [])
       .slice(0, 8)
       .flatMap((l) => {
@@ -191,7 +203,9 @@ export async function POST(req: NextRequest) {
     const shownFindings = merged.slice(0, 8);
     const contentFingerprint = createHash("sha256")
       .update(
-        `${recoveryTotal ?? ""}|${shouldOwe ?? ""}|` +
+        // S318 — the floor/count join the fingerprint: confirming a rate
+        // changes the rendered sentence, so the re-send is a different key.
+        `${recoveryTotal ?? ""}|${shouldOwe ?? ""}|${pricedFloor ?? ""}|${unpricedCount}|` +
           shownFindings.map((f) => `${f.label}:${f.amount ?? ""}`).join("|"),
       )
       .digest("hex")
@@ -203,6 +217,8 @@ export async function POST(req: NextRequest) {
       serviceDate: typeof claim.date_of_service === "string" ? claim.date_of_service : null,
       recoveryTotal,
       shouldOwe,
+      pricedFloor,
+      unpricedCount,
       findings: shownFindings,
       idempotencyKey: `check-results:${claimId}:${contentFingerprint}`,
     });
