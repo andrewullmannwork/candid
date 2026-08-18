@@ -5148,7 +5148,13 @@ function buildPlanSays(planCoverage: LineItem["planCoverage"]): string {
   if (planCoverage.copay != null) parts.push(`$${planCoverage.copay} copay`);
   if (planCoverage.coinsurance != null) parts.push(`${normalizeCoinsurancePct(planCoverage.coinsurance)}% coinsurance`);
 
-  if (parts.length === 0) return "Covered · $0";
+  // S318 (Andrew-approved) — covered with NO money fields is "rate not
+  // confirmed", not "$0". This helper predates the engine's serviceCostUnknown
+  // rule ("a row that says covered but carries no cost-share VALUE counts as
+  // unknown"); since the borrow gate, that shape is a live state (an
+  // unconfirmed borrow), and "$0" here was a fabricated zero. A genuinely free
+  // service carries an explicit copay of 0 and renders "$0 copay" above.
+  if (parts.length === 0) return "Covered · rate not confirmed";
   return `Covered · ${parts.join(" · ")}`;
 }
 

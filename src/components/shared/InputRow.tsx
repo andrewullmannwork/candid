@@ -105,7 +105,10 @@ export function Row({
             ) : null}
           </div>
         </div>
-        <div className="pt-1">{control}</div>
+        {/* S318 — min-w-0 lets a truncatable control (DoneEdit's ellipsizing
+            pill) actually shrink; without it the control's intrinsic width won
+            every squeeze and the label column collapsed word-per-line. */}
+        <div className="min-w-0 pt-1">{control}</div>
       </div>
       {below != null ? <div className="mt-3 pl-12">{below}</div> : null}
     </div>
