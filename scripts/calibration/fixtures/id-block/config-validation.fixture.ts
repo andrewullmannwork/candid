@@ -20,6 +20,10 @@ function base(): Record<string, unknown> {
     normCaps: { accountAgeDaysCap: 180, signupLatencyDaysCap: 30, activityBreadthCap: 8 },
     shape: { thinScore: 0.35, burstWindowHours: 72, signupCorrelationWindowHours: 48 },
     gate: { clusterLegitimacyThreshold: 0.35, hammingNearDupThreshold: 3, sameContentMajority: 0.5, mode: "shadow" },
+    // S319 fixture audit — the validator grew the PR3c reEval block (cadence +
+    // sweep bound) and this base config predated it; three cases failed on
+    // "reEval must be an object". Values mirror the shipped defaults.
+    reEval: { cadenceDays: 1, maxRowsPerSweep: 100 },
     slack: { enabled: true },
   };
 }
