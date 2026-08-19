@@ -12,6 +12,7 @@ import { formatInNetworkCost, formatOutOfNetworkCost } from "@/lib/plan/cost-sha
 import { requireAuthenticatedUser } from "@/lib/security/require-authenticated-user";
 import { userScoped, selectOwnedChildren } from "@/lib/security/user-scoped";
 import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
+import { isUserProvenance } from "@/lib/plan/plan-merge";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import {
   resolveEocReaderSurfaces,
@@ -651,7 +652,6 @@ export async function POST(request: NextRequest) {
                     decoration?.canonicalSourceCount ?? 1,
                   );
                 const prov = getProv(userPlan, provKey);
-                const provSource = (prov as { source?: string } | undefined)?.source;
                 // S319 (Andrew's switch-test find) — on a catalog_match row
                 // the USER-CONFIRMED canonical link is the term authority (the
                 // profile route's S288 overlay states the contract: "readers
@@ -665,10 +665,13 @@ export async function POST(request: NextRequest) {
                 // outranks non-USER provenance here (the S288 decoration the
                 // filter already respects); a user's own answer (manual /
                 // user_correction / user_initial_entry) still always wins.
-                const userAnswered =
-                  provSource != null &&
-                  ["manual", "user_correction", "user_initial_entry", "card_corroboration"].includes(provSource);
-                if (own != null && planSource === "catalog_match" && canon != null && !userAnswered)
+                // S319 review — the ESTABLISHED predicate, not a second list:
+                // isUserProvenance (plan-merge, S310) is the one home for "a
+                // user's answer never yields", and its vocabulary deliberately
+                // excludes 'manual' (CF-25: manual is weak; authorities
+                // supersede it) — so a manual-era value defers to the
+                // canonical here too, consistently with the merge policy.
+                if (own != null && planSource === "catalog_match" && canon != null && !isUserProvenance(prov))
                   return maybeDecorate<number | null>(
                     canon,
                     undefined,

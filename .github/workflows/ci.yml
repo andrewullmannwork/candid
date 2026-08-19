@@ -208,6 +208,13 @@ jobs:
         # shared object literal and matched no obvious grep.
         run: npx tsx scripts/canonical-link-pair-guard.mjs
 
+      - name: Activation stamp guard (S319 mig 231)
+        # Every writer that flips a plan active must stamp activated_at in the
+        # same payload — the activation record is only as complete as its
+        # writers, and a forgotten stamp silently starves every moved-on rule
+        # (stranded Gate 4 today). Static scan, sibling of the pair-guard.
+        run: node scripts/activation-stamp-guard.mjs
+
       - name: Plan identity + canonical confidence fixture (S292)
         # Ladder verdicts, the no-half-link builder contract, the side effects
         # findOrCreateCanonicalPlan must still perform after the read-only
