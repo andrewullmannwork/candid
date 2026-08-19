@@ -121,3 +121,59 @@ export function getRemoteIp(req: Request): string | null {
   }
   return req.headers.get("x-real-ip");
 }
+
+// ── S320: one human-check per session (config-gated acceptance) ─────────────
+//
+// Every account is BORN through a Turnstile-verified sync — signup, signin,
+// and anon_check_start all pass userAction, and /api/auth/sync verifies the
+// token before any row is created (S68/S315). So "this uid proved human at
+// establishment" is already a recorded fact: users.created_at. When the
+// config below is on, protected per-call routes (document upload) accept a
+// session whose account is younger than the TTL in place of a fresh token —
+// one challenge at the front door instead of one per step (the S320 mobile
+// E2E hit three). Zero new storage; the master gate stays
+// `turnstile_enforcement_v1` (config keys absent → OFF → byte-identical).
+//
+// Flip via the flag row's config JSONB (no deploy, ~60s cache):
+//   {"session_established_skip": true, "session_established_ttl_minutes": 1440}
+
+export interface TurnstileSessionConfig {
+  /** Accept established sessions in place of a per-call token. Default OFF. */
+  sessionEstablishedSkip: boolean;
+  /** How long after account creation the establishment is honored. */
+  sessionTtlMinutes: number;
+}
+
+export const DEFAULT_TURNSTILE_SESSION_CONFIG: TurnstileSessionConfig = {
+  sessionEstablishedSkip: false,
+  sessionTtlMinutes: 1440,
+};
+
+/** Parse the turnstile_enforcement_v1 config JSONB. Garbage-tolerant: any
+ *  missing/mistyped key falls to the default (skip OFF), so a bad config edit
+ *  can only ever restore today's per-call behavior, never widen acceptance. */
+export function resolveTurnstileSessionConfig(raw: unknown): TurnstileSessionConfig {
+  if (!raw || typeof raw !== "object") return DEFAULT_TURNSTILE_SESSION_CONFIG;
+  const cfg = raw as Record<string, unknown>;
+  const skip = cfg.session_established_skip === true;
+  const ttlRaw = cfg.session_established_ttl_minutes;
+  const ttl =
+    typeof ttlRaw === "number" && Number.isFinite(ttlRaw) && ttlRaw > 0
+      ? ttlRaw
+      : DEFAULT_TURNSTILE_SESSION_CONFIG.sessionTtlMinutes;
+  return { sessionEstablishedSkip: skip, sessionTtlMinutes: ttl };
+}
+
+/** True iff the account was created (through a verified sync) within the TTL.
+ *  Null/invalid created_at reads NOT established — fail toward challenging. */
+export function isTurnstileSessionEstablished(
+  createdAt: string | Date | null | undefined,
+  config: TurnstileSessionConfig,
+  now: Date = new Date(),
+): boolean {
+  if (!config.sessionEstablishedSkip || !createdAt) return false;
+  const born = createdAt instanceof Date ? createdAt : new Date(createdAt);
+  const ageMs = now.getTime() - born.getTime();
+  if (!Number.isFinite(ageMs) || ageMs < 0) return false;
+  return ageMs < config.sessionTtlMinutes * 60_000;
+}

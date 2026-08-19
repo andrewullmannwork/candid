@@ -65,10 +65,11 @@ export async function POST(req: NextRequest) {
 
   const supabase = createServerClient();
 
-  // Get internal user ID
+  // Get internal user ID (created_at feeds the S320 session-established
+  // Turnstile acceptance below)
   const { data: user } = await supabase
     .from("users")
-    .select("id, chd_erased_at")
+    .select("id, chd_erased_at, created_at")
     .eq("firebase_uid", decoded.uid)
     .single();
 
@@ -130,18 +131,43 @@ export async function POST(req: NextRequest) {
   // Turnstile gate (S68 mig 075). Authenticated route, but bot defense still
   // matters: a compromised account or spammy authenticated client can burn
   // OCR/Haiku budget without it.
+  //
+  // S320 session-established acceptance: every account is born through a
+  // Turnstile-verified sync, so when the flag's config enables it, a session
+  // younger than the TTL passes without a fresh per-call token (one challenge
+  // at the front door, not one per step). Config absent → per-call tokens,
+  // byte-identical to pre-S320. The 403 carries code "turnstile_required" so
+  // the client can mount the widget and retry once instead of dead-ending.
   const turnstileEnforced = await isFeatureEnabled("turnstile_enforcement_v1");
   if (turnstileEnforced) {
     const verify = await verifyTurnstileToken(turnstileToken, getRemoteIp(req));
     if (!verify.success) {
-      console.warn(
-        "[upload] Turnstile verification failed for user=" + user.id +
-          ", errors=" + JSON.stringify(verify.errorCodes ?? []),
+      const { resolveTurnstileSessionConfig, isTurnstileSessionEstablished } = await import(
+        "@/lib/security/turnstile"
       );
-      return NextResponse.json(
-        { error: "Bot defense check failed. Please reload and try again." },
-        { status: 403 },
-      );
+      const { data: tsFlag } = await supabase
+        .from("feature_flag_rules")
+        .select("config")
+        .eq("flag_key", "turnstile_enforcement_v1")
+        .maybeSingle();
+      const sessionCfg = resolveTurnstileSessionConfig(tsFlag?.config);
+      if (isTurnstileSessionEstablished(user.created_at, sessionCfg)) {
+        console.log(
+          "[upload] turnstile: session-established acceptance for user=" + user.id,
+        );
+      } else {
+        console.warn(
+          "[upload] Turnstile verification failed for user=" + user.id +
+            ", errors=" + JSON.stringify(verify.errorCodes ?? []),
+        );
+        return NextResponse.json(
+          {
+            error: "Bot defense check failed. Please reload and try again.",
+            code: "turnstile_required",
+          },
+          { status: 403 },
+        );
+      }
     }
   }
 

@@ -40,6 +40,10 @@ export interface CandidUser {
   // S315 — Firebase anonymous-provider account (no-account bill check). The
   // (app) layout keeps anonymous users on /check; upgrade = linkWithCredential.
   isAnonymous: boolean;
+  // S320 — server's answer to "may protected calls go tokenless for this
+  // session?" (one human-check per session; config-gated, server re-derives
+  // on every call). False/absent → per-step tokens, the pre-S320 behavior.
+  turnstileSessionEstablished: boolean;
 }
 
 interface ConsentPayload {
@@ -201,6 +205,7 @@ async function syncWithBackend(
     phoneE164?: string | null;
     phoneVerified?: boolean;
     isAnonymous?: boolean;
+    turnstileSessionEstablished?: boolean;
   };
   return {
     firebaseUser,
@@ -211,6 +216,7 @@ async function syncWithBackend(
     phoneE164: data.phoneE164 ?? firebaseUser.phoneNumber ?? null,
     phoneVerified: data.phoneVerified ?? firebaseUser.phoneNumber !== null,
     isAnonymous: data.isAnonymous ?? firebaseUser.isAnonymous,
+    turnstileSessionEstablished: data.turnstileSessionEstablished === true,
   };
 }
 

@@ -206,6 +206,13 @@ jobs:
         # E2E, insurer-published SBC). Hostile PDFs degrade to full-document
         # classification with the page count taken from the OCR result.
         run: npx tsx scripts/calibration/fixtures/upload/classify-sampling-fallback.ts
+      - name: Turnstile session-established fixture (S320)
+        # Locks the one-check-per-session contract (turnstile_enforcement_v1
+        # config: session_established_skip + session_established_ttl_minutes):
+        # config parsing fails TOWARD challenging (garbage restores per-call
+        # tokens, never widens acceptance) and establishment requires skip ON
+        # + a real created_at inside the TTL (null/garbage/future = challenge).
+        run: npx tsx scripts/calibration/fixtures/security/turnstile-session.ts
 
       - name: Canonical link is a pair (S292 / mig 218)
         # Fails the build if any code writes insurance_plans.canonical_plan_id
