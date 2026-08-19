@@ -10,7 +10,9 @@ import { LockedOverlay } from "@/components/shared/LockedOverlay";
 import { InlineSubscribePanel } from "@/components/billing/InlineSubscribePanel";
 import { disputeUrlForResult } from "@/lib/disputes/url";
 import { letterRecipientKind } from "@/lib/disputes";
-import { RECIPIENT_DEPARTMENT_LINE } from "@/lib/disputes/letter-type";
+import { RECIPIENT_DEPARTMENT_LINE,
+  getLetterEnclosures,
+} from "@/lib/disputes/letter-type";
 import { unsendPayload } from "@/lib/disputes/outcome-actions";
 import { LETTER_TYPE_LABELS, letterStateWord, parseLetterDate, type LetterPatientIdentity } from "@/lib/disputes/letter-type";
 import { LetterView } from "@/components/disputes/LetterView";
@@ -45,6 +47,7 @@ import {
   openImportantNeeds,
   type PlanCostService,
 } from "@/components/disputes/CaseNeedsPanel";
+import { DownloadReminderModal } from "@/components/disputes/MarkSentConfirm";
 import { UnifiedTodo, type CaseLetterSummary } from "@/components/disputes/UnifiedTodo";
 import { sendBlockers as computeSendBlockers } from "@/lib/disputes/dispute-readiness";
 import { deriveReadinessState } from "@/lib/disputes/strength-scoring";
@@ -1031,6 +1034,15 @@ function DisputesContent() {
     }
   };
 
+  // S320 — enclosure requirements from the ONE letter-type declaration; the
+  // reminder wraps the download only when the list is non-empty.
+  const letterEnclosures = getLetterEnclosures(letter?.letterType);
+  const [downloadReminderOpen, setDownloadReminderOpen] = useState(false);
+  const requestDownload = () => {
+    if (letterEnclosures.length > 0) setDownloadReminderOpen(true);
+    else handleDownload();
+  };
+
   const handleDownload = () => {
     const blob = new Blob([editedBody], { type: "text/plain" });
     const url = URL.createObjectURL(blob);
@@ -1150,7 +1162,7 @@ function DisputesContent() {
   const alreadySent = isSentStatus(disputeStatus);
   // S299 phase 2a — the one-letter page gate ("/disputes = ONE LETTER").
   const letterViewOn = caseRailFlag.enabled && caseTimeline != null;
-  const handleMarkSent = async () => {
+  const handleMarkSent = async (opts?: { enclosuresConfirmed?: boolean; sendMethod?: string }) => {
     if (!user || !disputeId || markingSent || alreadySent) return;
     // Optimistic (S266) — flip status locally so the stage-action bar advances
     // instantly; reconcile in the background (rollback on failure). No confirm dialog
@@ -1168,7 +1180,12 @@ function DisputesContent() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ disputeId, status: "filed" }),
+        body: JSON.stringify({
+          disputeId,
+          status: "filed",
+          ...(opts?.enclosuresConfirmed ? { enclosuresConfirmed: true } : {}),
+          ...(opts?.sendMethod ? { sendMethod: opts.sendMethod } : {}),
+        }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -2057,7 +2074,7 @@ function DisputesContent() {
             tone={copied ? "success" : "default"}
           />
           <ToolbarButton
-            onClick={handleDownload}
+            onClick={requestDownload}
             icon="letter"
             label="Download letter"
           />
@@ -2717,7 +2734,19 @@ function DisputesContent() {
       : null;
 
   const unifiedTodoNode = (
+    <>
+    {downloadReminderOpen && (
+      <DownloadReminderModal
+        enclosures={letterEnclosures}
+        onConfirm={() => {
+          setDownloadReminderOpen(false);
+          handleDownload();
+        }}
+        onCancel={() => setDownloadReminderOpen(false)}
+      />
+    )}
     <UnifiedTodo
+      enclosures={letterEnclosures}
       key={disputeId ?? "letter"}
       amountLabel={
         // S297 (Andrew E2E) — a $0 headline reads as nonsense ("get your
@@ -2923,6 +2952,7 @@ function DisputesContent() {
     >
       {renderCaseNeedsPanel(true)}
     </UnifiedTodo>
+    </>
   );
 
   // S299 phase 2a — the one-letter SENT page (Panel E): when the rail flag is

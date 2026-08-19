@@ -380,7 +380,7 @@ const compose = (
   check(
     "draft · the button names the act, not just the destination",
     draftStep?.kind === "send-draft" &&
-      draftStep.openLetterLabel === "Open the letter to send it",
+      draftStep.openLetterLabel === "Review the letter",
     draftStep?.kind === "send-draft" ? draftStep.openLetterLabel : draftStep?.kind,
   );
   check("draft · no wait step for an unsent letter", steps.filter((s) => s.kind.startsWith("wait")).length === 1);

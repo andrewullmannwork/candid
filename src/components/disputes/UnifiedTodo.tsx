@@ -37,6 +37,7 @@
  * dispute.metadata.checklist (user-scoped) — previously session-local.
  */
 
+import { MarkSentConfirm } from "@/components/disputes/MarkSentConfirm";
 import { useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils/cn";
 import { PatientIdentityChoices } from "@/components/disputes/PatientIdentityChoices";
@@ -226,7 +227,10 @@ export interface UnifiedTodoProps {
 
   // SEND IT
   onDownload: () => void;
-  onMarkSent: () => void;
+  onMarkSent: (opts?: { enclosuresConfirmed?: boolean; sendMethod?: string }) => void;
+  /** S320 — enclosure list from the letter type's ONE declaration; empty =
+   *  the plain S302 method row (no attestation stage). */
+  enclosures?: readonly string[];
   markingSent: boolean;
   /** S311 (§A round-6) — the mark-sent failure, surfaced INLINE at the row the
    *  user clicked (the page's toolbar toast renders far from this checklist;
@@ -441,6 +445,7 @@ export function UnifiedTodo({
   onOpenLetter,
   onDownload,
   onMarkSent,
+  enclosures = [],
   markingSent,
   markSentError,
   initialChecks,
@@ -1239,53 +1244,25 @@ export function UnifiedTodo({
                   </div>
                 )}
                 {/* Inline confirm — Mark as sent */}
+                {/* S320 — the ONE send confirm (MarkSentConfirm): the S302
+                    method row verbatim, with the enclosure attestation stage
+                    in front when the letter type declares enclosures. The rail
+                    mounts the SAME component, so the two surfaces can never
+                    describe the send differently. */}
                 {row.id === "marksent" && asking && !sent && (
-                  <div className="animate-fade-in mt-2 mb-2 rounded-[10px] border border-blue-200 bg-blue-50 px-3 py-2.5 text-[12.5px] text-blue-900">
-                    {/* S302 — the METHOD, asked where the send is confirmed.
-                        `mailcert` is still the stored fact (the receipts and the
-                        Case File cite "certified mail"); only the extra ROW is
-                        gone. Choosing a method IS the confirmation, so there is
-                        no second click to lose. */}
-                    <div className="font-semibold">How did you send it?</div>
-                    <div className="mt-2 flex flex-wrap items-center gap-2">
-                      {(
-                        [
-                          ["certified", "USPS certified mail"],
-                          ["mail", "Regular mail"],
-                          ["portal", "Insurer portal or email"],
-                        ] as const
-                      ).map(([kind, label]) => (
-                        <button
-                          key={kind}
-                          type="button"
-                          disabled={markingSent}
-                          onClick={() => {
-                            setAsking(false);
-                            // Certified is the only method that is evidence, so
-                            // it is the only one that sets the flag — and an
-                            // earlier answer must be cleared if they change it.
-                            setCheck("mailcert", kind === "certified");
-                            onMarkSent();
-                          }}
-                          className="rounded-lg border border-blue-200 bg-white px-3 py-1.5 font-semibold text-blue-800 hover:bg-blue-50 disabled:opacity-50"
-                        >
-                          {label}
-                        </button>
-                      ))}
-                      <button
-                        type="button"
-                        onClick={() => setAsking(false)}
-                        className="rounded-lg px-2 py-1.5 font-semibold text-gray-500 hover:text-gray-700"
-                      >
-                        Not yet
-                      </button>
-                    </div>
-                    <div className="mt-1.5 text-[11.5px] font-normal text-blue-800/80">
-                      {markingSent
-                        ? "Saving…"
-                        : "Certified mail (USPS Form 3811) is your proof of delivery — we cite it in your letter and Case File."}
-                    </div>
-                  </div>
+                  <MarkSentConfirm
+                    enclosures={enclosures}
+                    busy={markingSent}
+                    onMethod={(kind, enclosuresConfirmed) => {
+                      setAsking(false);
+                      // Certified is the only method that is evidence, so it is
+                      // the only one that sets the flag — and an earlier answer
+                      // must be cleared if they change it.
+                      setCheck("mailcert", kind === "certified");
+                      onMarkSent({ enclosuresConfirmed, sendMethod: kind });
+                    }}
+                    onNotYet={() => setAsking(false)}
+                  />
                 )}
               </div>
             );

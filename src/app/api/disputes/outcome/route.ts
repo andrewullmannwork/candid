@@ -82,6 +82,8 @@ export async function POST(req: NextRequest) {
     const {
       disputeId,
       status,
+      enclosuresConfirmed,
+      sendMethod,
       amountRecovered,
       resolutionDate,
       strategyNotes,
@@ -250,6 +252,29 @@ export async function POST(req: NextRequest) {
           "[disputes/outcome] outcomeDetail metadata persist failed (non-fatal):",
           err,
         );
+      }
+    }
+
+    // S320 — the enclosure-aware send record: the attestation + method from
+    // surfaces that ran the enclosure confirm (external review today). Merge,
+    // never clobber; non-fatal (the send itself already recorded above).
+    if (status === "filed" && (enclosuresConfirmed === true || typeof sendMethod === "string")) {
+      try {
+        const baseMetadata = (existing.metadata as Record<string, unknown>) ?? {};
+        await userScoped(supabase, userId)
+          .table("dispute_outcomes")
+          .update({
+            metadata: {
+              ...baseMetadata,
+              ...(enclosuresConfirmed === true
+                ? { sentEnclosuresConfirmed: true, sentEnclosuresConfirmedAt: new Date().toISOString() }
+                : {}),
+              ...(typeof sendMethod === "string" ? { sendMethod: sendMethod.slice(0, 32) } : {}),
+            },
+          })
+          .eq("id", disputeId);
+      } catch (stampErr) {
+        console.warn("[disputes/outcome] enclosure-record stamp failed (non-fatal):", stampErr);
       }
     }
 

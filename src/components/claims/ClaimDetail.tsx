@@ -1047,7 +1047,11 @@ export function ClaimDetail({
   // outcome. The route enforces it; a refusal surfaces in the rail's error strip
   // instead of failing silently.
   const handleRailMarkSent = useCallback(
-    async (disputeId: string, sent: boolean): Promise<boolean> => {
+    async (
+      disputeId: string,
+      sent: boolean,
+      opts?: { enclosuresConfirmed?: boolean; sendMethod?: string },
+    ): Promise<boolean> => {
       try {
         const token = await getAuthToken();
         if (!token) {
@@ -1062,7 +1066,7 @@ export function ClaimDetail({
           // route requires `status` and reads clearSentAt/clearOutcomeDetail —
           // so unsend 400'd every time while the catch below blamed the §0.9b
           // guard.
-          body: JSON.stringify(sent ? markSentPayload(disputeId) : unsendPayload(disputeId)),
+          body: JSON.stringify(sent ? markSentPayload(disputeId, opts) : unsendPayload(disputeId)),
         });
         if (!res.ok) {
           // S302 — the send gate answers 409 with the FLOOR items that are

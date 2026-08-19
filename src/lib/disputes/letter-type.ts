@@ -88,6 +88,25 @@ const RECIPIENT_BY_LETTER_TYPE: Record<DisputeLetterType, LetterRecipientKind> =
   debt_validation: "collector",
 };
 
+// S320 — enclosures a letter type must be MAILED WITH (Andrew's mock-approved
+// copy, verbatim). ONE declaration; three surfaces render from it (the rail's
+// info band, the download reminder, the mark-sent confirm) so the list can
+// never drift between them. Any letter type may declare a list later.
+export const LETTER_ENCLOSURES: Partial<Record<DisputeLetterType, readonly string[]>> = {
+  external_review: [
+    "The final denial letter from your insurer (the final internal adverse determination)",
+    "A copy of your internal appeal (the appeal letter you already sent)",
+    "The Explanation of Benefits (EOB) for this claim",
+    "Any supporting documents — medical records, a doctor's letter, itemized bills",
+  ],
+};
+
+/** Enclosure list for a letter type; empty array when none declared. */
+export function getLetterEnclosures(letterType: string | null | undefined): readonly string[] {
+  if (!letterType) return [];
+  return LETTER_ENCLOSURES[letterType as DisputeLetterType] ?? [];
+}
+
 // Raw dispute_outcomes.dispute_type values (NOT DisputeLetterType) that resolve to the insurer —
 // the legacy rerender path passes these directly.
 const INSURER_DISPUTE_TYPES = new Set<string>([
