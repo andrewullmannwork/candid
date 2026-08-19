@@ -206,6 +206,13 @@ jobs:
         # E2E, insurer-published SBC). Hostile PDFs degrade to full-document
         # classification with the page count taken from the OCR result.
         run: npx tsx scripts/calibration/fixtures/upload/classify-sampling-fallback.ts
+      - name: PDF-ops degrade fixture (S320)
+        # Locks estimatePageCount's engine-fallback chain (pdf-lib → pdfjs →
+        # last-resort 1) and splitPDF's degrade contract ({chunks:[buffer],
+        # degraded:true}, NEVER throws). The unguarded splitPDF throw is what
+        # wedged a claimed doc in working_init forever ("Final Steps" spinner,
+        # S320 mobile E2E) — user-supplied bytes must never REQUIRE pdf-lib.
+        run: npx tsx scripts/calibration/fixtures/upload/pdf-ops-degrade.ts
       - name: Turnstile session-established fixture (S320)
         # Locks the one-check-per-session contract (turnstile_enforcement_v1
         # config: session_established_skip + session_established_ttl_minutes):

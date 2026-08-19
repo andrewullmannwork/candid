@@ -330,6 +330,9 @@ export default function CheckPage() {
   const turnstileRef = useRef<TurnstileWidgetHandle>(null);
   const tokenRef = useRef<string | null>(null);
   const tokenWaitersRef = useRef<Array<(t: string) => void>>([]);
+  // S320 — re-mounts the (normally unmounted-once-established) widget when a
+  // call answers turnstile_required, so the fallback retry can obtain a token.
+  const [challengeRequested, setChallengeRequested] = useState(false);
   const onToken = useCallback((t: string | null) => {
     tokenRef.current = t;
     if (t) {
@@ -487,7 +490,14 @@ export default function CheckPage() {
       if (res.status === 403) {
         const peek = (await res.clone().json().catch(() => ({}))) as { code?: string };
         if (peek.code === "turnstile_required") {
-          res = await attempt(await takeToken());
+          // Re-mount the widget for this one retry (it unmounts once the
+          // session is established), then let it retire again.
+          setChallengeRequested(true);
+          try {
+            res = await attempt(await takeToken());
+          } finally {
+            setChallengeRequested(false);
+          }
         }
       }
       if (!res.ok) {
@@ -522,7 +532,14 @@ export default function CheckPage() {
           // Thread the RETURNED account — setUser hasn't re-rendered this
           // closure yet (the round-6 "no session" stale-closure bug).
           session = await startAnonymousCheck(email.trim(), consents, token);
-          turnstileRef.current?.reset();
+          // S320 — the reset pre-stocks the NEXT per-call token, which is
+          // load-bearing ONLY when the session-skip config is off (without it,
+          // takeToken would starve and time out). Established sessions upload
+          // tokenless, so resetting would just re-challenge for nothing — the
+          // "captcha on the loading screen" report.
+          if (!session.turnstileSessionEstablished) {
+            turnstileRef.current?.reset();
+          }
         }
         const up = await uploadFile(file, "itemized_bill", session);
         if (!up.documentId) throw new Error("Upload failed. Please try again.");
@@ -1377,9 +1394,16 @@ export default function CheckPage() {
               </button>
             </div>
           )}
-          <div className="mt-10 flex justify-center pb-4">
-            <TurnstileWidget ref={turnstileRef} onToken={onToken} action="anon_check" />
-          </div>
+          {/* S320 — one human-check per session: once the server has answered
+              that this session is established, the widget UNMOUNTS (a mounted
+              widget auto-refreshes its expiring token, which re-challenges
+              visibly — the "captcha on every screen" report). It re-mounts
+              on demand only when a call answers turnstile_required. */}
+          {(!user?.turnstileSessionEstablished || challengeRequested) && (
+            <div className="mt-10 flex justify-center pb-4">
+              <TurnstileWidget ref={turnstileRef} onToken={onToken} action="anon_check" />
+            </div>
+          )}
         </div>
       </div>
     </main>

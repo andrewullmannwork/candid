@@ -24,6 +24,7 @@
  */
 import { extractSamplePages } from "@/lib/classifier/quick-classify";
 import { PDFDocument } from "pdf-lib";
+import { BROKEN_PDF, healthyPdf } from "./hostile-pdf";
 
 let pass = 0;
 const fails: string[] = [];
@@ -35,28 +36,6 @@ function check(name: string, cond: boolean) {
     fails.push(name);
     console.log(`  ✗ ${name}`);
   }
-}
-
-/** Catalog whose /Pages points at an object that doesn't exist — the S320
- *  failure shape (pdf-lib resolves the ref to undefined and throws
- *  UnexpectedObjectTypeError at getPageCount, or rejects at load; either way
- *  the sampler must degrade, not throw). */
-const BROKEN_PDF = Buffer.from(
-  [
-    "%PDF-1.4",
-    "1 0 obj",
-    "<< /Type /Catalog /Pages 99 0 R >>",
-    "endobj",
-    "trailer",
-    "<< /Size 2 /Root 1 0 R >>",
-    "%%EOF",
-  ].join("\n"),
-);
-
-async function healthyPdf(pages: number): Promise<Buffer> {
-  const doc = await PDFDocument.create();
-  for (let i = 0; i < pages; i++) doc.addPage([200, 200]);
-  return Buffer.from(await doc.save());
 }
 
 (async () => {
