@@ -33,11 +33,12 @@ function files(dir) {
 }
 
 const offenders = [];
-// S320 — the regex now also catches VARIABLE payloads (`is_active: shouldActivate`):
-// extraction-dedup shipped activations with no stamp and no claim adoption for
-// months because the literal-true scan couldn't see the variable form.
-// `false` (deactivation) and `boolean` (type annotations) are excluded.
-const ACTIVATION_RE = /is_active:\s*(?!false\b)(?!boolean\b)[A-Za-z_$true][\w$]*/g;
+// S320 — the regex now also catches VARIABLE payloads (`is_active: shouldActivate`)
+// and EXPRESSION payloads (`is_active: !isComparisonUpload` — run-4 shipped an
+// active plan with activated_at null through exactly that form): extraction-dedup
+// and process-plan both evaded the literal-true scan for months. `false`
+// (deactivation) and `boolean` (type annotations) are excluded.
+const ACTIVATION_RE = /is_active:\s*(?!false\b)(?!boolean\b)[!A-Za-z_$true][\w$]*/g;
 const finalizeOffenders = [];
 for (const f of files(SRC)) {
   const text = readFileSync(f, "utf8");

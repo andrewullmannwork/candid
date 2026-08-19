@@ -690,6 +690,10 @@ export async function processPlanDocumentData(
       // they feed canonical corroboration) but never become the user's
       // primary plan. is_active=true only for "primary" purpose uploads.
       is_active: !isComparisonUpload,
+      // S320 — mig-231 stamp contract: this expression-form activation shipped
+      // unstamped (the guard's literal scan couldn't see `!isComparisonUpload`;
+      // run-4's plan landed active with activated_at null). Mirrors is_active.
+      activated_at: !isComparisonUpload ? new Date().toISOString() : null,
       verification_status: "document_verified" as const,
       ...(planIdentityProvenance ? { field_provenance: planIdentityProvenance } : {}),
       // S74.6 D1 — ACA-compliance columns (mig 093). Default fires for legacy
@@ -1059,6 +1063,7 @@ export async function processPlanDocumentData(
       console.log(`[process-plan] Mismatch (${mismatchData.type})`);
       await supabase.from("documents").update({ insurer_mismatch: mismatchData }).eq("id", documentId);
       planInsert.is_active = false;
+      planInsert.activated_at = null; // S320 — the stamp mirrors is_active
     }
 
     // S292 — the match receipt. Written only when the identity resolver actually
@@ -1077,6 +1082,7 @@ export async function processPlanDocumentData(
         insurer_mismatch: { ...(mismatchData || {}), year_rollover: yearRollover },
       }).eq("id", documentId);
       planInsert.is_active = false; // Wait for user confirmation before activating new year plan
+      planInsert.activated_at = null; // S320 — the stamp mirrors is_active
     }
 
     // If no mismatch and an active plan exists, MERGE services into it

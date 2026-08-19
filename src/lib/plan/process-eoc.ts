@@ -29,6 +29,7 @@ import type { EOCParseResult, PriorAuthCode, MedicalNecessityCriterion } from "@
 import { routeCriterion, type RouteContext } from "@/lib/eoc/route-criterion";
 import { loadEocRoutingConfig } from "@/lib/eoc/routing-config";
 import type { ProcessPlanResult } from "@/lib/plan/process-plan";
+import { finalizePlanActivation } from "@/lib/claims/claim-plan-link";
 import { buildEOCPlanIdentityProvenance } from "@/lib/parser/provenance-builders";
 import { canonicalizeSlug, loadServiceRenameMap, acceptCodeAnchoredSlug } from "@/lib/plan_doc/thesaurus-routing";
 import { EocCoverageAccumulator } from "@/lib/plan/coverage-targeting";
@@ -742,6 +743,9 @@ async function persistEOCPlanIdentity(
     // Comparison uploads start inactive (live in insurance_plans for the
     // canonical-corroboration flywheel but never become primary).
     is_active: !isComparisonUpload,
+    // S320 — mig-231 stamp contract (the widened guard caught this fourth
+    // unstamped expression-form writer on its first run). Mirrors is_active.
+    activated_at: !isComparisonUpload ? new Date().toISOString() : null,
     verification_status: "document_verified" as const,
     ...(hasProvenanceEntries ? { field_provenance: eocPlanIdentityProvenance } : {}),
     ...acaFields,
@@ -800,7 +804,7 @@ async function persistEOCPlanIdentity(
   // forced INACTIVE (never silently steal primary, never corrupt the active
   // plan); downstream coverage/facts attach to THIS row.
   const insertFields = insurerMismatch
-    ? { ...planFields, is_active: false }
+    ? { ...planFields, is_active: false, activated_at: null }
     : planFields;
   const { data: newPlan, error: insertErr } = await supabase
     .from("insurance_plans")
@@ -870,6 +874,11 @@ async function persistEOCPlanIdentity(
         ...(planFields.plan_name ? { plan_name: planFields.plan_name } : {}),
       })
       .eq("user_id", doc.user_id);
+    // S320 — a plan just became active for the user: the claim-follow family
+    // runs wherever the profile pointer moves (this EOC path never deactivates
+    // a prior plan — it only inserts when no mergeable active exists — so the
+    // deactivation list is empty by construction).
+    await finalizePlanActivation(supabase, doc.user_id as string, newPlan.id as string);
   }
 
   if (insurerMismatch) {

@@ -219,13 +219,32 @@ export async function POST(req: NextRequest) {
     // Mirror the Firebase email_verified token claim on every sync. Drives the
     // Pattern 1 #3 corroboration gate (mig 074) — only email-verified users
     // contribute to canonical promotion threshold.
-    const emailVerified = decoded.email_verified === true;
+    let emailVerified = decoded.email_verified === true;
 
     // S69 mig 076 — Mirror the Firebase phone_number token claim on every sync.
     // Layered with email_verified in evaluate_pattern1_corroboration AND filter
     // (Pattern 1 #15 structural identity defense).
-    const phoneE164 = decoded.phone_number ?? null;
-    const phoneVerified = phoneE164 !== null;
+    let phoneE164 = decoded.phone_number ?? null;
+    let phoneVerified = phoneE164 !== null;
+
+    // S320 — the claim is a CACHED snapshot: Firebase ID tokens live ~1h and
+    // survive reloads, so a user who clicks the verification link in a second
+    // tab keeps syncing `email_verified: false` (the banner nags for up to an
+    // hour; the S320 E2E hit it). When either claim reads unverified, ask the
+    // admin SDK for the authoritative user record — one extra lookup ONLY for
+    // not-yet-verified sessions; fail-soft to the claim on any error.
+    if (!emailVerified || !phoneVerified) {
+      try {
+        const fbUser = await getAdminAuth().getUser(uid);
+        if (!emailVerified && fbUser.emailVerified) emailVerified = true;
+        if (!phoneVerified && fbUser.phoneNumber) {
+          phoneE164 = fbUser.phoneNumber;
+          phoneVerified = true;
+        }
+      } catch {
+        /* claim stands */
+      }
+    }
 
     // Test-phone exemption (S288, mig 209) — EXACTLY ONE allowlisted test
     // number (TEST_PHONE_EXEMPT_E164) may exist on multiple accounts at once:

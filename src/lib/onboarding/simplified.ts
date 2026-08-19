@@ -352,7 +352,9 @@ export interface OnboardingProfileShape {
 export function slotsFromProfile(p: OnboardingProfileShape): StrengthSlots {
   const prof = p.profile;
   return {
-    card: p.hasCard === true || !!prof?.member_id,
+    // S320 — a typed group number is card data too: the meter said "missing"
+    // to a user who had just typed one (member ID absent, no scan doc).
+    card: p.hasCard === true || !!prof?.member_id || !!prof?.group_number,
     // S288: a search-selected plan (catalog_match) IS the doc slot's substitute
     // — no more "Your audits can't run yet" after picking a plan from the library.
     doc: p.hasPlanOrBill === true || p.insurancePlan?.source === "catalog_match",

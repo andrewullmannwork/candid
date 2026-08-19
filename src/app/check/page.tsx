@@ -34,6 +34,8 @@ import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 import { TurnstileWidget, type TurnstileWidgetHandle } from "@/components/security/TurnstileWidget";
 import { useDropzone } from "react-dropzone";
 import { DropIdle, DropHover, DropUploading } from "@/components/upload/DropZoneStates";
+import { FindTipsPanel } from "@/components/upload/FindTipsPanel";
+import { PICKER_OPTIONS } from "@/lib/classifier/doc-type-vocabulary";
 import { UnifiedParseScreen, type ParseDoc } from "@/components/parsing/UnifiedParseScreen";
 import { ClaimDetail } from "@/components/claims/ClaimDetail";
 import { PlanSearchCountLine } from "@/components/shared/PlanSearchCountLine";
@@ -333,6 +335,8 @@ export default function CheckPage() {
   // S320 — re-mounts the (normally unmounted-once-established) widget when a
   // call answers turnstile_required, so the fallback retry can obtain a token.
   const [challengeRequested, setChallengeRequested] = useState(false);
+  // S320 — which drop's "Where do I find this?" panel is open (null = none).
+  const [tipsFor, setTipsFor] = useState<null | "bill" | "plan">(null);
   const onToken = useCallback((t: string | null) => {
     tokenRef.current = t;
     if (t) {
@@ -1005,16 +1009,32 @@ export default function CheckPage() {
                 {busy && fileName ? (
                   <DropUploading fileName={fileName} uploadProgress={uploadProgress} onCancel={() => {}} />
                 ) : (
-                  <div {...billDrop.getRootProps({ className: "cursor-pointer" })}>
-                    <input {...billDrop.getInputProps()} />
-                    {billDrop.isDragActive ? (
-                      <DropHover />
-                    ) : stagedFile ? (
-                      <StagedFileChip file={stagedFile} onRemove={() => setStagedFile(null)} />
-                    ) : (
-                      <DropIdle kind="bill" onPickFile={billDrop.open} tipsOpen={false} onToggleTips={() => {}} />
-                    )}
-                  </div>
+                  <>
+                    <div {...billDrop.getRootProps({ className: "cursor-pointer" })}>
+                      <input {...billDrop.getInputProps()} />
+                      {billDrop.isDragActive ? (
+                        <DropHover />
+                      ) : stagedFile ? (
+                        <StagedFileChip file={stagedFile} onRemove={() => setStagedFile(null)} />
+                      ) : (
+                        <DropIdle
+                          kind="bill"
+                          onPickFile={billDrop.open}
+                          tipsOpen={tipsFor === "bill"}
+                          onToggleTips={() => setTipsFor((t) => (t === "bill" ? null : "bill"))}
+                        />
+                      )}
+                    </div>
+                    {/* S320 — the toggle was wired to a stub (tipsOpen={false},
+                        onToggleTips no-op): the S317 dead-browse-files class on a
+                        new prop. Same panel + state pattern as /upload. */}
+                    <FindTipsPanel
+                      kind="bill"
+                      open={tipsFor === "bill" && !stagedFile}
+                      onClose={() => setTipsFor(null)}
+                      option={PICKER_OPTIONS.bill}
+                    />
+                  </>
                 )}
               </div>
 
@@ -1297,16 +1317,29 @@ export default function CheckPage() {
                     {busy && fileName ? (
                       <DropUploading fileName={fileName} uploadProgress={uploadProgress} onCancel={() => {}} />
                     ) : (
-                      <div {...sbcDrop.getRootProps({ className: "cursor-pointer" })}>
-                        <input {...sbcDrop.getInputProps()} />
-                        {sbcDrop.isDragActive ? (
-                          <DropHover />
-                        ) : sbcStaged ? (
-                          <StagedFileChip file={sbcStaged} onRemove={() => setSbcStaged(null)} />
-                        ) : (
-                          <DropIdle kind="plan" onPickFile={sbcDrop.open} tipsOpen={false} onToggleTips={() => {}} />
-                        )}
-                      </div>
+                      <>
+                        <div {...sbcDrop.getRootProps({ className: "cursor-pointer" })}>
+                          <input {...sbcDrop.getInputProps()} />
+                          {sbcDrop.isDragActive ? (
+                            <DropHover />
+                          ) : sbcStaged ? (
+                            <StagedFileChip file={sbcStaged} onRemove={() => setSbcStaged(null)} />
+                          ) : (
+                            <DropIdle
+                              kind="plan"
+                              onPickFile={sbcDrop.open}
+                              tipsOpen={tipsFor === "plan"}
+                              onToggleTips={() => setTipsFor((t) => (t === "plan" ? null : "plan"))}
+                            />
+                          )}
+                        </div>
+                        <FindTipsPanel
+                          kind="plan"
+                          open={tipsFor === "plan" && !sbcStaged}
+                          onClose={() => setTipsFor(null)}
+                          option={PICKER_OPTIONS.plan_document}
+                        />
+                      </>
                     )}
                   </div>
                   <button
