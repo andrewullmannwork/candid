@@ -568,10 +568,20 @@ export async function POST(request: NextRequest) {
           // plan-level terms (deductible_individual / oop_max_individual);
           // only the OON columns use the out_ prefix (mig 192).
           let canonTerms: Record<string, number | null> | null = null;
+          // S319 root cause of the dashed tiles: this load carried ONLY the
+          // S288 gap-fill gate (both in-network fields null), but pickTerm's
+          // catalog rule below needs the canonical whenever the row is a
+          // catalog pick — a reused row can carry an old parse's weak values
+          // (non-null!), which skipped this load, left canonTerms null, and
+          // the guard could never fire; the weak provenance then decorated to
+          // Tier-6 hidden and the tiles dashed. Load when EITHER consumer
+          // needs it; the both-null gap-fill semantics for non-catalog rows
+          // are unchanged.
           if (
             userPlan.canonical_plan_id &&
-            userPlan.in_deductible_individual == null &&
-            userPlan.in_oop_max_individual == null
+            ((userPlan.in_deductible_individual == null &&
+              userPlan.in_oop_max_individual == null) ||
+              userPlan.source === "catalog_match")
           ) {
             const { data: ct } = await supabase
               .from("canonical_plans")
