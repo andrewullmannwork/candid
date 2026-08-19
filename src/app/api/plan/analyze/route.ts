@@ -642,15 +642,36 @@ export async function POST(request: NextRequest) {
                 own: number | null | undefined,
                 canon: number | null | undefined,
                 provKey: string,
-              ) =>
-                own == null && canon != null
-                  ? maybeDecorate<number | null>(
-                      canon,
-                      undefined,
-                      "canonical_inherited",
-                      decoration?.canonicalSourceCount ?? 1,
-                    )
-                  : maybeDecorate<number | null>(own ?? null, getProv(userPlan, provKey), planSource, 1);
+              ) => {
+                if (own == null && canon != null)
+                  return maybeDecorate<number | null>(
+                    canon,
+                    undefined,
+                    "canonical_inherited",
+                    decoration?.canonicalSourceCount ?? 1,
+                  );
+                const prov = getProv(userPlan, provKey);
+                // S319 (Andrew's switch-test find) — contract enforcement, not
+                // inference: a catalog_match row is DESIGNED term-less (the
+                // profile route's S288 overlay states it: "readers resolve
+                // them through the canonical link"), so an own-value with NO
+                // provenance on one is residue some writer copied from the
+                // canonical. Decorated under the row's own source with count 1
+                // the consumer-read filter hid it and the tiles dashed out —
+                // while the spending panel (row-direct, different strictness
+                // by design) showed the same numbers. The link stays the
+                // authority: decorate as canonical data (the S288 treatment,
+                // canonical's own number preferred). Provenance-backed values
+                // — a user's answer, a parsed doc — keep winning unchanged.
+                if (own != null && prov == null && planSource === "catalog_match")
+                  return maybeDecorate<number | null>(
+                    canon ?? own,
+                    undefined,
+                    "canonical_inherited",
+                    decoration?.canonicalSourceCount ?? 1,
+                  );
+                return maybeDecorate<number | null>(own ?? null, prov, planSource, 1);
+              };
               return {
                 inDeductible: pickTerm(userPlan.in_deductible_individual ?? profile.deductible_individual, canonTerms?.deductible_individual, "in_deductible_individual"),
                 outDeductible: pickTerm(userPlan.out_deductible_individual, canonTerms?.out_deductible_individual, "out_deductible_individual"),
