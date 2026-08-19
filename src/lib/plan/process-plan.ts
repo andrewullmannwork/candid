@@ -57,7 +57,7 @@ import {
   buildPlanDocIdentityProvenance,
 } from "@/lib/parser/provenance-builders";
 import { loadValidServiceSlugs, enqueueUnknownServiceSlug } from "@/lib/parser/service-catalog-slugs";
-import { repointClaimsFromDeactivatedPlans } from "@/lib/claims/claim-plan-link";
+import { finalizePlanActivation } from "@/lib/claims/claim-plan-link";
 import {
   commitUploadAndEvaluateCorroboration,
   PHASE_4_0_6_PLAN_IDENTITY_FIELDS_SBC,
@@ -1295,6 +1295,12 @@ export async function processPlanDocumentData(
       // seedMode (cold-start regen): never churn the admin's active-plan pointer ×N seed docs.
       if (!options?.seedMode) {
         await supabase.from("profiles").update(profileUpdate).eq("user_id", doc.user_id);
+        // S320 — the merge just (re)activated this plan for the user: unlinked
+        // claims adopt it. This branch was the /check SBC-upload gap's sibling
+        // (activation without adoption); finalize pairs the claim-follow family
+        // wherever the profile pointer moves. seedMode stays excluded — the
+        // regen must never adopt the admin's claims onto seed plans.
+        await finalizePlanActivation(supabase, doc.user_id as string, targetPlanId as string);
       }
     } else {
       // For comparison uploads: never deactivate the user's existing primary
@@ -1344,13 +1350,15 @@ export async function processPlanDocumentData(
         if (planInsert.insurer_name) profileUpdate.insurer = planInsert.insurer_name;
         if (planInsert.plan_name) profileUpdate.plan_name = planInsert.plan_name;
         await supabase.from("profiles").update(profileUpdate).eq("user_id", doc.user_id);
-        // S317 — claims linked to the plan this document supersedes follow it,
-        // instead of resolving coverage against an is_active=false row.
-        await repointClaimsFromDeactivatedPlans(
+        // S320 — the pairing that closed the /check SBC-upload gap: this
+        // inline activation adopted nothing, so every bill-before-plan claim
+        // stayed unlinked (plan costs never flowed; corrections dead-ended).
+        // finalize = adopt (S315) + follow-deactivated (S317), inseparable.
+        await finalizePlanActivation(
           supabase,
           doc.user_id as string,
-          activeBeforeIds,
           newPlan.id as string,
+          activeBeforeIds,
         );
       }
     } // end else (create new plan)

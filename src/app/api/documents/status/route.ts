@@ -9,7 +9,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase/server";
-import { adoptUnlinkedClaims, repointClaimsFromDeactivatedPlans } from "@/lib/claims/claim-plan-link";
+import { finalizePlanActivation } from "@/lib/claims/claim-plan-link";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { decideCardPreservation } from "@/lib/plan/insurer-match";
 
@@ -274,14 +274,14 @@ export async function POST(req: NextRequest) {
       .update({ active_insurance_plan_id: doc.linked_insurance_plan_id })
       .eq("user_id", doc.user_id);
     if (!repointErr) {
-      // S315 — a plan just became active: unlinked claims adopt it.
-      await adoptUnlinkedClaims(supabase, doc.user_id as string, doc.linked_insurance_plan_id as string);
-      // S317 — claims on the plan(s) just deactivated follow it too.
-      await repointClaimsFromDeactivatedPlans(
+      // S320 — the claim-follow family in one call: unlinked claims adopt the
+      // newly-active plan (S315) + claims on the just-deactivated plan(s)
+      // follow it (S317).
+      await finalizePlanActivation(
         supabase,
         doc.user_id as string,
-        activeBeforeIds,
         doc.linked_insurance_plan_id as string,
+        activeBeforeIds,
       );
     }
     if (repointErr) {

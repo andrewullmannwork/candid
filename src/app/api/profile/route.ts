@@ -3,8 +3,7 @@ import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { userScoped, selectOwnedChildren, upsertOwnedChildren } from "@/lib/security/user-scoped";
 import {
-  adoptUnlinkedClaims,
-  repointClaimsFromDeactivatedPlans,
+  finalizePlanActivation,
   repointOrphanedActivePlan,
 } from "@/lib/claims/claim-plan-link";
 import { loadPlanCoverageMeta } from "@/lib/audit/coverage-loader";
@@ -792,11 +791,10 @@ export async function POST(req: NextRequest) {
             // Track the new plan ID for canonical matching below
             if (existingProfile) existingProfile.active_insurance_plan_id = newPlan.id;
 
-            // S315 — a plan just became active: unlinked claims adopt it.
-            await adoptUnlinkedClaims(supabase, user.id, newPlan.id);
-            // S317 — and claims on the plan(s) we just deactivated follow it,
-            // instead of resolving coverage against an is_active=false row.
-            await repointClaimsFromDeactivatedPlans(supabase, user.id, activeBeforeIds, newPlan.id);
+            // S320 — the claim-follow family in one call: unlinked claims
+            // adopt the newly-active plan (S315) + claims on the plan(s) we
+            // just deactivated follow it (S317).
+            await finalizePlanActivation(supabase, user.id, newPlan.id, activeBeforeIds);
 
             // Create plan_covered_services rows for copays
             await syncCopayServices(supabase, user.id, newPlan.id, { copay_primary, copay_specialist, copay_er, copay_urgent_care, copay_rx }, isCardScan);
