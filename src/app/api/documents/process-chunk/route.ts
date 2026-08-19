@@ -666,6 +666,13 @@ function resolveDocumentType(
 export const maxDuration = 800;
 
 export async function POST(req: NextRequest) {
+  // S320 — visible to the outer catch so an unhandled throw can terminate the
+  // document instead of stranding it: the claim guard means a crashed step is
+  // never re-claimed by QStash retries, so without this write the doc sits in
+  // working_* forever (the E2E "Final Steps" eternal spinner) while every
+  // retry layer (in-route stale recovery, upload-time reset, retry-stuck cron)
+  // faithfully re-runs a deterministic crash.
+  let documentIdForFailure: string | null = null;
   try {
     // Read raw body BEFORE JSON.parse — QStash signature is computed over
     // the exact bytes sent. JSON.parse + re-serialize would change them.
@@ -703,6 +710,7 @@ export async function POST(req: NextRequest) {
     if (!documentId) {
       return NextResponse.json({ error: "documentId required" }, { status: 400 });
     }
+    documentIdForFailure = documentId;
 
     const supabase = createServerClient();
 
@@ -847,8 +855,8 @@ export async function POST(req: NextRequest) {
         });
       }
 
-      const totalPages = await estimatePageCount(buffer);
-      const totalChunks = Math.ceil(totalPages / CHUNK_SIZE);
+      let totalPages = await estimatePageCount(buffer);
+      let totalChunks = Math.ceil(totalPages / CHUNK_SIZE);
 
       // Check processing budget before OCR
       const budget = await checkProcessingBudget(totalPages);
@@ -863,11 +871,22 @@ export async function POST(req: NextRequest) {
       }
 
       // OCR first chunk
-      const chunks = await splitPDF(buffer, CHUNK_SIZE);
-      const ocrResult = await extractTextFromDocument(chunks[0], "application/pdf");
+      const split = await splitPDF(buffer, CHUNK_SIZE);
+      const ocrResult = await extractTextFromDocument(split.chunks[0], "application/pdf");
+      // S320 — degraded split = pdf-lib couldn't parse; chunk 0 IS the whole
+      // document and the OCR engine just read every page. Align the totals to
+      // what was actually read so no phantom chunk pass is ever enqueued.
+      if (split.degraded) {
+        totalPages = ocrResult.pages.length || totalPages;
+        totalChunks = 1;
+        console.warn(
+          `[process-chunk] degraded split: whole-document OCR, ${totalPages} pages in one pass (doc ${documentId})`,
+        );
+      }
+      const chunk0Pages = split.degraded ? totalPages : Math.min(CHUNK_SIZE, totalPages);
       // Only record truly new pages (prevents double-counting on QStash retries)
       const prevCompleted = doc.processing_completed_pages || 0;
-      const newPages = Math.max(0, Math.min(CHUNK_SIZE, totalPages) - prevCompleted);
+      const newPages = Math.max(0, chunk0Pages - prevCompleted);
       if (newPages > 0) await recordProcessingUsage(newPages);
 
       // Ing-G.2/3 — adversarial-PDF assessment (flag-gated; non-fatal; idempotent).
@@ -920,7 +939,7 @@ export async function POST(req: NextRequest) {
       await supabase.from("documents").update({
         processing_step: nextStep,
         processing_total_pages: totalPages,
-        processing_completed_pages: Math.min(CHUNK_SIZE, totalPages),
+        processing_completed_pages: chunk0Pages,
         processing_ocr_text: ocrResult.text,
       }).eq("id", documentId);
 
@@ -928,7 +947,7 @@ export async function POST(req: NextRequest) {
       const baseUrl = new URL(req.url).origin;
       await enqueueChunk(documentId, baseUrl);
 
-      return NextResponse.json({ step: nextStep, totalPages, completedPages: Math.min(CHUNK_SIZE, totalPages), continue: true });
+      return NextResponse.json({ step: nextStep, totalPages, completedPages: chunk0Pages, continue: true });
     }
 
     // ── STEP: OCR_CHUNK_N — OCR the Nth chunk ─────────────────────────────
@@ -956,7 +975,19 @@ export async function POST(req: NextRequest) {
       }
 
       const buffer = Buffer.from(await fileData.arrayBuffer());
-      const chunks = await splitPDF(buffer, CHUNK_SIZE);
+      const chunkSplit = await splitPDF(buffer, CHUNK_SIZE);
+      // S320 — unreachable by construction: INIT single-chunks a degraded
+      // split (totalChunks=1 → nextStep=classifying), so a chunk-continuation
+      // request for one means state drifted. Terminate honestly, never wedge.
+      if (chunkSplit.degraded) {
+        await supabase.from("documents").update({
+          status: "error",
+          processing_error: "We couldn't finish reading this document. Please try uploading it again.",
+          processing_step: null,
+        }).eq("id", documentId);
+        return NextResponse.json({ error: "Degraded split reached chunk continuation" }, { status: 500 });
+      }
+      const chunks = chunkSplit.chunks;
 
       if (chunkIndex >= chunks.length) {
         await supabase.from("documents").update({ processing_step: "classifying" }).eq("id", documentId);
@@ -1307,6 +1338,34 @@ export async function POST(req: NextRequest) {
 
   } catch (error) {
     console.error("[process-chunk] Error:", error);
+    // S320 — terminate, don't strand: write the error state so the user sees
+    // an honest failure instead of an eternal spinner, and the retry stack
+    // (built for transient failures) stops re-running a deterministic crash.
+    // Best-effort: if even this write fails, the stale-recovery layers remain.
+    if (documentIdForFailure) {
+      try {
+        const supabase = createServerClient();
+        await supabase
+          .from("documents")
+          .update({
+            status: "error",
+            processing_error:
+              "We couldn't finish reading this document. Please try uploading it again — support has been notified.",
+            processing_step: null,
+          })
+          .eq("id", documentIdForFailure)
+          .in("status", ["queued", "processing"]);
+        notifyAdminForReview(
+          documentIdForFailure,
+          "processing_crash",
+          0,
+          error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200),
+          "process-chunk",
+        ).catch(() => {});
+      } catch (writeErr) {
+        console.error("[process-chunk] failure-state write failed:", writeErr);
+      }
+    }
     return NextResponse.json({ error: "Processing chunk failed" }, { status: 500 });
   }
 }

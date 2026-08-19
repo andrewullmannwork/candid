@@ -243,3 +243,23 @@ export async function extractTextFromPDFLayer(
 function clamp01(v: number): number {
   return Math.max(0, Math.min(1, v));
 }
+
+/**
+ * S320 — page count via the pdfjs layer, for PDFs pdf-lib cannot parse.
+ * pdfjs (via unpdf, same loader as extraction above) tolerates broken xref
+ * structures that make pdf-lib throw, so this is the fallback counter for
+ * `estimatePageCount`. Returns null when pdfjs can't open the document either
+ * (truly unreadable — the caller decides the last-resort value).
+ */
+export async function countPagesViaPdfLayer(fileBuffer: Buffer): Promise<number | null> {
+  try {
+    const { getDocumentProxy } = await import("unpdf");
+    const pdf = await getDocumentProxy(new Uint8Array(fileBuffer));
+    return pdf.numPages;
+  } catch (err) {
+    console.warn(
+      `[pdf-text-extract] countPagesViaPdfLayer failed: ${(err as Error).message}`,
+    );
+    return null;
+  }
+}

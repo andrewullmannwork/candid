@@ -67,37 +67,72 @@ export async function estimatePageCount(buffer: Buffer): Promise<number> {
     const doc = await PDFDocument.load(buffer, { ignoreEncryption: true });
     return doc.getPageCount();
   } catch {
-    // Corrupt PDF or password-locked — fall back to 1 so callers don't div0.
+    // S320 — pdf-lib is stricter about xref structure than pdfjs (the
+    // pipeline's actual reader): a pdf-lib-hostile-but-readable PDF used to
+    // count as "1" here, silently lying to the budget gate and progress UI.
+    // Ask the engine that can actually read the document before giving up.
+    const { countPagesViaPdfLayer } = await import("./pdf-text-extract");
+    const pdfjsCount = await countPagesViaPdfLayer(buffer);
+    if (pdfjsCount !== null && pdfjsCount > 0) {
+      console.warn(
+        `[document-ai] estimatePageCount: pdf-lib failed; pdfjs counted ${pdfjsCount} pages`,
+      );
+      return pdfjsCount;
+    }
+    // Truly unreadable by both engines — fall back to 1 so callers don't div0.
     return 1;
   }
 }
 
-/** Split a PDF into chunks of maxPages using pdf-lib */
-export async function splitPDF(buffer: Buffer, maxPages: number): Promise<Buffer[]> {
-  const { PDFDocument } = await import("pdf-lib");
-  const srcDoc = await PDFDocument.load(buffer);
-  const totalPages = srcDoc.getPageCount();
+export interface SplitPDFResult {
+  chunks: Buffer[];
+  /**
+   * S320 — true when pdf-lib could not parse the document and the whole
+   * buffer is returned as a single chunk. The caller must align its totals
+   * to what the OCR engine actually reads (chunk math derived from a page
+   * count would be phantom) — sampling/splitting are optimizations and must
+   * never gate a document the pipeline's own reader can handle.
+   */
+  degraded: boolean;
+}
 
-  if (totalPages <= maxPages) {
-    return [buffer];
-  }
+/** Split a PDF into chunks of maxPages using pdf-lib; degrades to the whole
+ *  buffer as one chunk when pdf-lib cannot parse the document. */
+export async function splitPDF(buffer: Buffer, maxPages: number): Promise<SplitPDFResult> {
+  try {
+    const { PDFDocument } = await import("pdf-lib");
+    // ignoreEncryption matches estimatePageCount: permissions-encrypted PDFs
+    // (common from insurers — the S320 specimen was one) should get REAL
+    // chunking, not the degrade path. pdf-lib only reads here, never writes.
+    const srcDoc = await PDFDocument.load(buffer, { ignoreEncryption: true });
+    const totalPages = srcDoc.getPageCount();
 
-  const chunks: Buffer[] = [];
-  for (let start = 0; start < totalPages; start += maxPages) {
-    const end = Math.min(start + maxPages, totalPages);
-    const chunkDoc = await PDFDocument.create();
-    const copiedPages = await chunkDoc.copyPages(
-      srcDoc,
-      Array.from({ length: end - start }, (_, i) => start + i)
-    );
-    for (const page of copiedPages) {
-      chunkDoc.addPage(page);
+    if (totalPages <= maxPages) {
+      return { chunks: [buffer], degraded: false };
     }
-    const chunkBytes = await chunkDoc.save();
-    chunks.push(Buffer.from(chunkBytes));
-  }
 
-  return chunks;
+    const chunks: Buffer[] = [];
+    for (let start = 0; start < totalPages; start += maxPages) {
+      const end = Math.min(start + maxPages, totalPages);
+      const chunkDoc = await PDFDocument.create();
+      const copiedPages = await chunkDoc.copyPages(
+        srcDoc,
+        Array.from({ length: end - start }, (_, i) => start + i)
+      );
+      for (const page of copiedPages) {
+        chunkDoc.addPage(page);
+      }
+      const chunkBytes = await chunkDoc.save();
+      chunks.push(Buffer.from(chunkBytes));
+    }
+
+    return { chunks, degraded: false };
+  } catch (err) {
+    console.warn(
+      `[document-ai] splitPDF: pdf-lib failed — processing the whole document as one chunk: ${(err as Error).message}`,
+    );
+    return { chunks: [buffer], degraded: true };
+  }
 }
 
 /**
@@ -111,7 +146,9 @@ export async function extractPagesToSubPdf(
   pageIndices: number[],
 ): Promise<Buffer> {
   const { PDFDocument } = await import("pdf-lib");
-  const srcDoc = await PDFDocument.load(buffer);
+  // ignoreEncryption for the same reason as splitPDF above; the caller
+  // (spliceUndecodablePagesViaDocAI) is degraded-safe if this still throws.
+  const srcDoc = await PDFDocument.load(buffer, { ignoreEncryption: true });
   const outDoc = await PDFDocument.create();
   const copied = await outDoc.copyPages(srcDoc, pageIndices);
   for (const page of copied) outDoc.addPage(page);
@@ -215,8 +252,11 @@ export const documentAIProvider: OCRProvider = {
     const estimatedPages = isPDF ? await estimatePageCount(fileBuffer) : 1;
 
     if (isPDF && estimatedPages > MAX_PAGES_PER_REQUEST) {
-      // Split and process in chunks
-      const chunks = await splitPDF(fileBuffer, MAX_PAGES_PER_REQUEST);
+      // Split and process in chunks. A degraded split (pdf-lib-hostile bytes)
+      // sends the whole buffer in one request — Document AI then enforces its
+      // own page limit and the error surfaces honestly instead of a
+      // crash-at-split (rare³: pdf-lib-hostile AND image-only AND >15 pages).
+      const { chunks } = await splitPDF(fileBuffer, MAX_PAGES_PER_REQUEST);
 
       let allText = "";
       const allPages: OCRPage[] = [];
