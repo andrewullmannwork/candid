@@ -511,6 +511,9 @@ export async function POST(req: NextRequest) {
         config_sbc_max_pages: overrideConfig.sbc_max_pages,
         config_family_refinement_confidence: overrideConfig.family_refinement_confidence,
         config_enabled: overrideConfig.enabled,
+        // S320: pdf-lib sampling fell back to full-document classification —
+        // queryable so the frequency of pdf-lib-hostile uploads is measurable.
+        sampling_fallback: classification.samplingFallback ?? null,
         resolved_at: new Date().toISOString(),
       };
 

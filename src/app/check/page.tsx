@@ -709,6 +709,11 @@ export default function CheckPage() {
     async (file: File) => {
       setBusy(true);
       setErrorMsg(null);
+      // The step-2 uploading card renders the shared `fileName` state, which
+      // until now only the bill path set — so the plan upload showed the
+      // BILL's name while in flight (S320 mobile E2E finding). Stage this
+      // upload's own identity before the request goes out.
+      setFileName(file.name);
       try {
         if (!user) throw new Error("Session expired — reload the page and try again.");
         const up = await uploadFile(file, "sbc", user);

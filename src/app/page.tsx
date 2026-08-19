@@ -221,7 +221,6 @@ function TopNav({ loggedIn }: { loggedIn: boolean }) {
 
 /* ── Hero ────────────────────────────────────────────────────────────── */
 function Hero({ loggedIn }: { loggedIn: boolean }) {
-  const { enabled: freeStart } = useFeatureFlag("dispute_letters_free_start_v1");
   // SP-1 Variant B (S315 design §7.6, Andrew-approved LP5): today's hero
   // untouched; a quiet ghost secondary under the CTAs routes to /check.
   const { enabled: anonCheck } = useFeatureFlag("anonymous_bill_check_v1");
@@ -230,10 +229,9 @@ function Hero({ loggedIn }: { loggedIn: boolean }) {
       <div className="hero-inner">
         <div className="hero-copy">
           <span className="eyebrow-pill">
-            <span className="dot" />{" "}
-            {freeStart
-              ? "Free dispute letter included — no credit card required"
-              : "No credit card required"}
+            {/* S320 (Andrew): every letter is free since the Pro-wall removal —
+                the "free dispute letter" variant distinction is dead. */}
+            <span className="dot" /> No credit card required
           </span>
           <h1 className="h-hero">
             You pay a lot for healthcare. <span className="accent">Get the most out of it.</span>
@@ -306,7 +304,6 @@ function HeroPeek() {
    Matches the design's hero peek composition: title + sub + Review Dispute CTA,
    gradient recovery card with up-arrow, 4-stat grid, bottom tab strip. */
 function HeroMockup() {
-  const { enabled: freeStart } = useFeatureFlag("dispute_letters_free_start_v1");
   return (
     <div style={{ padding: "20px 22px 16px", background: "var(--bg-1)", fontFamily: "var(--font-sans), system-ui, sans-serif" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
@@ -316,11 +313,10 @@ function HeroMockup() {
           <div style={{ fontSize: 11.5, color: "var(--fg-4)", marginTop: 3, lineHeight: 1.4 }}>Every bill audited line by line. Every overcharge flagged. Every dollar tracked.</div>
         </div>
         <div style={{ display: "inline-flex", alignItems: "center", gap: 6, flexShrink: 0, marginLeft: 12 }}>
-          {freeStart && (
-            <span style={{ background: "#d1fae5", color: "#065f46", fontSize: 9, fontWeight: 700, padding: "3px 7px", borderRadius: 999, textTransform: "uppercase", letterSpacing: "0.04em" }}>
-              Free
-            </span>
-          )}
+          {/* S320: unconditional — every letter is free (Pro wall removed S299). */}
+          <span style={{ background: "#d1fae5", color: "#065f46", fontSize: 9, fontWeight: 700, padding: "3px 7px", borderRadius: 999, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+            Free
+          </span>
           <span style={{ display: "inline-flex", alignItems: "center", gap: 4, background: "var(--bg-ink)", color: "#fff", fontSize: 10, fontWeight: 600, padding: "6px 10px", borderRadius: 999, whiteSpace: "nowrap" }}>
             Review Dispute Letter {ICON.chevR}
           </span>
