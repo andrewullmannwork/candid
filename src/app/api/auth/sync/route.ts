@@ -172,7 +172,7 @@ export async function POST(req: NextRequest) {
     // Check if a user with this email already exists (possibly from a different auth method)
     const { data: existingByEmail } = await supabase
       .from("users")
-      .select("id, firebase_uid, phone_e164")
+      .select("id, firebase_uid, phone_e164, created_at")
       .eq("email", email)
       .maybeSingle();
 
@@ -180,7 +180,7 @@ export async function POST(req: NextRequest) {
     // this lets us detect first-time signups (used to gate transactional emails).
     const { data: existingByUid } = await supabase
       .from("users")
-      .select("id, phone_e164, is_anonymous")
+      .select("id, phone_e164, is_anonymous, created_at")
       .eq("firebase_uid", uid)
       .maybeSingle();
 
@@ -522,6 +522,29 @@ export async function POST(req: NextRequest) {
       ]);
     }
 
+    // S320 — one human-check per session: tell the client whether protected
+    // per-call routes will accept this session without a fresh Turnstile token,
+    // via the SAME derivation the upload gate applies (config on + account
+    // born through a verified sync within the TTL). The client uses this to
+    // skip mounting per-step challenges; the server re-derives on every call,
+    // so a stale client answer only costs one 403-and-retry.
+    const { resolveTurnstileSessionConfig, isTurnstileSessionEstablished } = await import(
+      "@/lib/security/turnstile"
+    );
+    const { data: tsFlagRow } = await supabase
+      .from("feature_flag_rules")
+      .select("config")
+      .eq("flag_key", "turnstile_enforcement_v1")
+      .maybeSingle();
+    const tsSessionCfg = resolveTurnstileSessionConfig(tsFlagRow?.config);
+    const sessionBornAt = isNewUser
+      ? new Date()
+      : (existingByUid?.created_at ?? existingByEmail?.created_at ?? null);
+    const turnstileSessionEstablished = isTurnstileSessionEstablished(
+      sessionBornAt,
+      tsSessionCfg,
+    );
+
     // 6. Set session indicator cookie so middleware allows protected routes
     const response = NextResponse.json({
       userId,
@@ -532,6 +555,7 @@ export async function POST(req: NextRequest) {
       phoneVerified: effPhoneVerified,
       // S315 — token-derived; drives the (app) layout's anonymous guard.
       isAnonymous: isAnonToken,
+      turnstileSessionEstablished,
     });
     response.cookies.set("candid_session", "1", {
       httpOnly: false,

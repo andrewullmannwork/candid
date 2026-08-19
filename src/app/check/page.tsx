@@ -441,29 +441,55 @@ export default function CheckPage() {
   }, [settled, enabled, user]);
 
   // ── upload one file through the existing pipeline ──
+  // S320 one-check-per-session: an established session (server-stamped at the
+  // Turnstile-verified anon start) uploads tokenless — no per-step challenge.
+  // The server re-derives on every call and answers code "turnstile_required"
+  // when it disagrees (config flipped off, TTL expired), so we challenge and
+  // retry ONCE. Unestablished sessions keep the up-front token, avoiding a
+  // wasted file POST.
   const uploadFile = useCallback(
-    async (file: File, docType: "itemized_bill" | "sbc", asUser: { firebaseUser: { getIdToken: () => Promise<string> } }) => {
+    async (
+      file: File,
+      docType: "itemized_bill" | "sbc",
+      asUser: {
+        firebaseUser: { getIdToken: () => Promise<string> };
+        turnstileSessionEstablished?: boolean;
+      },
+    ) => {
       const idToken = await asUser.firebaseUser.getIdToken();
-      const token = await takeToken();
-      const formData = new FormData();
-      formData.append("file", file);
-      formData.append("docType", docType);
-      formData.append("turnstileToken", token);
-      setUploadProgress(0);
-      const res = await new Promise<Response>((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.upload.addEventListener("progress", (e) => {
-          if (e.lengthComputable) setUploadProgress(Math.round((e.loaded / e.total) * 100));
+      const attempt = async (token: string | null): Promise<Response> => {
+        const formData = new FormData();
+        formData.append("file", file);
+        formData.append("docType", docType);
+        if (token) formData.append("turnstileToken", token);
+        setUploadProgress(0);
+        const res = await new Promise<Response>((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.upload.addEventListener("progress", (e) => {
+            if (e.lengthComputable) setUploadProgress(Math.round((e.loaded / e.total) * 100));
+          });
+          xhr.addEventListener("load", () =>
+            resolve(new Response(xhr.responseText, { status: xhr.status, headers: { "content-type": "application/json" } })),
+          );
+          xhr.addEventListener("error", () => reject(new Error("Upload failed")));
+          xhr.open("POST", "/api/documents/upload");
+          xhr.setRequestHeader("Authorization", `Bearer ${idToken}`);
+          xhr.send(formData);
         });
-        xhr.addEventListener("load", () =>
-          resolve(new Response(xhr.responseText, { status: xhr.status, headers: { "content-type": "application/json" } })),
-        );
-        xhr.addEventListener("error", () => reject(new Error("Upload failed")));
-        xhr.open("POST", "/api/documents/upload");
-        xhr.setRequestHeader("Authorization", `Bearer ${idToken}`);
-        xhr.send(formData);
-      });
-      turnstileRef.current?.reset();
+        // Reset only when a token was consumed — a reset re-runs the challenge,
+        // which is exactly the per-step friction the tokenless path removes.
+        if (token) turnstileRef.current?.reset();
+        return res;
+      };
+      let res = await attempt(
+        asUser.turnstileSessionEstablished ? null : await takeToken(),
+      );
+      if (res.status === 403) {
+        const peek = (await res.clone().json().catch(() => ({}))) as { code?: string };
+        if (peek.code === "turnstile_required") {
+          res = await attempt(await takeToken());
+        }
+      }
       if (!res.ok) {
         const errBody = (await res.json().catch(() => ({}))) as { error?: string };
         throw new Error(errBody.error || "Upload failed. Please try again.");
