@@ -12,6 +12,7 @@ import { formatInNetworkCost, formatOutOfNetworkCost } from "@/lib/plan/cost-sha
 import { requireAuthenticatedUser } from "@/lib/security/require-authenticated-user";
 import { userScoped, selectOwnedChildren } from "@/lib/security/user-scoped";
 import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
+import { isUserProvenance } from "@/lib/plan/plan-merge";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
 import {
   resolveEocReaderSurfaces,
@@ -567,10 +568,20 @@ export async function POST(request: NextRequest) {
           // plan-level terms (deductible_individual / oop_max_individual);
           // only the OON columns use the out_ prefix (mig 192).
           let canonTerms: Record<string, number | null> | null = null;
+          // S319 root cause of the dashed tiles: this load carried ONLY the
+          // S288 gap-fill gate (both in-network fields null), but pickTerm's
+          // catalog rule below needs the canonical whenever the row is a
+          // catalog pick — a reused row can carry an old parse's weak values
+          // (non-null!), which skipped this load, left canonTerms null, and
+          // the guard could never fire; the weak provenance then decorated to
+          // Tier-6 hidden and the tiles dashed. Load when EITHER consumer
+          // needs it; the both-null gap-fill semantics for non-catalog rows
+          // are unchanged.
           if (
             userPlan.canonical_plan_id &&
-            userPlan.in_deductible_individual == null &&
-            userPlan.in_oop_max_individual == null
+            ((userPlan.in_deductible_individual == null &&
+              userPlan.in_oop_max_individual == null) ||
+              userPlan.source === "catalog_match")
           ) {
             const { data: ct } = await supabase
               .from("canonical_plans")
@@ -642,15 +653,43 @@ export async function POST(request: NextRequest) {
                 own: number | null | undefined,
                 canon: number | null | undefined,
                 provKey: string,
-              ) =>
-                own == null && canon != null
-                  ? maybeDecorate<number | null>(
-                      canon,
-                      undefined,
-                      "canonical_inherited",
-                      decoration?.canonicalSourceCount ?? 1,
-                    )
-                  : maybeDecorate<number | null>(own ?? null, getProv(userPlan, provKey), planSource, 1);
+              ) => {
+                if (own == null && canon != null)
+                  return maybeDecorate<number | null>(
+                    canon,
+                    undefined,
+                    "canonical_inherited",
+                    decoration?.canonicalSourceCount ?? 1,
+                  );
+                const prov = getProv(userPlan, provKey);
+                // S319 (Andrew's switch-test find) — on a catalog_match row
+                // the USER-CONFIRMED canonical link is the term authority (the
+                // profile route's S288 overlay states the contract: "readers
+                // resolve them through the canonical link"). The pick REUSES
+                // an existing plan row when one matches, so the row can carry
+                // an older parse's terms + weak provenance (his: a July
+                // doc_extraction at the 0.5 single-source floor) — decorated
+                // under the row's own source those rightly fail the cite-grade
+                // consumer filter and the tiles dash out, while the canonical
+                // says the SAME numbers at library grade. Rule: canonical
+                // outranks non-USER provenance here (the S288 decoration the
+                // filter already respects); a user's own answer (manual /
+                // user_correction / user_initial_entry) still always wins.
+                // S319 review — the ESTABLISHED predicate, not a second list:
+                // isUserProvenance (plan-merge, S310) is the one home for "a
+                // user's answer never yields", and its vocabulary deliberately
+                // excludes 'manual' (CF-25: manual is weak; authorities
+                // supersede it) — so a manual-era value defers to the
+                // canonical here too, consistently with the merge policy.
+                if (own != null && planSource === "catalog_match" && canon != null && !isUserProvenance(prov))
+                  return maybeDecorate<number | null>(
+                    canon,
+                    undefined,
+                    "canonical_inherited",
+                    decoration?.canonicalSourceCount ?? 1,
+                  );
+                return maybeDecorate<number | null>(own ?? null, prov, planSource, 1);
+              };
               return {
                 inDeductible: pickTerm(userPlan.in_deductible_individual ?? profile.deductible_individual, canonTerms?.deductible_individual, "in_deductible_individual"),
                 outDeductible: pickTerm(userPlan.out_deductible_individual, canonTerms?.out_deductible_individual, "out_deductible_individual"),

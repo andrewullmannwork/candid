@@ -259,7 +259,7 @@ export async function POST(req: NextRequest) {
     // Activate the new plan
     await supabase
       .from("insurance_plans")
-      .update({ is_active: true })
+      .update({ is_active: true, activated_at: new Date().toISOString() })
       .eq("id", doc.linked_insurance_plan_id);
 
     // Repoint the profile to the newly-activated plan FIRST, in its own

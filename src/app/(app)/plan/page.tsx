@@ -27,6 +27,7 @@ import { BenefitsScoreboard } from "@/components/benefits-scoreboard";
 import { DataSourceContextLine } from "@/components/data-source-context-line";
 import { PlanStat } from "@/components/plan/PlanStat";
 import { AccumulatorPanel } from "@/components/plan/AccumulatorPanel";
+import { useAccumulatorLedger } from "@/components/plan/use-accumulator-ledger";
 import { StrandedPlanBanner } from "@/components/plan/StrandedPlanBanner";
 import { CategoryAccordion } from "@/components/plan/CategoryAccordion";
 import { EocPriorAuthCard, EocAboutPlanCard, EocServiceCoverageDetail, type EocServiceItem } from "@/components/plan/EocCoverageRules";
@@ -289,6 +290,20 @@ function PlanSummaryCard({ planName, planYear, planSummary, dataSource, insuranc
   // 4-grid PlanStat. PRESERVES Session 73 S71-hotfix-3 aggregation behavior
   // (premium + planType excluded from worst-trumps) + Session 77 cite-grade
   // verbatim fallback + VerifyAffordance worst-signal field per Phase 4.0.5-F.
+  // S319 (Andrew-approved copy, option C) — an HMO/EPO's null out-of-network
+  // terms aren't UNKNOWN, they don't exist: the plan only covers in-network
+  // care, so there is no OON deductible or OOP max to parse. State the truth
+  // instead of the dash. Exact-match on plan type deliberately: "HMO-POS" and
+  // other hybrids DO carry out-of-network benefits, so they keep the honest
+  // "—" (unknown) with the upload affordance.
+  const oonNotCovered =
+    planType.value != null && /^(hmo|epo)$/i.test(planType.value.trim()) ? (
+      // Inherits PlanStat's own value typography (text-sm leading-tight) so
+      // the four tiles keep one baseline rhythm; only the color mutes — a
+      // state, not a number.
+      <span className="text-gray-500">Not covered out-of-network</span>
+    ) : null;
+
   const displayTitle = [insurer, planName].filter(Boolean).join(" ") || "Your Plan";
 
   return (
@@ -346,9 +361,9 @@ function PlanSummaryCard({ planName, planYear, planSummary, dataSource, insuranc
       {/* 4-grid PlanStat per §1.C.2 design (collapses to 2-col on narrow). */}
       <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3">
         <PlanStat label="Deductible (in-network)" value={renderDecoratedValue(inDed, "Upload SBC")} />
-        <PlanStat label="Deductible (out-of-network)" value={renderDecoratedValue(outDed, "—")} />
+        <PlanStat label="Deductible (out-of-network)" value={outDed.value == null && oonNotCovered ? oonNotCovered : renderDecoratedValue(outDed, "—")} />
         <PlanStat label="OOP Max (in-network)" value={renderDecoratedValue(inOop, "Upload SBC")} />
-        <PlanStat label="OOP Max (out-of-network)" value={renderDecoratedValue(outOop, "—")} />
+        <PlanStat label="OOP Max (out-of-network)" value={outOop.value == null && oonNotCovered ? oonNotCovered : renderDecoratedValue(outOop, "—")} />
       </div>
       {/* Phase 4.0.5 Task 4.0.5-F: smart 2-button affordance for plan-identity
           scalars. Picks the worst-signal scalar across (inDed, outDed, inOop,
@@ -455,6 +470,14 @@ export default function CandidPlanPage() {
   const { user } = useAuth();
   const [result, setResult] = useState<AnalyzeResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  // S319 — the spending ledger fetch starts HERE, at page mount, parallel
+  // with analyze (the dashboard's established pattern). It used to start
+  // only after the panel mounted inside the analyze-gated card — a true
+  // waterfall that painted the card seconds before its own spending section.
+  // No ids passed, deliberately (S294): the loader self-resolves the active
+  // plan and keeps its (plan, year) fallbacks.
+  const [ledgerRefresh, setLedgerRefresh] = useState(0);
+  const spendingLedger = useAccumulatorLedger(undefined, undefined, ledgerRefresh);
   const [error, setError] = useState("");
   // Auto-expand benefit from URL hash (e.g. /plan#benefit-id). Hashes prefixed
   // with `category-` are reserved for category-section scroll (see useEffect
@@ -889,7 +912,7 @@ export default function CandidPlanPage() {
             plan when it has bills — byte-identical — and falls back to the
             most-recent-billed (plan, year), honestly labeled, when it doesn't.
             Explicit props remain the contract for a real pin (year switcher). */}
-        <AccumulatorPanel insurer={result.insurer} />
+        <AccumulatorPanel insurer={result.insurer} ledger={spendingLedger} onLedgerRefresh={() => setLedgerRefresh((k) => k + 1)} />
       </PlanSummaryCard>
       {changePlanEnabled && (
         <ChangePlanModal

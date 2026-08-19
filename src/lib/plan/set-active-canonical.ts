@@ -162,7 +162,7 @@ export async function setActiveCanonicalPlan(
   if (existing?.id) {
     const { error: reactivateErr } = await userScoped(supabase, userId)
       .table("insurance_plans")
-      .update({ ...identity, ...cardCarry, is_active: true })
+      .update({ ...identity, ...cardCarry, is_active: true, activated_at: new Date().toISOString() })
       .eq("id", existing.id);
     if (reactivateErr) {
       console.error("[set-active-canonical] reactivate failed:", reactivateErr.message);
@@ -172,7 +172,7 @@ export async function setActiveCanonicalPlan(
   } else {
     const { data: inserted, error: insertErr } = await userScoped(supabase, userId)
       .table("insurance_plans")
-      .insert({ ...identity, ...cardCarry, user_id: userId, is_active: true })
+      .insert({ ...identity, ...cardCarry, user_id: userId, is_active: true, activated_at: new Date().toISOString() })
       .select("id")
       .single();
     if (insertErr || !inserted) {

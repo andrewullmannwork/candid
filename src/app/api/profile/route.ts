@@ -714,6 +714,8 @@ export async function POST(req: NextRequest) {
             user_id: user.id,
             source: isCardScan ? "insurance_card" : "manual",
             is_active: true,
+            // S319 mig 231 — every is_active=true writer stamps the activation.
+            activated_at: new Date().toISOString(),
           };
 
           if (plan_name !== undefined) planUpdate.plan_name = plan_name || null;
@@ -777,7 +779,7 @@ export async function POST(req: NextRequest) {
           // Create new plan
           const { data: newPlan } = await userScoped(supabase, user.id)
             .table("insurance_plans")
-            .insert({ ...planUpdate, source: isCardScan ? "insurance_card" : "manual", is_active: true })
+            .insert({ ...planUpdate, source: isCardScan ? "insurance_card" : "manual", is_active: true, activated_at: new Date().toISOString() })
             .select("id")
             .single();
 

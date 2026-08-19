@@ -1186,6 +1186,8 @@ export async function processPlanDocumentData(
           source: (isFullPlanDoc ? "plan_doc_upload" : "sbc_upload") as string,
           source_document_id: documentId,
           is_active: true,
+          // S319 mig 231 — every is_active=true writer stamps the activation.
+          activated_at: new Date().toISOString(),
           verification_status: "document_verified" as const,
           // S74.6 D1 — propagate ACA columns only when THIS parse extracted a
           // signal. When Haiku found nothing, preserve the plan's prior ACA value

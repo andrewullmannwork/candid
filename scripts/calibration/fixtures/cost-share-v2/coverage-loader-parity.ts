@@ -73,6 +73,11 @@ function inlineBuild(
       covered: row.covered !== false,
       copay: row.in_copay,
       coinsurance: normalizeCoinsuranceForStorage(row.in_coinsurance),
+      // S319 fixture audit — the shared loader gained three-valued
+      // deductibleApplies at S308; the replica never learned it and every
+      // parity case failed on exactly this missing key. Mirrors the shared
+      // derivation (row value, else null).
+      deductibleApplies: (row.in_deductible_applies as boolean | null) ?? null,
       source: row.source ?? opts.sourceDefault,
       confidence,
       citation: opts.buildCitation(row.name, row.sbc_page),

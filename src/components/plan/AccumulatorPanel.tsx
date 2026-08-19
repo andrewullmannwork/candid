@@ -20,7 +20,6 @@
 import { useState } from "react";
 import { useAuth } from "@/lib/auth/auth-context";
 import { cn } from "@/lib/utils/cn";
-import { useAccumulatorLedger } from "./use-accumulator-ledger";
 import type {
   AccumulatorLedger,
   LedgerBucket,
@@ -480,25 +479,27 @@ export function AccumulatorPanelView({ ledger, insurer, className, defaultCollap
 }
 
 interface Props {
-  insurancePlanId?: string | null;
-  planYear?: number | null;
+  /** S319 — the ledger, fetched by the PAGE (hook hoisted to page level so the
+   *  fetch starts at mount, parallel with analyze, instead of waterfalling
+   *  behind the plan card — the dashboard's established pattern, line-for-line).
+   *  null = still loading or gated off; the panel renders nothing either way. */
+  ledger: AccumulatorLedger | null;
+  /** S294 refresh, threaded up: the plan-change modal's Apply re-pins bills
+   *  server-side, and the page's hook must re-read rather than trust a guess. */
+  onLedgerRefresh: () => void;
   insurer?: string | null;
   className?: string;
 }
 
-/** Data wrapper — fetches the ledger (gated) and hands it to the pure view. */
-export function AccumulatorPanel({ insurancePlanId, planYear, insurer, className }: Props) {
-  // S294 — bumped by the plan-change modal's Apply (bills re-pinned server-side;
-  // the tally must re-read rather than trust a client-side guess).
-  const [refreshKey, setRefreshKey] = useState(0);
-  const ledger = useAccumulatorLedger(insurancePlanId, planYear, refreshKey);
+/** Null-gate wrapper over the pure view — data arrives from the page. */
+export function AccumulatorPanel({ ledger, onLedgerRefresh, insurer, className }: Props) {
   if (!ledger) return null;
   return (
     <AccumulatorPanelView
       ledger={ledger}
       insurer={insurer}
       className={className}
-      onRepinApplied={() => setRefreshKey((k) => k + 1)}
+      onRepinApplied={onLedgerRefresh}
     />
   );
 }
