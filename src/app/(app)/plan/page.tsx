@@ -298,7 +298,10 @@ function PlanSummaryCard({ planName, planYear, planSummary, dataSource, insuranc
   // "—" (unknown) with the upload affordance.
   const oonNotCovered =
     planType.value != null && /^(hmo|epo)$/i.test(planType.value.trim()) ? (
-      <span className="text-xs leading-snug text-gray-500">Not covered out-of-network</span>
+      // Inherits PlanStat's own value typography (text-sm leading-tight) so
+      // the four tiles keep one baseline rhythm; only the color mutes — a
+      // state, not a number.
+      <span className="text-gray-500">Not covered out-of-network</span>
     ) : null;
 
   const displayTitle = [insurer, planName].filter(Boolean).join(" ") || "Your Plan";
