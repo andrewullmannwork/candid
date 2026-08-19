@@ -8,9 +8,29 @@ export function EmailVerifyBanner() {
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
   const [error, setError] = useState("");
+  // S320 (Andrew) — dismissible for the session: the nag returns next session
+  // if the email is still unverified, but never re-interrupts the one the
+  // user already waved off. sessionStorage, not state, so it survives
+  // client-side navigation within the tab.
+  const [dismissed, setDismissed] = useState(() => {
+    try {
+      return sessionStorage.getItem("email-verify-banner-dismissed") === "1";
+    } catch {
+      return false;
+    }
+  });
 
-  // Hide if no user, or email is verified, or banner already actioned for this session.
-  if (!user || user.emailVerified) return null;
+  // Hide if no user, or email is verified, or dismissed for this session.
+  if (!user || user.emailVerified || dismissed) return null;
+
+  function handleDismiss() {
+    try {
+      sessionStorage.setItem("email-verify-banner-dismissed", "1");
+    } catch {
+      /* still dismiss in-memory */
+    }
+    setDismissed(true);
+  }
 
   async function handleResend() {
     if (!user) return;
@@ -72,6 +92,15 @@ export function EmailVerifyBanner() {
           {sending ? "Sending…" : "Resend email"}
         </button>
       )}
+      <button
+        onClick={handleDismiss}
+        aria-label="Dismiss"
+        className="shrink-0 self-start rounded-lg p-1.5 text-amber-500 hover:bg-amber-100 hover:text-amber-700 sm:self-center"
+      >
+        <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+        </svg>
+      </button>
     </div>
   );
 }
