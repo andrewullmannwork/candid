@@ -198,6 +198,14 @@ jobs:
         # the spread sentence's provenance gate, the CTA's service-identity
         # precondition, and the banner tense fix. Dollars in = dollars out.
         run: npx tsx scripts/calibration/fixtures/claims/savings-derivation.ts
+      - name: Classify sampling-fallback fixture (S320)
+        # Locks the quick-classify degrade contract: pdf-lib page sampling is
+        # an OCR-budget optimization and must NEVER gate an upload — a PDF the
+        # pipeline's own reader (pdfjs) can parse fell to "Classification
+        # failed" because the sampler threw on broken xref refs (S320 mobile
+        # E2E, insurer-published SBC). Hostile PDFs degrade to full-document
+        # classification with the page count taken from the OCR result.
+        run: npx tsx scripts/calibration/fixtures/upload/classify-sampling-fallback.ts
 
       - name: Canonical link is a pair (S292 / mig 218)
         # Fails the build if any code writes insurance_plans.canonical_plan_id
