@@ -33,28 +33,59 @@ function files(dir) {
 }
 
 const offenders = [];
+// S320 — the regex now also catches VARIABLE payloads (`is_active: shouldActivate`):
+// extraction-dedup shipped activations with no stamp and no claim adoption for
+// months because the literal-true scan couldn't see the variable form.
+// `false` (deactivation) and `boolean` (type annotations) are excluded.
+const ACTIVATION_RE = /is_active:\s*(?!false\b)(?!boolean\b)[A-Za-z_$true][\w$]*/g;
+const finalizeOffenders = [];
 for (const f of files(SRC)) {
   const text = readFileSync(f, "utf8");
-  const re = /is_active:\s*true/g;
   let m;
-  while ((m = re.exec(text)) !== null) {
+  let hasActivationWrite = false;
+  ACTIVATION_RE.lastIndex = 0;
+  while ((m = ACTIVATION_RE.exec(text)) !== null) {
+    hasActivationWrite = true;
     const start = Math.max(0, m.index - 200);
-    const windowText = text.slice(start, m.index + 200);
+    const windowText = text.slice(start, m.index + 400);
     if (!windowText.includes("activated_at")) {
       const line = text.slice(0, m.index).split("\n").length;
       offenders.push(`${f.replace(ROOT, "")}:${line}`);
     }
   }
+  // S320 — the claim-follow contract: any file that flips a plan active must
+  // run finalizePlanActivation (adopt + follow-deactivated as ONE step). The
+  // /check SBC-upload door shipped activation-without-adoption for weeks —
+  // every bill-before-plan claim stayed unlinked, plan costs never flowed —
+  // because the seam inventory was maintained by memory. The helper's home
+  // module is exempt (it defines the family; it writes no activations).
+  if (
+    hasActivationWrite &&
+    !f.endsWith("claim-plan-link.ts") &&
+    !text.includes("finalizePlanActivation")
+  ) {
+    finalizeOffenders.push(f.replace(ROOT, ""));
+  }
 }
 
-if (offenders.length > 0) {
+if (offenders.length > 0 || finalizeOffenders.length > 0) {
+  if (offenders.length > 0) {
+    console.error(
+      "activation-stamp-guard: plan activation written WITHOUT `activated_at` (mig 231 contract):",
+    );
+    for (const o of offenders) console.error("  " + o);
+  }
+  if (finalizeOffenders.length > 0) {
+    console.error(
+      "activation-stamp-guard: activation writer file MISSING finalizePlanActivation (S320 claim-follow contract):",
+    );
+    for (const o of finalizeOffenders) console.error("  " + o);
+  }
   console.error(
-    "activation-stamp-guard: `is_active: true` written WITHOUT `activated_at` (mig 231 contract):",
-  );
-  for (const o of offenders) console.error("  " + o);
-  console.error(
-    "Every activation writer stamps activated_at in the same payload — see mig 231.",
+    "Every activation writer stamps activated_at in the same payload (mig 231) AND runs finalizePlanActivation (S320).",
   );
   process.exit(1);
 }
-console.log("activation-stamp-guard: all activation writers stamp activated_at ✓");
+console.log(
+  "activation-stamp-guard: all activation writers stamp activated_at + run finalizePlanActivation ✓",
+);

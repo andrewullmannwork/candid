@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase/server";
 import { requireAuthenticatedUser } from "@/lib/security/require-authenticated-user";
 import { getAdminAuth } from "@/lib/firebase/admin";
-import { adoptUnlinkedClaims } from "@/lib/claims/claim-plan-link";
+import { finalizePlanActivation } from "@/lib/claims/claim-plan-link";
 import { userScoped } from "@/lib/security/user-scoped";
 
 /**
@@ -136,7 +136,7 @@ export async function POST(req: NextRequest) {
     await userScoped(supabase, user.id)
       .table("profiles")
       .update({ active_insurance_plan_id: reclaimedActive.id });
-    await adoptUnlinkedClaims(supabase, user.id, reclaimedActive.id);
+    await finalizePlanActivation(supabase, user.id, reclaimedActive.id);
   } else if (reclaimedActive) {
     // Caller already has an active plan: the reclaimed one stays owned but
     // inactive — the standard flows (change-plan, corrections) take it from

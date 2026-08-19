@@ -21,7 +21,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { userScoped } from "@/lib/security/user-scoped";
-import { adoptUnlinkedClaims, repointClaimsFromDeactivatedPlans } from "@/lib/claims/claim-plan-link";
+import { finalizePlanActivation } from "@/lib/claims/claim-plan-link";
 import { decideCardPreservation } from "@/lib/plan/insurer-match";
 import {
   canonicalLinkFields,
@@ -213,11 +213,10 @@ export async function setActiveCanonicalPlan(
     return { ok: false, status: 500, error: "Could not set plan" };
   }
 
-  // S315 — a plan just became active: unlinked claims adopt it (fail-soft).
-  await adoptUnlinkedClaims(supabase, userId, activePlanId);
-  // S317 — and claims linked to the plan we just switched AWAY from follow it,
-  // instead of being left resolving coverage against an is_active=false row.
-  await repointClaimsFromDeactivatedPlans(supabase, userId, previouslyActiveIds, activePlanId);
+  // S320 — the claim-follow family in one call: unlinked claims adopt the
+  // newly-active plan (S315) and claims on the plans just switched away from
+  // follow it (S317). Fail-soft inside.
+  await finalizePlanActivation(supabase, userId, activePlanId, previouslyActiveIds);
 
   return { ok: true, insurancePlanId: activePlanId, cardCleared };
 }

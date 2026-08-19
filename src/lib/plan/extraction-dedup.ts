@@ -40,7 +40,7 @@ import {
   type ValidityGateInput,
 } from "@/lib/parser/cf40-v4";
 import { toPlanDocType, type PlanDocType } from "@/lib/parser/doctype-expected-counts";
-import { repointClaimsFromDeactivatedPlans } from "@/lib/claims/claim-plan-link";
+import { finalizePlanActivation } from "@/lib/claims/claim-plan-link";
 
 // ── CF-40 v4 (S73.5 D1) — Plan-document-only smart-skip whitelist ─────────────
 //
@@ -990,6 +990,10 @@ export async function linkDocumentToCanonical(
           source: "sbc_upload",
           source_document_id: doc.id,
           is_active: shouldActivate,
+          // S320 — mig-231 stamp contract: this writer used the variable form
+          // (`is_active: shouldActivate`) and evaded the activation guard's
+          // literal-true scan, shipping activations with NO activated_at.
+          activated_at: shouldActivate ? new Date().toISOString() : null,
           ...canonicalLinkFields(canonicalPlanId, canonicalMatchConfidence ?? null),
           verification_status: "document_verified",
           field_provenance: mergedPlanFieldProvenance,
@@ -1011,13 +1015,15 @@ export async function linkDocumentToCanonical(
         if (identifiers.insurer) profileUpdate.insurer = identifiers.insurer;
         if (identifiers.planName) profileUpdate.plan_name = identifiers.planName;
         await supabase.from("profiles").update(profileUpdate).eq("user_id", doc.user_id);
-        // S317 — claims on the plan(s) this one supersedes follow it, rather
-        // than resolving coverage against an is_active=false row.
-        await repointClaimsFromDeactivatedPlans(
+        // S320 — the claim-follow family in one call: unlinked claims adopt
+        // this newly-active plan (S315 — this dedup path is the same-bytes
+        // re-upload door, exactly the /check gap's sibling) + claims on the
+        // plan(s) this one supersedes follow it (S317).
+        await finalizePlanActivation(
           supabase,
           doc.user_id as string,
-          activeBeforeIds,
           targetPlanId as string,
+          activeBeforeIds,
         );
       }
     }

@@ -177,6 +177,31 @@ export async function repointClaimsFromDeactivatedPlans(
 }
 
 /**
+ * finalizePlanActivation — THE post-activation step (S320). Every writer that
+ * flips a plan active runs BOTH halves of the claim-follow family:
+ * adoptUnlinkedClaims (NULL claims adopt the newly-active plan — S315) and
+ * repointClaimsFromDeactivatedPlans (claims on plans this activation just
+ * deactivated follow it — S317). The S320 mobile E2E found process-plan
+ * carrying only the second half: the /check SBC-upload door activates inline
+ * during the parse, so every /check claim stayed unlinked — plan costs never
+ * flowed and the correction routes dead-ended. Pairing the two in ONE function
+ * means no writer can take one without the other, and
+ * scripts/activation-stamp-guard.mjs statically requires every is_active
+ * writer's file to call it.
+ */
+export async function finalizePlanActivation(
+  supabase: SupabaseClient,
+  userId: string,
+  planId: string,
+  deactivatedPlanIds: string[] = [],
+): Promise<void> {
+  await adoptUnlinkedClaims(supabase, userId, planId);
+  if (deactivatedPlanIds.length > 0) {
+    await repointClaimsFromDeactivatedPlans(supabase, userId, deactivatedPlanIds, planId);
+  }
+}
+
+/**
  * Adopt every UNLINKED claim (insurance_plan_id IS NULL) the user owns onto
  * the plan that just became active. NULL-only by design; fail-soft (an
  * activation must never 500 because adoption hiccupped); returns the count
