@@ -30,6 +30,11 @@ export const OUTCOME_ROUTE_KEYS = [
   "clearSentAt",
   "clearOutcomeDetail",
   "recodedAs",
+  // S320 — the enclosure-aware send record (external review etc.): the user's
+  // attestation that the required documents went in the envelope, and how the
+  // letter was sent. Optional; stamped to dispute metadata by the route.
+  "enclosuresConfirmed",
+  "sendMethod",
 ] as const;
 
 export interface OutcomeActionPayload {
@@ -37,11 +42,22 @@ export interface OutcomeActionPayload {
   status: string;
   clearSentAt?: boolean;
   clearOutcomeDetail?: boolean;
+  enclosuresConfirmed?: boolean;
+  sendMethod?: string;
 }
 
-/** Mark a drafted letter as sent. */
-export function markSentPayload(disputeId: string): OutcomeActionPayload {
-  return { disputeId, status: "filed" };
+/** Mark a drafted letter as sent. S320: surfaces that ran the enclosure
+ *  confirm pass the attestation + method so the record carries them. */
+export function markSentPayload(
+  disputeId: string,
+  opts?: { enclosuresConfirmed?: boolean; sendMethod?: string },
+): OutcomeActionPayload {
+  return {
+    disputeId,
+    status: "filed",
+    ...(opts?.enclosuresConfirmed ? { enclosuresConfirmed: true } : {}),
+    ...(opts?.sendMethod ? { sendMethod: opts.sendMethod } : {}),
+  };
 }
 
 /**

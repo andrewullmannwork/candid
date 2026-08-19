@@ -60,6 +60,7 @@ import {
   formatLetterDateShort,
   daysSinceLocal,
   daysUntilLocal,
+  getLetterEnclosures,
 } from "@/lib/disputes/letter-type";
 import {
   CASE_RAIL,
@@ -277,6 +278,11 @@ export type RailStepModel =
       title: string;
       disputeId: string;
       openLetterLabel: string;
+      /** S320 — documents this letter must be MAILED WITH (from the one
+       *  letter-type declaration); empty = no band, no confirm stage. */
+      enclosures: readonly string[];
+      /** Projection string (legacy rows reverse-mapped) — filename use only. */
+      letterType: string;
       /**
        * S312 (F2-S312.1) — the draft's demand fell to $0 (row-truth via the
        * projection; see ProjectedLetterStep.noRemainingDemand). The rail
@@ -819,6 +825,10 @@ function buildLetterSteps(
       // The DRAFT variant names the act; the sent one below stays a plain
       // "Open this letter" because there is nothing left to send.
       openLetterLabel: CASE_RAIL.ctaOpenLetterToSend,
+      // S320 — enclosure requirements resolved at compose time from the ONE
+      // letter-type declaration; the renderer just paints what's here.
+      enclosures: getLetterEnclosures(l.letterType),
+      letterType: l.letterType,
       // S312 (F2-S312.1) — straight from the projection (row-truth); the rail
       // swaps the send CTA for the Dismiss/Keep banner when the demand died.
       zeroDemand: l.noRemainingDemand,

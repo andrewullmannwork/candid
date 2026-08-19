@@ -966,7 +966,7 @@ export const CASE_RAIL = {
    * appeal". That reads as if the step sends it. Sending happens ON the letter
    * page (download, mail, mark sent), so the button says so.
    */
-  ctaOpenLetterToSend: "Open the letter to send it",
+  ctaOpenLetterToSend: "Review the letter",
   quietUndoResult: "Undo this result",
 
   // S312 (F2-S312.1, Andrew-approved copy) — the "no remaining demand" banner.

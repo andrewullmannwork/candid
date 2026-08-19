@@ -34,6 +34,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { ShowFullStepButton } from "@/components/claims/GuidedPhoneSteps";
+import { EnclosureBand, MarkSentConfirm, DownloadReminderModal } from "@/components/disputes/MarkSentConfirm";
 import { UnsendControl } from "@/components/disputes/UnsendControl";
 import { CASE_RAIL, COLLECTIONS_CHROME } from "@/lib/guides/pack-registry";
 import {
@@ -549,7 +550,11 @@ export function CaseRail({
   escalating: boolean;
   /** S301 — mark-as-sent / unsend for the collections "Mail it certified" step.
    *  Routes to the EXISTING mark-sent + unsend paths (one writer). */
-  onMarkSent: (disputeId: string, sent: boolean) => Promise<boolean>;
+  onMarkSent: (
+    disputeId: string,
+    sent: boolean,
+    opts?: { enclosuresConfirmed?: boolean; sendMethod?: string },
+  ) => Promise<boolean>;
   /** S301 — the FDCPA §1692g anchor, through the existing deadline-inputs route. */
   onSaveFirstContactDate: (disputeId: string, date: string | null) => Promise<void>;
   /** Refetch the claim projection after a collections step writes. */
@@ -562,6 +567,10 @@ export function CaseRail({
 }) {
   const router = useRouter();
   const [openSteps, setOpenSteps] = useState<Record<string, boolean>>({});
+  const [sendAsking, setSendAsking] = useState<Record<string, boolean>>({});
+  const [sendBusy, setSendBusy] = useState<Record<string, boolean>>({});
+  const [dlBusy, setDlBusy] = useState<Record<string, boolean>>({});
+  const [dlReminderFor, setDlReminderFor] = useState<string | null>(null);
   const [whnOpen, setWhnOpen] = useState<Record<string, boolean>>({});
   const [doorLogged, setDoorLogged] = useState<Record<string, boolean>>({});
   const [doorBusy, setDoorBusy] = useState<Record<string, boolean>>({});
@@ -618,6 +627,41 @@ export function CaseRail({
   // success the projection refetch reconciles: a dismissed letter leaves
   // the rail (cancelled ⇒ stage "none"), a kept one drops the banner (the
   // stamp's Keep answer suppresses it).
+  // S320 — the rail's own send actions (Andrew: Download + Mark-as-sent live
+  // on the rail; the letter page keeps duplicates running the SAME confirms).
+  const railDownloadLetter = async (disputeId: string, letterType: string) => {
+    if (dlBusy[disputeId]) return;
+    setDlBusy((m) => ({ ...m, [disputeId]: true }));
+    try {
+      const token = await getAuthToken();
+      if (!token) return;
+      const res = await fetch(`/api/disputes/${disputeId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return;
+      const data = (await res.json()) as { letterContent?: string };
+      if (!data.letterContent) return;
+      const blob = new Blob([data.letterContent], { type: "text/plain" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `candid-dispute-letter-${letterType || "general"}.txt`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      // The same letter_downloaded ledger ping the letter page fires —
+      // fail-soft; the file is already in the user's hands.
+      void fetch(`/api/claims/${claimId}/case-events`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ kind: "letter_downloaded", disputeId }),
+      }).catch(() => {});
+    } finally {
+      setDlBusy((m) => ({ ...m, [disputeId]: false }));
+    }
+  };
+
   const runZeroDemand = async (disputeId: string, action: "dismiss" | "keep") => {
     if (zeroDemandBusy[disputeId]) return;
     setZeroDemandBusy((m) => ({ ...m, [disputeId]: true }));
@@ -1344,13 +1388,65 @@ export function CaseRail({
             return (
               <RailStep key={s.key} dataLetter={letterId} n={s.badge} title={s.title} last={last}>
                 <div className="rounded-xl border border-gray-200 bg-white px-4 py-3.5">
-                  <button
-                    type="button"
-                    onClick={() => goToLetter(s.disputeId)}
-                    className="inline-flex items-center rounded-lg bg-blue-600 px-4 py-2 text-[13.5px] font-semibold text-white shadow-sm transition-colors hover:bg-blue-700"
-                  >
-                    {s.openLetterLabel}
-                  </button>
+                  {/* S320 (Andrew, mock rev 3/4) — Download + Mark-as-sent live ON
+                      the rail beside "Review the letter"; the enclosure band and
+                      the shared MarkSentConfirm keep the send honest for letter
+                      types that must ship with documents (external review). */}
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    <button
+                      type="button"
+                      onClick={() => goToLetter(s.disputeId)}
+                      className="inline-flex items-center rounded-lg bg-blue-600 px-4 py-2 text-[13.5px] font-semibold text-white shadow-sm transition-colors hover:bg-blue-700"
+                    >
+                      {s.openLetterLabel}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={dlBusy[s.disputeId] ?? false}
+                      onClick={() =>
+                        s.enclosures.length > 0
+                          ? setDlReminderFor(s.disputeId)
+                          : void railDownloadLetter(s.disputeId, s.letterType)
+                      }
+                      className="inline-flex items-center rounded-lg border-[1.5px] border-blue-100 bg-white px-4 py-2 text-[13.5px] font-semibold text-blue-600 transition-colors hover:bg-blue-50/50 disabled:opacity-50"
+                    >
+                      {dlBusy[s.disputeId] ? "Preparing…" : "Download letter"}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={sendBusy[s.disputeId] ?? false}
+                      onClick={() => setSendAsking((m) => ({ ...m, [s.disputeId]: !(m[s.disputeId] ?? false) }))}
+                      className="inline-flex items-center rounded-lg bg-gray-900 px-4 py-2 text-[13.5px] font-semibold text-white transition-colors hover:bg-black disabled:opacity-50"
+                    >
+                      Mark as sent
+                    </button>
+                  </div>
+                  {(sendAsking[s.disputeId] ?? false) && (
+                    <MarkSentConfirm
+                      enclosures={s.enclosures}
+                      busy={sendBusy[s.disputeId] ?? false}
+                      onMethod={(kind, enclosuresConfirmed) => {
+                        setSendAsking((m) => ({ ...m, [s.disputeId]: false }));
+                        setSendBusy((m) => ({ ...m, [s.disputeId]: true }));
+                        void onMarkSent(s.disputeId, true, {
+                          enclosuresConfirmed,
+                          sendMethod: kind,
+                        }).finally(() => setSendBusy((m) => ({ ...m, [s.disputeId]: false })));
+                      }}
+                      onNotYet={() => setSendAsking((m) => ({ ...m, [s.disputeId]: false }))}
+                    />
+                  )}
+                  {!(sendAsking[s.disputeId] ?? false) && <EnclosureBand enclosures={s.enclosures} />}
+                  {dlReminderFor === s.disputeId && (
+                    <DownloadReminderModal
+                      enclosures={s.enclosures}
+                      onConfirm={() => {
+                        setDlReminderFor(null);
+                        void railDownloadLetter(s.disputeId, s.letterType);
+                      }}
+                      onCancel={() => setDlReminderFor(null)}
+                    />
+                  )}
                 </div>
               </RailStep>
             );
