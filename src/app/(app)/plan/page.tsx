@@ -27,6 +27,7 @@ import { BenefitsScoreboard } from "@/components/benefits-scoreboard";
 import { DataSourceContextLine } from "@/components/data-source-context-line";
 import { PlanStat } from "@/components/plan/PlanStat";
 import { AccumulatorPanel } from "@/components/plan/AccumulatorPanel";
+import { useAccumulatorLedger } from "@/components/plan/use-accumulator-ledger";
 import { StrandedPlanBanner } from "@/components/plan/StrandedPlanBanner";
 import { CategoryAccordion } from "@/components/plan/CategoryAccordion";
 import { EocPriorAuthCard, EocAboutPlanCard, EocServiceCoverageDetail, type EocServiceItem } from "@/components/plan/EocCoverageRules";
@@ -455,6 +456,14 @@ export default function CandidPlanPage() {
   const { user } = useAuth();
   const [result, setResult] = useState<AnalyzeResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  // S319 — the spending ledger fetch starts HERE, at page mount, parallel
+  // with analyze (the dashboard's established pattern). It used to start
+  // only after the panel mounted inside the analyze-gated card — a true
+  // waterfall that painted the card seconds before its own spending section.
+  // No ids passed, deliberately (S294): the loader self-resolves the active
+  // plan and keeps its (plan, year) fallbacks.
+  const [ledgerRefresh, setLedgerRefresh] = useState(0);
+  const spendingLedger = useAccumulatorLedger(undefined, undefined, ledgerRefresh);
   const [error, setError] = useState("");
   // Auto-expand benefit from URL hash (e.g. /plan#benefit-id). Hashes prefixed
   // with `category-` are reserved for category-section scroll (see useEffect
@@ -889,7 +898,7 @@ export default function CandidPlanPage() {
             plan when it has bills — byte-identical — and falls back to the
             most-recent-billed (plan, year), honestly labeled, when it doesn't.
             Explicit props remain the contract for a real pin (year switcher). */}
-        <AccumulatorPanel insurer={result.insurer} />
+        <AccumulatorPanel insurer={result.insurer} ledger={spendingLedger} onLedgerRefresh={() => setLedgerRefresh((k) => k + 1)} />
       </PlanSummaryCard>
       {changePlanEnabled && (
         <ChangePlanModal
