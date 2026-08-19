@@ -74,7 +74,11 @@ const LANDING_FAQ: { q: string; a: string; href?: string; linkLabel?: string }[]
 
 export default function LandingPage() {
   const { user } = useAuth();
-  const loggedIn = !!user;
+  // S320 — an anonymous /check session is not "logged in" for landing
+  // surfaces: it has no dashboard to visit (the app layout bounces it), and
+  // the "Try a bill first" /check entrance it would hide is exactly the
+  // surface that session belongs to (and resumes). Full accounts unchanged.
+  const loggedIn = !!user && !user.isAnonymous;
 
   return (
     <div className="landing dirB">
