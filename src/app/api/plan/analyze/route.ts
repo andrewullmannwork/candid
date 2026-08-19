@@ -651,21 +651,26 @@ export async function POST(request: NextRequest) {
                     decoration?.canonicalSourceCount ?? 1,
                   );
                 const prov = getProv(userPlan, provKey);
-                // S319 (Andrew's switch-test find) — contract enforcement, not
-                // inference: a catalog_match row is DESIGNED term-less (the
-                // profile route's S288 overlay states it: "readers resolve
-                // them through the canonical link"), so an own-value with NO
-                // provenance on one is residue some writer copied from the
-                // canonical. Decorated under the row's own source with count 1
-                // the consumer-read filter hid it and the tiles dashed out —
-                // while the spending panel (row-direct, different strictness
-                // by design) showed the same numbers. The link stays the
-                // authority: decorate as canonical data (the S288 treatment,
-                // canonical's own number preferred). Provenance-backed values
-                // — a user's answer, a parsed doc — keep winning unchanged.
-                if (own != null && prov == null && planSource === "catalog_match")
+                const provSource = (prov as { source?: string } | undefined)?.source;
+                // S319 (Andrew's switch-test find) — on a catalog_match row
+                // the USER-CONFIRMED canonical link is the term authority (the
+                // profile route's S288 overlay states the contract: "readers
+                // resolve them through the canonical link"). The pick REUSES
+                // an existing plan row when one matches, so the row can carry
+                // an older parse's terms + weak provenance (his: a July
+                // doc_extraction at the 0.5 single-source floor) — decorated
+                // under the row's own source those rightly fail the cite-grade
+                // consumer filter and the tiles dash out, while the canonical
+                // says the SAME numbers at library grade. Rule: canonical
+                // outranks non-USER provenance here (the S288 decoration the
+                // filter already respects); a user's own answer (manual /
+                // user_correction / user_initial_entry) still always wins.
+                const userAnswered =
+                  provSource != null &&
+                  ["manual", "user_correction", "user_initial_entry", "card_corroboration"].includes(provSource);
+                if (own != null && planSource === "catalog_match" && canon != null && !userAnswered)
                   return maybeDecorate<number | null>(
-                    canon ?? own,
+                    canon,
                     undefined,
                     "canonical_inherited",
                     decoration?.canonicalSourceCount ?? 1,
