@@ -198,6 +198,7 @@ const base = { prorated: false, paidTotal: 0, balanceTotal: 0, refundComponent: 
   check("state 4: no recovery headline", d.bill.recoveryHeadline === false);
   check("state 4: no splits at all", d.bill.paidSplit === null && d.bill.balanceSplit === null);
   check("state 4: charged still derived", d.bill.chargedToYou === 20);
+  check("state 4: priced-and-fine says within plan cost (S321 split)", d.rows[0].resultNone === "within your plan's cost", d.rows[0].resultNone);
 }
 
 // ── Plan card label + pill rules ────────────────────────────────────────────
@@ -217,7 +218,7 @@ const base = { prorated: false, paidTotal: 0, balanceTotal: 0, refundComponent: 
     partial.rows[1].planDetail === "We don't know your rate for this service, so we assume the maximum until you confirm: up to $422.57.",
     partial.rows[1].planDetail,
   );
-  check("unpriced keeps 'nothing provable yet' (no deductible claim)", partial.rows[1].resultNone === "nothing provable yet");
+  check("unpriced asks for the rate (S321 'nothing provable yet' split)", partial.rows[1].resultNone === "confirm your rate to check", partial.rows[1].resultNone);
 
   const single = buildSavingsDerivation({ ...base, lines: [priced("a")] });
   check("single charged line → no one-term pill", single.planPill === null);

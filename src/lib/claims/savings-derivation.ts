@@ -98,8 +98,16 @@ export interface DerivationRow {
   /** none → `resultNone` renders; otherwise `resultLabel` + amount. */
   result: { kind: "owed_back" | "off_balance" | "none"; amount: number };
   resultLabel: "You're Owed" | "Off your balance" | null;
-  /** "counts toward your deductible" on rate-known deductible-unmet lines; else "nothing provable yet". */
-  resultNone: "nothing provable yet" | "counts toward your deductible" | null;
+  /** Result-column copy when nothing is owed back. S321 split the old
+   *  "nothing provable yet" (it rendered identically for priced-and-fine vs
+   *  rate-unknown lines): deductible-unmet lines explain the payment counts
+   *  toward the deductible, priced lines say the payment sits within plan
+   *  cost, rate-unknown lines ask for the rate. */
+  resultNone:
+    | "within your plan's cost"
+    | "confirm your rate to check"
+    | "counts toward your deductible"
+    | null;
   /** Render the Confirm-your-rate chip (unpriced + has a service identity). */
   cta: boolean;
 }
@@ -296,7 +304,9 @@ export function buildSavingsDerivation(args: {
           ? null
           : l.rateKnown && l.deductibleApplies === true && l.deductibleMet === false
             ? "counts toward your deductible"
-            : "nothing provable yet",
+            : l.rateKnown
+              ? "within your plan's cost"
+              : "confirm your rate to check",
       cta: !l.rateKnown && !!l.serviceSlug,
     };
   });

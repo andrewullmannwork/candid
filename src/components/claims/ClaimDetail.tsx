@@ -2994,7 +2994,10 @@ export function ClaimDetail({
                 onAddPlanDetails={(target) => {
                   // S290 — honor the clicked chip: its lineId first, then a slug
                   // lookup, then the legacy bannerTargetLineId fallback. Fixes the
-                  // answer landing under a DIFFERENT line's service.
+                  // answer landing under a DIFFERENT line's service. S321: an
+                  // uncategorized clicked line opens the category picker on ITSELF
+                  // (it can't take plan details until it has an identity) — the
+                  // old fallback sent it to bannerTargetLineId's line instead.
                   const line =
                     (target?.lineId ? primaryLineItems.find((li) => li.id === target.lineId) : null) ??
                     (target?.serviceSlug
@@ -3004,6 +3007,7 @@ export function ClaimDetail({
                       ? primaryLineItems.find((li) => li.id === bannerTargetLineId)
                       : null);
                   if (line?.service_slug) setAddPlanDetailsLineId(line.id);
+                  else if (line) openCorrectionModal(line.id);
                   else if (bannerTargetLineId) openCorrectionModal(bannerTargetLineId);
                 }}
                 statedServiceCosts={statedServiceCosts}
@@ -3020,7 +3024,6 @@ export function ClaimDetail({
                 // card's own collapse IS the persistence surface.
                 initiallyReviewed={guidedOn ? false : !!(claim.metadata as Record<string, unknown> | null)?.assumptionsReviewedAt}
                 expandSignal={assumpExpandSignal}
-                onUploadEob={() => router.push("/upload?type=eob")}
                 onBack={onBack}
               />
               )}
@@ -4889,7 +4892,6 @@ export function ClaimDetail({
             onShouldBeCovered={() => bannerTargetLineId && openCorrectionModal(bannerTargetLineId)}
             onAddPlanDetails={() => undefined}
             statedServiceCosts={statedServiceCosts}
-            onUploadEob={() => router.push("/upload?type=eob")}
             onBack={onBack}
           />
         </div>

@@ -199,7 +199,6 @@ interface CostShareBannerProps {
   /** S308 — bumps when the collapsed rail step's "Update assumptions" link is
    *  clicked: the card un-collapses in the same gesture that expands the step. */
   expandSignal?: number;
-  onUploadEob: () => void;
   onBack: () => void;
   /** Surface 3 (clarity redesign) — "assumptions" renders ONLY the editable
    *  "What we assumed" rows (no verdict header, no clean-state outro): the
@@ -590,7 +589,6 @@ export function CostShareBanner({
   confirmingEstimateId,
   initiallyReviewed,
   expandSignal,
-  onUploadEob,
   onBack,
   variant = "full",
   acaDismissed: acaDismissedProp,
@@ -1194,7 +1192,20 @@ export function CostShareBanner({
                   <AddButton label="Add details" onClick={() => onAddPlanDetails({ lineId: chip.lineId, serviceSlug: chip.serviceSlug })} />
                 }
               >
-                We don&apos;t have your plan&apos;s cost for {chip.serviceLabel} yet, so this is a conservative estimate.
+                {chip.serviceSlug ? (
+                  <>
+                    We don&apos;t have your plan&apos;s cost for {chip.serviceLabel} yet, so this is
+                    a conservative estimate.
+                  </>
+                ) : (
+                  // S321 — an uncategorized line lacks a service identity, not a
+                  // plan price; the honest ask is the category (the button opens
+                  // the picker on this line), after which pricing resolves.
+                  <>
+                    We don&apos;t know what service &apos;{chip.serviceLabel}&apos; is yet — set its
+                    category and we&apos;ll check it against your plan.
+                  </>
+                )}
               </Row>
       ),
     });
@@ -1475,19 +1486,13 @@ export function CostShareBanner({
 
         {errorMsg && <p className="px-5 pb-3 text-[13px] text-red-600">{errorMsg}</p>}
 
-        {(verdict === "not_covered" || verdict === "insufficient" || hasServiceCostGap) && (
+        {/* S321 (Andrew) — the footer "Add plan details" / "Upload EOB" catch-alls
+            are REMOVED from every assumptions card: each pending chip and row
+            carries its own in-context control, so the footer pair only added
+            clutter. The not_covered CTA below is a different flow and stays. */}
+        {verdict === "not_covered" && (
           <div className="flex flex-wrap gap-2 border-t border-gray-100 px-5 py-3.5">
-            {verdict === "not_covered" && (
-              <button type="button" onClick={onShouldBeCovered} className="rounded-lg border border-gray-300 bg-white px-3.5 py-1.5 text-[13px] font-semibold text-gray-700 hover:bg-gray-100">I think this should be covered</button>
-            )}
-            {(verdict === "insufficient" || hasServiceCostGap) && (
-              <>
-                {/* Footer catch-all (no specific chip) → first unresolved
-                    service-cost chip's target, else the legacy fallback. */}
-                <button type="button" onClick={() => onAddPlanDetails(serviceCostChips[0] ? { lineId: serviceCostChips[0].lineId, serviceSlug: serviceCostChips[0].serviceSlug } : undefined)} className="rounded-lg border border-blue-300 bg-white px-3.5 py-1.5 text-[13px] font-semibold text-blue-700 hover:bg-blue-50">Add plan details</button>
-                <button type="button" onClick={onUploadEob} className="rounded-lg border border-blue-300 bg-white px-3.5 py-1.5 text-[13px] font-semibold text-blue-700 hover:bg-blue-50">Upload EOB</button>
-              </>
-            )}
+            <button type="button" onClick={onShouldBeCovered} className="rounded-lg border border-gray-300 bg-white px-3.5 py-1.5 text-[13px] font-semibold text-gray-700 hover:bg-gray-100">I think this should be covered</button>
           </div>
         )}
       </div>
