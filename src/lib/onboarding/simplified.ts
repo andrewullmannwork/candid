@@ -96,7 +96,9 @@ export const OB_CARD_COPY = {
 
 export const OB_DOC_COPY = {
   dropTitle: "Drop your plan document or a bill",
-  dropSub: "PDF, JPG, or PNG · up to 20 MB",
+  // S322 — the ceiling derives from the live admin-tuned limit; the consumer
+  // passes the current MB value (was a hardcoded "20 MB").
+  dropSub: (maxFileMb: number) => `PDF, JPG, or PNG · up to ${maxFileMb} MB`,
   browse: "browse files",
   parseNote: "OCR · extracting benefits · indexing covered services",
   parsedPlan: "Parsed — coverage set up",

@@ -16,6 +16,9 @@
  * exceptions (5-7) render OUTSIDE/below per D-§1.B.1-E.
  */
 
+import { effectiveClientMaxBytes } from "@/lib/upload/upload-policy";
+import { useUploadLimits } from "@/lib/upload/use-upload-limits";
+
 export interface DropIdleProps {
   kind: "bill" | "plan";
   onPickFile: () => void;
@@ -24,6 +27,10 @@ export interface DropIdleProps {
 }
 
 export function DropIdle({ kind, onPickFile, tipsOpen, onToggleTips }: DropIdleProps) {
+  // S322 — the size hint derives from the live admin-tuned limit (was a
+  // hardcoded "20 MB" that no admin setting could reach).
+  const uploadLimits = useUploadLimits();
+  const maxFileMb = Math.round(effectiveClientMaxBytes(uploadLimits) / 1024 / 1024);
   return (
     <div className="flex flex-col items-center gap-3 py-2 text-center">
       <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-blue-100 text-blue-600">
@@ -49,7 +56,7 @@ export function DropIdle({ kind, onPickFile, tipsOpen, onToggleTips }: DropIdleP
           </button>
         </span>
         <span className="inline-block h-1 w-1 rounded-full bg-slate-300" />
-        <span>PDF, JPG, or PNG · up to 20 MB</span>
+        <span>PDF, JPG, or PNG · up to {maxFileMb} MB</span>
       </div>
       <button
         type="button"

@@ -17,8 +17,9 @@ import {
 import { UnifiedParseScreen, derivePhase, type ParseDoc } from "@/components/parsing/UnifiedParseScreen";
 import type { InsurerMismatchData, YearRolloverData } from "@/components/parsing/ParseTerminalView";
 import { HealthConsentModal } from "./HealthConsentModal";
-import { validateUploadFile } from "@/lib/upload/upload-policy";
+import { validateUploadFile, effectiveClientMaxBytes } from "@/lib/upload/upload-policy";
 import { uploadDocumentFile, getUploadLimits } from "@/lib/upload/client-upload";
+import { useUploadLimits } from "@/lib/upload/use-upload-limits";
 
 /** What step 2 stores in flow state. */
 export interface DocSlotValue {
@@ -112,6 +113,9 @@ export function OnboardingDocStep({
   const { user } = useAuth();
 
   const [uploading, setUploading] = useState(false);
+  // S322 — the drop-zone size hint derives from the live admin-tuned limit.
+  const uploadLimits = useUploadLimits();
+  const maxFileMb = Math.round(effectiveClientMaxBytes(uploadLimits) / 1024 / 1024);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [processing, setProcessing] = useState(false);
   const [progressPages, setProgressPages] = useState<{ done: number; total: number } | null>(null);
@@ -1084,7 +1088,7 @@ export function OnboardingDocStep({
               <p className="text-[15px] font-semibold text-gray-900">{dropTitle}</p>
               <p className="mt-1 text-[13px] text-gray-400">
                 or <span className="font-semibold text-blue-600">{OB_DOC_COPY.browse}</span> ·{" "}
-                {OB_DOC_COPY.dropSub}
+                {OB_DOC_COPY.dropSub(maxFileMb)}
               </p>
             </div>
           </div>
