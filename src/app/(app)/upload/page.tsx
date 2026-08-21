@@ -24,6 +24,12 @@ import {
   type DocTypeConfirmation,
   type PickerOptionKey,
 } from "@/lib/classifier/doc-type-vocabulary";
+import { validateUploadFile } from "@/lib/upload/upload-policy";
+import {
+  uploadDocumentFile,
+  getUploadLimits,
+  type UploadAbortHandle,
+} from "@/lib/upload/client-upload";
 
 // ─── Upload form ────────────────────────────────────────────────────────────
 //
@@ -238,9 +244,11 @@ function UploadForm() {
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
   const turnstileTokenRef = useRef<string | null>(null);
   const turnstileRef = useRef<TurnstileWidgetHandle>(null);
-  // S91 — XHR ref for the active upload so the X-out cancel button can abort
-  // bytes-in-flight. Cleared when the upload settles (success, error, or abort).
-  const uploadXhrRef = useRef<XMLHttpRequest | null>(null);
+  // S91 — abort handle for the active upload so the X-out cancel button can
+  // abort bytes-in-flight (S322: XHR ref generalized to the shared client
+  // helper's handle — same .abort() contract, covers both transport doors).
+  // Cleared when the upload settles (success, error, or abort).
+  const uploadXhrRef = useRef<UploadAbortHandle | null>(null);
   const [userPickedFile, setUserPickedFile] = useState(false);
 
   // S94 B5 — doc-type confirmation modal. Server returns
@@ -469,35 +477,17 @@ function UploadForm() {
 
         const idToken = await user.firebaseUser.getIdToken();
 
-        // Upload file via API to bypass RLS
-        const formData = new FormData();
-        formData.append("file", file);
-        formData.append("docType", docType);
-        if (tokenForUpload) formData.append("turnstileToken", tokenForUpload);
-
-        // Use XHR for upload progress tracking
+        // S322 — shared client helper: legacy body-POST for small files,
+        // direct-to-storage (signed URL) past the Vercel body cap. Progress +
+        // abort contracts unchanged.
         setUploadProgress(0);
-        const res = await new Promise<Response>((resolve, reject) => {
-          const xhr = new XMLHttpRequest();
-          uploadXhrRef.current = xhr;
-          xhr.upload.addEventListener("progress", (e) => {
-            if (e.lengthComputable) setUploadProgress(Math.round((e.loaded / e.total) * 100));
-          });
-          xhr.addEventListener("load", () => {
-            uploadXhrRef.current = null;
-            resolve(new Response(xhr.responseText, { status: xhr.status, headers: { "content-type": "application/json" } }));
-          });
-          xhr.addEventListener("error", () => {
-            uploadXhrRef.current = null;
-            reject(new Error("Upload failed"));
-          });
-          xhr.addEventListener("abort", () => {
-            uploadXhrRef.current = null;
-            reject(new Error("Upload aborted by user"));
-          });
-          xhr.open("POST", "/api/documents/upload");
-          xhr.setRequestHeader("Authorization", `Bearer ${idToken}`);
-          xhr.send(formData);
+        const res = await uploadDocumentFile({
+          file,
+          docType,
+          idToken,
+          turnstileToken: tokenForUpload ?? undefined,
+          onProgress: setUploadProgress,
+          abortRef: uploadXhrRef,
         });
 
         // Reset Turnstile so the next upload gets a fresh token (single-use).
@@ -657,14 +647,11 @@ function UploadForm() {
       if (!user || acceptedFiles.length === 0) return;
 
       const file = acceptedFiles[0];
-      const allowedTypes = ["application/pdf", "image/jpeg", "image/png", "image/heic", "image/heif"];
-      const isHeic = /\.(heic|heif)$/i.test(file.name);
-      if (!allowedTypes.includes(file.type) && !isHeic) {
-        setError("Accepted formats: PDF, JPEG, PNG, or HEIC (iPhone photos).");
-        return;
-      }
-      if (file.size > 20 * 1024 * 1024) {
-        setError("File must be under 20MB.");
+      // S322 — ONE validation (type + live admin-tuned size limit) shared by
+      // every upload surface; replaces the hardcoded 20MB check.
+      const uploadValidationError = validateUploadFile(file, await getUploadLimits());
+      if (uploadValidationError) {
+        setError(uploadValidationError);
         return;
       }
 

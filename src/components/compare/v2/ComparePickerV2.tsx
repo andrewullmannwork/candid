@@ -4,6 +4,8 @@ import { PlanSearchCountLine } from "@/components/shared/PlanSearchCountLine";
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/lib/auth/auth-context";
 import { cn } from "@/lib/utils/cn";
+import { effectiveClientMaxBytes } from "@/lib/upload/upload-policy";
+import { useUploadLimits } from "@/lib/upload/use-upload-limits";
 import type {
   CurrentPlanSummary,
   PlanSearchResult,
@@ -291,12 +293,17 @@ function SearchPicker({
 }
 
 const ACCEPTED_TYPES = ["application/pdf"];
-const MAX_FILE_BYTES = 25 * 1024 * 1024;
 
 function UploadPicker({ onFile, onBack }: { onFile: (file: File) => void; onBack: () => void }) {
   const [dragOver, setDragOver] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+
+  // S322 — the size ceiling derives from the live admin-tuned limit (was a
+  // hardcoded 25MB that no admin setting could reach).
+  const uploadLimits = useUploadLimits();
+  const maxFileBytes = effectiveClientMaxBytes(uploadLimits);
+  const maxFileMb = Math.round(maxFileBytes / 1024 / 1024);
 
   function accept(file: File) {
     setError(null);
@@ -304,8 +311,8 @@ function UploadPicker({ onFile, onBack }: { onFile: (file: File) => void; onBack
       setError(`"${file.name}" isn't a PDF — only PDFs are supported.`);
       return;
     }
-    if (file.size > MAX_FILE_BYTES) {
-      setError(`"${file.name}" is over 25MB.`);
+    if (file.size > maxFileBytes) {
+      setError(`"${file.name}" is over ${maxFileMb}MB.`);
       return;
     }
     onFile(file);
@@ -361,7 +368,7 @@ function UploadPicker({ onFile, onBack }: { onFile: (file: File) => void; onBack
           </svg>
         </div>
         <p className="text-sm font-semibold text-slate-900">Drop your SBC or plan PDF</p>
-        <p className="text-[11px] text-slate-500 mt-0.5">or click to browse · PDF · up to 25MB · parses on add</p>
+        <p className="text-[11px] text-slate-500 mt-0.5">or click to browse · PDF · up to {maxFileMb}MB · parses on add</p>
       </div>
       {error && <p className="text-xs text-rose-600">{error}</p>}
     </div>

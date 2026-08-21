@@ -54,6 +54,9 @@ import {
   useRef,
   useState,
 } from "react";
+import { uploadDocumentFile } from "@/lib/upload/client-upload";
+import { effectiveClientMaxBytes } from "@/lib/upload/upload-policy";
+import { useUploadLimits } from "@/lib/upload/use-upload-limits";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -370,14 +373,14 @@ export function PlanSearchModal(props: PlanSearchModalProps) {
       try {
         const token = await getAuthToken();
         if (!token) throw new Error("Sign-in expired. Please reload and try again.");
-        const formData = new FormData();
-        formData.append("file", file);
-        formData.append("docType", "plan_document");
-        formData.append("planYear", String(billYear));
-        const res = await fetch("/api/documents/upload", {
-          method: "POST",
-          headers: { Authorization: `Bearer ${token}` },
-          body: formData,
+        // S322 — shared client helper (legacy body-POST or direct-to-storage
+        // past the Vercel body cap). The old form's `planYear` field was never
+        // read by the upload route (only file/docType/turnstileToken/purpose)
+        // — dropped, not migrated.
+        const res = await uploadDocumentFile({
+          file,
+          docType: "plan_document",
+          idToken: token,
         });
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
@@ -392,7 +395,7 @@ export function PlanSearchModal(props: PlanSearchModalProps) {
         setUploadStage("error");
       }
     },
-    [getAuthToken, billYear],
+    [getAuthToken],
   );
 
   useEffect(() => {
@@ -1335,6 +1338,9 @@ function UploadPane(props: {
   onRetry: () => void;
 }) {
   const [dragOver, setDragOver] = useState(false);
+  // S322 — the size hint derives from the live admin-tuned limit.
+  const uploadLimits = useUploadLimits();
+  const maxFileMb = Math.round(effectiveClientMaxBytes(uploadLimits) / 1024 / 1024);
   return (
     <div className="px-6 py-5">
       <div
@@ -1377,7 +1383,7 @@ function UploadPane(props: {
         </p>
         <p className="max-w-sm text-xs leading-relaxed text-slate-600">
           {props.uploadStage === "idle"
-            ? "PDF up to 25 MB. The Summary of Benefits and Coverage (SBC) is enough — full plan booklet works too."
+            ? `PDF up to ${maxFileMb} MB. The Summary of Benefits and Coverage (SBC) is enough — full plan booklet works too.`
             : props.uploadStage === "parsing"
               ? "Extracting cost-sharing terms locally. This usually takes a few seconds."
               : props.uploadStage === "done"

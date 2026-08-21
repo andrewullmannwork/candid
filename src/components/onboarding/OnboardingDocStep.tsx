@@ -17,6 +17,9 @@ import {
 import { UnifiedParseScreen, derivePhase, type ParseDoc } from "@/components/parsing/UnifiedParseScreen";
 import type { InsurerMismatchData, YearRolloverData } from "@/components/parsing/ParseTerminalView";
 import { HealthConsentModal } from "./HealthConsentModal";
+import { validateUploadFile, effectiveClientMaxBytes } from "@/lib/upload/upload-policy";
+import { uploadDocumentFile, getUploadLimits } from "@/lib/upload/client-upload";
+import { useUploadLimits } from "@/lib/upload/use-upload-limits";
 
 /** What step 2 stores in flow state. */
 export interface DocSlotValue {
@@ -110,6 +113,9 @@ export function OnboardingDocStep({
   const { user } = useAuth();
 
   const [uploading, setUploading] = useState(false);
+  // S322 — the drop-zone size hint derives from the live admin-tuned limit.
+  const uploadLimits = useUploadLimits();
+  const maxFileMb = Math.round(effectiveClientMaxBytes(uploadLimits) / 1024 / 1024);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [processing, setProcessing] = useState(false);
   const [progressPages, setProgressPages] = useState<{ done: number; total: number } | null>(null);
@@ -321,29 +327,16 @@ export function OnboardingDocStep({
         const tokenForUpload = turnstileTokenRef.current;
 
         const idToken = await user.firebaseUser.getIdToken();
-        const formData = new FormData();
-        formData.append("file", file);
-        formData.append("docType", "plan_document");
-        if (tokenForUpload) formData.append("turnstileToken", tokenForUpload);
 
+        // S322 — shared client helper (legacy body-POST or direct-to-storage
+        // past the Vercel body cap); response contract unchanged.
         setUploadProgress(0);
-        const res = await new Promise<Response>((resolve, reject) => {
-          const xhr = new XMLHttpRequest();
-          xhr.upload.addEventListener("progress", (e) => {
-            if (e.lengthComputable) setUploadProgress(Math.round((e.loaded / e.total) * 100));
-          });
-          xhr.addEventListener("load", () =>
-            resolve(
-              new Response(xhr.responseText, {
-                status: xhr.status,
-                headers: { "content-type": "application/json" },
-              }),
-            ),
-          );
-          xhr.addEventListener("error", () => reject(new Error("Upload failed")));
-          xhr.open("POST", "/api/documents/upload");
-          xhr.setRequestHeader("Authorization", `Bearer ${idToken}`);
-          xhr.send(formData);
+        const res = await uploadDocumentFile({
+          file,
+          docType: "plan_document",
+          idToken,
+          turnstileToken: tokenForUpload ?? undefined,
+          onProgress: setUploadProgress,
         });
 
         turnstileRef.current?.reset();
@@ -680,17 +673,14 @@ export function OnboardingDocStep({
   /* ── File intake ────────────────────────────────────────────────────────── */
 
   const onDrop = useCallback(
-    (acceptedFiles: File[]) => {
+    async (acceptedFiles: File[]) => {
       if (!user || acceptedFiles.length === 0) return;
       const file = acceptedFiles[0];
-      const allowedTypes = ["application/pdf", "image/jpeg", "image/png", "image/heic", "image/heif"];
-      const isHeic = /\.(heic|heif)$/i.test(file.name);
-      if (!allowedTypes.includes(file.type) && !isHeic) {
-        setError("Accepted formats: PDF, JPEG, PNG, or HEIC (iPhone photos).");
-        return;
-      }
-      if (file.size > 20 * 1024 * 1024) {
-        setError("File must be under 20MB.");
+      // S322 — ONE validation (type + live admin-tuned size limit) shared by
+      // every upload surface; replaces the hardcoded 20MB check.
+      const uploadValidationError = validateUploadFile(file, await getUploadLimits());
+      if (uploadValidationError) {
+        setError(uploadValidationError);
         return;
       }
       setError("");
@@ -1098,7 +1088,7 @@ export function OnboardingDocStep({
               <p className="text-[15px] font-semibold text-gray-900">{dropTitle}</p>
               <p className="mt-1 text-[13px] text-gray-400">
                 or <span className="font-semibold text-blue-600">{OB_DOC_COPY.browse}</span> ·{" "}
-                {OB_DOC_COPY.dropSub}
+                {OB_DOC_COPY.dropSub(maxFileMb)}
               </p>
             </div>
           </div>

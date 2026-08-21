@@ -41,6 +41,7 @@ import {
 } from "@/components/security/TurnstileWidget";
 import { useConsent } from "@/lib/consent/use-consent";
 import { getConsentDocument } from "@/lib/consent/consent-documents";
+import { uploadDocumentFile } from "@/lib/upload/client-upload";
 import {
   PlanSlot,
   type SlotState,
@@ -486,21 +487,19 @@ function CompareInterface() {
 
     try {
       const idToken = await user.firebaseUser.getIdToken();
-      const formData = new FormData();
-      formData.append("file", file);
-      formData.append("docType", "sbc");
-      // Mig 078 — comparison uploads must never overwrite the user's primary
-      // plan (they live in insurance_plans for the canonical-corroboration
-      // flywheel but stay is_active=false; profile.active_insurance_plan_id
-      // is left untouched).
-      formData.append("purpose", "comparison");
       const tok = turnstileTokenRef.current;
-      if (tok) formData.append("turnstileToken", tok);
 
-      const uploadRes = await fetch("/api/documents/upload", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${idToken}` },
-        body: formData,
+      // S322 — shared client helper (legacy body-POST or direct-to-storage
+      // past the Vercel body cap). Mig 078 — comparison uploads must never
+      // overwrite the user's primary plan (they live in insurance_plans for
+      // the canonical-corroboration flywheel but stay is_active=false;
+      // profile.active_insurance_plan_id is left untouched).
+      const uploadRes = await uploadDocumentFile({
+        file,
+        docType: "sbc",
+        purpose: "comparison",
+        idToken,
+        turnstileToken: tok ?? undefined,
       });
       if (!uploadRes.ok) return null;
       const uploadBody = (await uploadRes.json()) as {

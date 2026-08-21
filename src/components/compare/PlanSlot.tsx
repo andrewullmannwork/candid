@@ -20,6 +20,8 @@
 import { PlanSearchCountLine } from "@/components/shared/PlanSearchCountLine";
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/lib/auth/auth-context";
+import { effectiveClientMaxBytes } from "@/lib/upload/upload-policy";
+import { useUploadLimits } from "@/lib/upload/use-upload-limits";
 
 /** Pattern 1 #16 vocabulary, compressed for search UI:
  *  - "verified"  — admin-attested (cold-start) OR canonical fully promoted
@@ -104,7 +106,6 @@ const SLOT_GRADIENTS: Record<number, { bg: string; ring: string; chip: string }>
 };
 
 const ACCEPTED_TYPES = ["application/pdf"];
-const MAX_FILE_BYTES = 25 * 1024 * 1024;
 
 export function PlanSlot({
   index,
@@ -514,14 +515,20 @@ function UploadActive({
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
+  // S322 — the size ceiling derives from the live admin-tuned limit (was a
+  // hardcoded 25MB that no admin setting could reach).
+  const uploadLimits = useUploadLimits();
+  const maxFileBytes = effectiveClientMaxBytes(uploadLimits);
+  const maxFileMb = Math.round(maxFileBytes / 1024 / 1024);
+
   function accept(file: File) {
     setError(null);
     if (!ACCEPTED_TYPES.includes(file.type)) {
       setError(`"${file.name}" isn't a PDF — only PDFs are supported.`);
       return;
     }
-    if (file.size > MAX_FILE_BYTES) {
-      setError(`"${file.name}" is over 25MB.`);
+    if (file.size > maxFileBytes) {
+      setError(`"${file.name}" is over ${maxFileMb}MB.`);
       return;
     }
     onFile(file);
@@ -567,7 +574,7 @@ function UploadActive({
           </svg>
         </div>
         <p className="text-sm font-semibold text-slate-900">Drop your plan PDF here</p>
-        <p className="text-xs text-slate-500 mt-1">or click to browse · SBC or plan-summary · up to 25MB</p>
+        <p className="text-xs text-slate-500 mt-1">or click to browse · SBC or plan-summary · up to {maxFileMb}MB</p>
       </div>
 
       {error && (
