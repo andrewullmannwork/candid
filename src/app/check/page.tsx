@@ -42,6 +42,9 @@ import { PlanSearchCountLine } from "@/components/shared/PlanSearchCountLine";
 import { getConsentDocument } from "@/lib/consent/consent-documents";
 import { DisputeDraftOverlayProvider } from "@/lib/loading/dispute-draft-overlay";
 import { UploadFlowProvider } from "@/lib/upload/upload-flow-context";
+import { validateUploadFile } from "@/lib/upload/upload-policy";
+import { uploadDocumentFile } from "@/lib/upload/client-upload";
+import { useUploadLimits } from "@/lib/upload/use-upload-limits";
 
 type Phase = "entry" | "parsing" | "confirmGap" | "identity" | "results" | "error";
 
@@ -465,23 +468,16 @@ export default function CheckPage() {
     ) => {
       const idToken = await asUser.firebaseUser.getIdToken();
       const attempt = async (token: string | null): Promise<Response> => {
-        const formData = new FormData();
-        formData.append("file", file);
-        formData.append("docType", docType);
-        if (token) formData.append("turnstileToken", token);
+        // S322 — shared client helper (legacy body-POST or direct-to-storage
+        // past the Vercel body cap); the turnstile_required retry choreography
+        // below is unchanged because rejection Responses pass through as-is.
         setUploadProgress(0);
-        const res = await new Promise<Response>((resolve, reject) => {
-          const xhr = new XMLHttpRequest();
-          xhr.upload.addEventListener("progress", (e) => {
-            if (e.lengthComputable) setUploadProgress(Math.round((e.loaded / e.total) * 100));
-          });
-          xhr.addEventListener("load", () =>
-            resolve(new Response(xhr.responseText, { status: xhr.status, headers: { "content-type": "application/json" } })),
-          );
-          xhr.addEventListener("error", () => reject(new Error("Upload failed")));
-          xhr.open("POST", "/api/documents/upload");
-          xhr.setRequestHeader("Authorization", `Bearer ${idToken}`);
-          xhr.send(formData);
+        const res = await uploadDocumentFile({
+          file,
+          docType,
+          idToken,
+          turnstileToken: token ?? undefined,
+          onProgress: setUploadProgress,
         });
         // Reset only when a token was consumed — a reset re-runs the challenge,
         // which is exactly the per-step friction the tokenless path removes.
@@ -845,15 +841,13 @@ export default function CheckPage() {
   // ── drag-and-drop (mirrors /upload: react-dropzone + DropHover; without
   // this a dropped file navigates the browser to the file itself — A2-L2's
   // first FAIL). Type/size validation matches the upload page exactly.
-  const validateFile = useCallback((file: File): string | null => {
-    const allowedTypes = ["application/pdf", "image/jpeg", "image/png", "image/heic", "image/heif"];
-    const isHeic = /\.(heic|heif)$/i.test(file.name);
-    if (!allowedTypes.includes(file.type) && !isHeic) {
-      return "Accepted formats: PDF, JPEG, PNG, or HEIC (iPhone photos).";
-    }
-    if (file.size > 20 * 1024 * 1024) return "File must be under 20MB.";
-    return null;
-  }, []);
+  // S322 — ONE validation (type + live admin-tuned size limit) shared with
+  // /upload; the hook settles to live limits right after mount.
+  const uploadLimits = useUploadLimits();
+  const validateFile = useCallback(
+    (file: File): string | null => validateUploadFile(file, uploadLimits),
+    [uploadLimits],
+  );
   const onBillDrop = useCallback(
     (accepted: File[]) => {
       const file = accepted[0];

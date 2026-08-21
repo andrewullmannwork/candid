@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase/server";
 import { requireAdmin } from "@/lib/admin/require-admin";
 import { getUsageStats } from "@/lib/config/processing-usage";
-import { FLAGS } from "@/lib/config/feature-flags";
+import { getFlags } from "@/lib/config/feature-flags";
 import { processDocument } from "@/lib/documents/process-document";
 import type { DocumentRow } from "@/lib/supabase/types";
 
@@ -22,17 +22,21 @@ export async function GET(req: NextRequest) {
     .select("id", { count: "exact", head: true })
     .eq("status", "queued");
 
+  // S322 — read the DB-backed flags (env → DB → default). The static FLAGS
+  // object is env-only, so this readout silently ignored /admin/settings
+  // edits and displayed values the pipeline wasn't using.
+  const liveFlags = await getFlags();
   return NextResponse.json({
     usage: stats,
     queuedDocuments: queuedCount || 0,
     flags: {
-      ocrEnabled: FLAGS.OCR_ENABLED,
-      autoProcessOnUpload: FLAGS.AUTO_PROCESS_ON_UPLOAD,
-      claudeExtractionEnabled: FLAGS.CLAUDE_EXTRACTION_ENABLED,
-      onDemandExtractionEnabled: FLAGS.ON_DEMAND_EXTRACTION_ENABLED,
-      uploadMaxPages: FLAGS.UPLOAD_MAX_PAGES,
-      uploadMaxPerUser: FLAGS.UPLOAD_MAX_PER_USER,
-      uploadMaxFileSize: FLAGS.UPLOAD_MAX_FILE_SIZE,
+      ocrEnabled: liveFlags.OCR_ENABLED,
+      autoProcessOnUpload: liveFlags.AUTO_PROCESS_ON_UPLOAD,
+      claudeExtractionEnabled: liveFlags.CLAUDE_EXTRACTION_ENABLED,
+      onDemandExtractionEnabled: liveFlags.ON_DEMAND_EXTRACTION_ENABLED,
+      uploadMaxPages: liveFlags.UPLOAD_MAX_PAGES,
+      uploadMaxPerUser: liveFlags.UPLOAD_MAX_PER_USER,
+      uploadMaxFileSize: liveFlags.UPLOAD_MAX_FILE_SIZE,
     },
   });
 }

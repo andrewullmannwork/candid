@@ -244,6 +244,11 @@ const eslintConfig = defineConfig([
       "src/app/api/email-forward/**",
       "src/app/api/documents/process-chunk/**",
       "src/app/api/documents/upload/**",
+      // S322 — the direct-to-storage doors share the upload route's exemption
+      // class: same verified-token → users-PK resolution, same service-role
+      // pipeline writes, structurally caller-scoped storage paths.
+      "src/app/api/documents/upload-start/**",
+      "src/app/api/documents/upload-complete/**",
       // — B1 migration ledger (the account-adjacent codemod arc is COMPLETE → this
       //   block is now ∅; only the cross-WS F05/PR-D route remains below). —
       // FULLY MIGRATED onto the layer (covered by default; NO ledger entry):
@@ -294,6 +299,9 @@ const eslintConfig = defineConfig([
       "src/lib/plan/extraction-dedup.ts",
       "src/lib/plan/reparse-fields-batch.ts",
       "src/lib/documents/process-document.ts",
+      // S322 — the shared upload ingest pipeline, extracted verbatim from the
+      // permanent-exempt upload route (same class as process-document above):
+      "src/lib/documents/ingest-upload.ts",
       "src/lib/billing/truncation-telemetry.ts",
       // Rule #5 cross-user aggregates (k-anon dispute metrics):
       "src/lib/disputes/metrics.ts",

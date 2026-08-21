@@ -78,9 +78,13 @@ export async function getFlags() {
     OCR_MONTHLY_PAGE_LIMIT: await getFlagInt("OCR_MONTHLY_PAGE_LIMIT", 900),
     OCR_DAILY_PAGE_LIMIT: await getFlagInt("OCR_DAILY_PAGE_LIMIT", 200),
     CLAUDE_EXTRACTION_ENABLED: await getFlagBool("CLAUDE_EXTRACTION_ENABLED", false),
-    UPLOAD_MAX_FILE_SIZE: await getFlagInt("UPLOAD_MAX_FILE_SIZE", 20 * 1024 * 1024),
+    UPLOAD_MAX_FILE_SIZE: await getFlagInt("UPLOAD_MAX_FILE_SIZE", 30 * 1024 * 1024),
     UPLOAD_MAX_PAGES: await getFlagInt("UPLOAD_MAX_PAGES", 100),
     UPLOAD_MAX_PER_USER: await getFlagInt("UPLOAD_MAX_PER_USER", 10),
+    // S322 — direct-to-storage uploads (signed URL; bytes bypass Vercel's
+    // ~4.5MB request cap). Default false: no DB row → legacy body-POST only.
+    // Flip = INSERT the key/value row (admin/flags PATCH is update-only).
+    DIRECT_UPLOAD_ENABLED: await getFlagBool("DIRECT_UPLOAD_ENABLED", false),
     // Cost-H.2 (S198) — async-ingestion UX two-tier page gates, decoupled per
     // Andrew: pageCount > REDIRECT → async "go explore" splash (isLargeDoc);
     // pageCount > EMAIL → ALSO send the parse-complete email. Both default 30
@@ -112,9 +116,10 @@ export const FLAGS = {
   OCR_MONTHLY_PAGE_LIMIT: envInt("OCR_MONTHLY_PAGE_LIMIT", 900),
   OCR_DAILY_PAGE_LIMIT: envInt("OCR_DAILY_PAGE_LIMIT", 200),
   CLAUDE_EXTRACTION_ENABLED: envBool("CLAUDE_EXTRACTION_ENABLED", false),
-  UPLOAD_MAX_FILE_SIZE: envInt("UPLOAD_MAX_FILE_SIZE", 20 * 1024 * 1024),
+  UPLOAD_MAX_FILE_SIZE: envInt("UPLOAD_MAX_FILE_SIZE", 30 * 1024 * 1024),
   UPLOAD_MAX_PAGES: envInt("UPLOAD_MAX_PAGES", 100),
   UPLOAD_MAX_PER_USER: envInt("UPLOAD_MAX_PER_USER", 10),
+  DIRECT_UPLOAD_ENABLED: envBool("DIRECT_UPLOAD_ENABLED", false),
   ASYNC_REDIRECT_MAX_PAGES: envInt("ASYNC_REDIRECT_MAX_PAGES", 30),
   ASYNC_EMAIL_MAX_PAGES: envInt("ASYNC_EMAIL_MAX_PAGES", 30),
   ON_DEMAND_EXTRACTION_ENABLED: envBool("ON_DEMAND_EXTRACTION_ENABLED", true),

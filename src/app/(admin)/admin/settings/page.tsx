@@ -16,7 +16,13 @@ const BOOLEAN_FLAGS = new Set([
   "CLAUDE_EXTRACTION_ENABLED",
   "ON_DEMAND_EXTRACTION_ENABLED",
   "TEST_PHONE_EXEMPTION_ENABLED",
+  "DIRECT_UPLOAD_ENABLED",
 ]);
+
+// S322 — flags DISPLAYED and EDITED in MB but STORED in bytes. Pre-S322 the
+// Max File Size field displayed MB while the edit box took raw bytes — typing
+// "30" would have stored a 30-BYTE limit.
+const MB_DENOMINATED_FLAGS = new Set(["UPLOAD_MAX_FILE_SIZE"]);
 
 const FLAG_LABELS: Record<string, string> = {
   OCR_ENABLED: "Document AI OCR",
@@ -24,9 +30,10 @@ const FLAG_LABELS: Record<string, string> = {
   OCR_MONTHLY_PAGE_LIMIT: "Monthly OCR Page Limit",
   OCR_DAILY_PAGE_LIMIT: "Daily OCR Page Limit",
   CLAUDE_EXTRACTION_ENABLED: "Claude API Extraction",
-  UPLOAD_MAX_FILE_SIZE: "Max File Size (bytes)",
+  UPLOAD_MAX_FILE_SIZE: "Max File Size (MB)",
   UPLOAD_MAX_PAGES: "Max Pages per PDF",
   UPLOAD_MAX_PER_USER: "Max Docs per User",
+  DIRECT_UPLOAD_ENABLED: "Direct-to-storage uploads (files past Vercel's ~4.5MB body cap)",
   ON_DEMAND_EXTRACTION_ENABLED: "On-Demand Plan Extraction",
   MAX_EXTRACTED_SERVICES: "Max Services per Document",
   COMPARE_FLYWHEEL_MIN_MEMBERS: "Min members for community premium",
@@ -49,6 +56,7 @@ const FLAG_GROUPS: Record<string, string[]> = {
     "UPLOAD_MAX_FILE_SIZE",
     "UPLOAD_MAX_PAGES",
     "UPLOAD_MAX_PER_USER",
+    "DIRECT_UPLOAD_ENABLED",
   ],
   Compare: ["COMPARE_FLYWHEEL_MIN_MEMBERS"],
   Testing: ["TEST_PHONE_EXEMPTION_ENABLED"],
@@ -110,6 +118,24 @@ export default function AdminSettingsPage() {
   function toggleBool(flag: Flag) {
     const newVal = flag.value === "true" ? "false" : "true";
     updateFlag(flag.key, newVal);
+  }
+
+  // S322 — MB-denominated flags edit in MB, store bytes. Refuses NaN/≤0
+  // instead of persisting garbage.
+  function savePendingEdit(key: string) {
+    if (MB_DENOMINATED_FLAGS.has(key)) {
+      const mb = parseFloat(editValue);
+      if (!Number.isFinite(mb) || mb <= 0) return;
+      updateFlag(key, String(Math.round(mb * 1024 * 1024)));
+      return;
+    }
+    updateFlag(key, editValue);
+  }
+
+  function seedEditValue(key: string, value: string): string {
+    return MB_DENOMINATED_FLAGS.has(key)
+      ? String(Math.round(parseInt(value) / 1024 / 1024))
+      : value;
   }
 
   function getFlag(key: string): Flag | undefined {
@@ -174,12 +200,12 @@ export default function AdminSettingsPage() {
                             onChange={(e) => setEditValue(e.target.value)}
                             className="w-24 px-2 py-1 text-sm border rounded focus:ring-2 focus:ring-blue-500 focus:outline-none"
                             onKeyDown={(e) => {
-                              if (e.key === "Enter") updateFlag(key, editValue);
+                              if (e.key === "Enter") savePendingEdit(key);
                               if (e.key === "Escape") setEditingFlag(null);
                             }}
                           />
                           <button
-                            onClick={() => updateFlag(key, editValue)}
+                            onClick={() => savePendingEdit(key)}
                             disabled={saving === key}
                             className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
                           >
@@ -196,7 +222,7 @@ export default function AdminSettingsPage() {
                         <button
                           onClick={() => {
                             setEditingFlag(key);
-                            setEditValue(flag.value);
+                            setEditValue(seedEditValue(key, flag.value));
                           }}
                           className="flex items-center gap-2 text-sm"
                         >
