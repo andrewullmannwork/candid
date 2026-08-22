@@ -210,11 +210,8 @@ const CANON_TERMS = {
     ],
     ["OB_CARD_COPY.currentCardEyebrow", OB_CARD_COPY.currentCardEyebrow, "YOUR CURRENT CARD"],
     ["OB_CARD_COPY.replaceCard", OB_CARD_COPY.replaceCard, "Replace card"],
-    [
-      "OB_DOC_COPY.searchToggle",
-      OB_DOC_COPY.searchToggle,
-      "No document handy? Search for your plan instead",
-    ],
+    /* S322 — searchToggle + searchBack retired: the search card is always
+       visible (no click-away mode to enter or leave). */
     [
       "OB_DOC_COPY.searchPlaceholder",
       OB_DOC_COPY.searchPlaceholder,
@@ -223,7 +220,9 @@ const CANON_TERMS = {
     [
       "OB_DOC_COPY.searchHint",
       OB_DOC_COPY.searchHint,
-      "Picking your plan from Candid's library fills in your coverage like a document would. You can add the document anytime for verified details.",
+      // S322 — Andrew's refined copy (the old tail promised "anytime" detail
+      // the always-visible layout no longer needs).
+      "Picking your plan from Candid's library fills in your coverage like a document would. Just start typing.",
     ],
     [
       "OB_DOC_COPY.searchEmpty",
@@ -237,7 +236,8 @@ const CANON_TERMS = {
       "Plan on file — from Candid's plan library",
     ],
     ["OB_DOC_COPY.searchError", OB_DOC_COPY.searchError, "Couldn't find that plan. Please try again."],
-    ["OB_DOC_COPY.searchBack", OB_DOC_COPY.searchBack, "Back to upload"],
+    ["OB_DOC_COPY.showTips", OB_DOC_COPY.showTips, "Show tips"],
+    ["OB_DOC_COPY.orDivider", OB_DOC_COPY.orDivider, "or"],
     ["OB_DOC_COPY.currentPlanEyebrow", OB_DOC_COPY.currentPlanEyebrow, "YOUR CURRENT PLAN"],
     ["OB_DOC_COPY.replacePlan", OB_DOC_COPY.replacePlan, "Replace plan"],
   ] as const) {

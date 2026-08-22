@@ -9,7 +9,19 @@
  * Render it as the FIRST child of the scroll container — it's sticky.
  * `total` is the route's pre-clamp count (the S315 honesty rule: a count
  * line's truth needs the pre-clamp total, not the shown length).
+ *
+ * S322 — this module is also the ONE home for the plan-search minimum-query
+ * contract: the 3-character floor and its "keep typing" prompt. Before S322
+ * the floor lived as separate literals (compare pickers at 3, onboarding at
+ * 2) and the prompt as two slightly different inline strings — the exact
+ * drift class this shared module was created to kill.
  */
+
+/** Minimum query length before a plan search fires. */
+export const PLAN_SEARCH_MIN_CHARS = 3;
+
+/** Prompt shown while the query is non-empty but under the floor. */
+export const PLAN_SEARCH_KEEP_TYPING = "Keep typing — at least 3 characters.";
 export function PlanSearchCountLine({
   shown,
   total,

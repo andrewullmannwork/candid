@@ -492,9 +492,7 @@ export function OnboardingFlow() {
               <p className="mb-3 text-[13px] leading-relaxed text-gray-500">{OB_COPY.planSectionSub}</p>
               <OnboardingDocStep
                 value={doc}
-                explainerRows={OB_DOC_COPY.planModeExplainer}
                 dropTitle={OB_DOC_COPY.planModeDropTitle}
-                searchToggleLabel={OB_DOC_COPY.planModeSearchToggle}
                 searchSeed={card?.planName || card?.insurer || profileSeed}
                 emphasizeCurrent
                 onCardCleared={() => setCard(null)}
@@ -640,7 +638,8 @@ export function OnboardingFlow() {
                   <h1 className="mb-2 text-[27px] font-bold leading-[1.15] tracking-tight text-gray-900">
                     {OB_COPY.s2Title}
                   </h1>
-                  <p className="mb-6 text-[14.5px] leading-relaxed text-gray-500">{OB_COPY.s2Sub}</p>
+                  {/* S322 (Andrew) — the s2Sub subtitle is replaced by the doc
+                      step's own collapsed find-guide bar. */}
                   <OnboardingDocStep
                     value={doc}
                     searchSeed={card?.planName || card?.insurer || profileSeed}

@@ -1,6 +1,10 @@
 "use client";
 
-import { PlanSearchCountLine } from "@/components/shared/PlanSearchCountLine";
+import {
+  PlanSearchCountLine,
+  PLAN_SEARCH_MIN_CHARS,
+  PLAN_SEARCH_KEEP_TYPING,
+} from "@/components/shared/PlanSearchCountLine";
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/lib/auth/auth-context";
 import { cn } from "@/lib/utils/cn";
@@ -190,7 +194,7 @@ function SearchPicker({
   }, []);
 
   useEffect(() => {
-    if (!user || query.trim().length < 3) {
+    if (!user || query.trim().length < PLAN_SEARCH_MIN_CHARS) {
       setResults([]);
       return;
     }
@@ -257,7 +261,7 @@ function SearchPicker({
         </select>
       </div>
 
-      {query.trim().length >= 3 && results.length > 0 && (
+      {query.trim().length >= PLAN_SEARCH_MIN_CHARS && results.length > 0 && (
         <div className="rounded-xl bg-white ring-1 ring-slate-200 max-h-72 overflow-y-auto">
           <PlanSearchCountLine shown={results.length} total={searchTotal} />
           {results.map((plan) => (
@@ -278,15 +282,15 @@ function SearchPicker({
         </div>
       )}
 
-      {query.trim().length >= 3 && results.length === 0 && !searching && (
+      {query.trim().length >= PLAN_SEARCH_MIN_CHARS && results.length === 0 && !searching && (
         <div className="rounded-xl bg-amber-50 ring-1 ring-amber-200 p-3">
           <p className="text-xs text-amber-800">
             No {stateFilter ? `${stateFilter} ` : ""}plans match “{query}”. Try a carrier name{stateFilter ? ", clear the state filter," : ""} or upload the document.
           </p>
         </div>
       )}
-      {query.trim().length > 0 && query.trim().length < 3 && (
-        <p className="text-xs text-slate-500 px-1">Keep typing — at least 3 characters.</p>
+      {query.trim().length > 0 && query.trim().length < PLAN_SEARCH_MIN_CHARS && (
+        <p className="text-xs text-slate-500 px-1">{PLAN_SEARCH_KEEP_TYPING}</p>
       )}
     </div>
   );
