@@ -20,9 +20,15 @@ export interface FindTipsPanelProps {
   option: PickerOption;
 }
 
+/** The panel's heading — exported so a collapsed header row (S322 onboarding
+ *  doc step) can show the same title without a second copy of the string. */
+export function findTipsHeading(kind: "bill" | "plan"): string {
+  return kind === "bill" ? "HOW TO FIND YOUR BILL" : "HOW TO FIND YOUR PLAN DOCUMENT";
+}
+
 export function FindTipsPanel({ kind, open, onClose, option }: FindTipsPanelProps) {
   if (!open) return null;
-  const heading = kind === "bill" ? "HOW TO FIND YOUR BILL" : "HOW TO FIND YOUR PLAN DOCUMENT";
+  const heading = findTipsHeading(kind);
   return (
     <div className="mt-3 rounded-2xl border border-slate-100 bg-slate-50 p-4">
       <div className="mb-3 flex items-center justify-between">

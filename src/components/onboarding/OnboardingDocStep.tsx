@@ -1,11 +1,16 @@
 "use client";
 
-import { PlanSearchCountLine } from "@/components/shared/PlanSearchCountLine";
+import {
+  PlanSearchCountLine,
+  PLAN_SEARCH_MIN_CHARS,
+  PLAN_SEARCH_KEEP_TYPING,
+} from "@/components/shared/PlanSearchCountLine";
+import { FindTipsPanel, findTipsHeading } from "@/components/upload/FindTipsPanel";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useDropzone } from "react-dropzone";
 import { useAuth } from "@/lib/auth/auth-context";
 import { TurnstileWidget, type TurnstileWidgetHandle } from "@/components/security/TurnstileWidget";
-import { getDocTypeClass, type DocType, type DocTypeConfirmation } from "@/lib/classifier/doc-type-vocabulary";
+import { getDocTypeClass, PICKER_OPTIONS, type DocType, type DocTypeConfirmation } from "@/lib/classifier/doc-type-vocabulary";
 import {
   OB_DOC_COPY,
   chipsFromClaimSummary,
@@ -82,14 +87,13 @@ export function OnboardingDocStep({
   searchSeed,
   emphasizeCurrent,
   onCardCleared,
-  /* S317 — copy overrides for plan-change mode. Optional BY DESIGN: the default
+  /* S317 — copy override for plan-change mode. Optional BY DESIGN: the default
      is the S289-approved signup copy, which is correct wherever it is omitted,
      so an absent prop is a right answer rather than a silent gap. The mode-aware
      parent decides; this component stays presentational (same shape as
-     `searchSeed`). */
-  explainerRows = OB_DOC_COPY.explainer,
+     `searchSeed`). S322 — explainerRows + searchToggleLabel retired with the
+     explainer block and the click-away search toggle. */
   dropTitle = OB_DOC_COPY.dropTitle,
-  searchToggleLabel = OB_DOC_COPY.searchToggle,
 }: {
   value: DocSlotValue | null;
   onDone: (v: DocSlotValue) => void;
@@ -106,9 +110,7 @@ export function OnboardingDocStep({
   /** S288 (e3e): the server cleared the card IDs (cross-insurer switch) —
    *  the flow mirrors it by clearing its card slot. */
   onCardCleared?: () => void;
-  explainerRows?: readonly { tag: string; items: string }[];
   dropTitle?: string;
-  searchToggleLabel?: string;
 }) {
   const { user } = useAuth();
 
@@ -150,9 +152,13 @@ export function OnboardingDocStep({
   const [consentSubmitting, setConsentSubmitting] = useState(false);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
 
-  /* ── S288: plan-library search — upload's peer alternative ──────────────── */
-  const [searchOpen, setSearchOpen] = useState(false);
+  /* ── S288: plan-library search — upload's peer alternative.
+     S322 (Andrew): the search is ALWAYS visible, first — no click-away mode.
+     The card-step seed applies the moment it exists and the query is empty,
+     so a card-scanning user lands here with results already showing. ── */
   const [searchQuery, setSearchQuery] = useState("");
+  /* S322 — the find-guide bar (title always visible, content collapsed). */
+  const [tipsOpen, setTipsOpen] = useState(false);
   const [searchResults, setSearchResults] = useState<PlanSearchResult[]>([]);
   const [searchTotal, setSearchTotal] = useState(0);
   const [searchLoading, setSearchLoading] = useState(false);
@@ -162,7 +168,7 @@ export function OnboardingDocStep({
 
   const runSearch = useCallback(
     async (q: string) => {
-      if (!user || q.trim().length < 2) {
+      if (!user || q.trim().length < PLAN_SEARCH_MIN_CHARS) {
         setSearchResults([]);
         setSearchLoading(false);
         return;
@@ -192,18 +198,18 @@ export function OnboardingDocStep({
 
   // Debounced search-as-you-type (the seed auto-runs through this too).
   useEffect(() => {
-    if (!searchOpen) return;
     const t = setTimeout(() => void runSearch(searchQuery), 300);
     return () => clearTimeout(t);
-  }, [searchOpen, searchQuery, runSearch]);
+  }, [searchQuery, runSearch]);
 
-  const openSearch = useCallback(() => {
-    setSearchError("");
-    setSearchOpen(true);
-    // Soft fill (S288): seed from the card step — scanned plan name > typed
-    // insurer. Plain editable text; clear it and type anything.
-    if (!searchQuery && searchSeed) setSearchQuery(searchSeed);
-  }, [searchQuery, searchSeed]);
+  // Soft fill (S288, now at mount — S322): seed from the card step — scanned
+  // plan name > typed insurer. Plain editable text; clear it and type
+  // anything. Guarded on an empty query so a late-arriving seed never
+  // clobbers what the user typed.
+  useEffect(() => {
+    if (searchSeed && !searchQuery) setSearchQuery(searchSeed);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- apply-on-arrival only; keying on searchQuery would re-seed after the user clears the box
+  }, [searchSeed]);
 
   const selectPlan = useCallback(
     async (p: PlanSearchResult) => {
@@ -240,7 +246,6 @@ export function OnboardingDocStep({
           fileName: [p.name, p.insurerName].filter(Boolean).join(" — "),
           chips,
         });
-        setSearchOpen(false);
       } catch {
         setSearchError(OB_DOC_COPY.searchError);
       } finally {
@@ -870,15 +875,31 @@ export function OnboardingDocStep({
 
   return (
     <>
-      {/* Quiet doc-type explainer (design default: table style) */}
-      <div className="mb-5 grid grid-cols-[auto_1fr] items-baseline gap-x-3.5 gap-y-1.5">
-        {explainerRows.map((row) => (
-          <div key={row.tag} className="contents">
-            <div className="text-[10.5px] font-bold tracking-[0.09em] text-gray-400">{row.tag}</div>
-            <div className="text-[13px] font-medium text-gray-700">{row.items}</div>
-          </div>
-        ))}
-      </div>
+      {/* S322 (Andrew) — the find-guide replaces the explainer rows AND the
+          step subtitle: title always visible, content collapsed behind "Show
+          tips" so search + upload stay above the fold. Expanded = the /upload
+          FindTipsPanel verbatim (its own Close × collapses back). */}
+      {tipsOpen ? (
+        <div className="mb-5">
+          <FindTipsPanel
+            kind="plan"
+            open
+            onClose={() => setTipsOpen(false)}
+            option={PICKER_OPTIONS.plan_document}
+          />
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setTipsOpen(true)}
+          className="mb-5 flex w-full items-center justify-between rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3 text-left transition-colors hover:bg-slate-100"
+        >
+          <span className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">
+            {findTipsHeading("plan")}
+          </span>
+          <span className="text-[11px] font-semibold text-slate-500">{OB_DOC_COPY.showTips} ▾</span>
+        </button>
+      )}
 
       {confirmation ? (
         <div className="space-y-3 rounded-2xl border border-amber-200 bg-amber-50 p-4">
@@ -1070,6 +1091,97 @@ export function OnboardingDocStep({
         <UnifiedParseScreen docs={[parseDoc]} title="Reading your document" loaderVariant="stackV3" />
       ) : (
         <>
+          {/* S288 search — S322 (Andrew): always visible, FIRST. Search easily,
+              then upload if not available. No autoFocus: the step must not pop
+              a mobile keyboard on mount. */}
+          <div className="rounded-[18px] border border-gray-200 bg-white p-4 shadow-sm">
+            <p className="mb-2.5 text-[10.5px] font-bold tracking-[0.09em] text-gray-400">
+              FIND YOUR PLAN
+            </p>
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => {
+                setSearchQuery(e.target.value);
+                setSearchError("");
+              }}
+              placeholder={OB_DOC_COPY.searchPlaceholder}
+              disabled={searchSelecting}
+              className="w-full rounded-xl border border-gray-200 px-3.5 py-2.5 text-sm text-gray-900 placeholder:text-gray-400 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60"
+            />
+            <p className="mt-2 text-xs leading-relaxed text-gray-400">{OB_DOC_COPY.searchHint}</p>
+
+            {searchError && (
+              <div className="mt-3 rounded-xl border border-red-100 bg-red-50 p-3">
+                <p className="text-sm text-red-700">{searchError}</p>
+              </div>
+            )}
+
+            {searchSelecting ? (
+              <div className="mt-3 flex items-center gap-2.5 rounded-xl border border-gray-100 bg-gray-50 px-3.5 py-3">
+                <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center text-blue-600">
+                  <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                </span>
+                <p className="text-sm font-medium text-gray-700">{OB_DOC_COPY.searchSelecting}</p>
+              </div>
+            ) : (
+              <>
+                {searchResults.length > 0 && (
+                  <div className="mt-3 max-h-[320px] divide-y divide-gray-100 overflow-y-auto rounded-xl border border-gray-200">
+                    <PlanSearchCountLine shown={searchResults.length} total={searchTotal} />
+                    {searchResults.map((p) => (
+                      <button
+                        key={p.canonicalPlanId}
+                        type="button"
+                        onClick={() => void selectPlan(p)}
+                        className="block w-full px-3.5 py-2.5 text-left transition-colors hover:bg-blue-50/60"
+                      >
+                        <p className="text-[13.5px] font-medium leading-snug text-gray-900">
+                          {[p.insurerName, p.name].filter(Boolean).join(": ")}
+                        </p>
+                        <p className="mt-0.5 text-xs text-gray-500">
+                          {[
+                            p.type,
+                            p.metalLevel,
+                            p.state,
+                            p.deductible != null
+                              ? `$${p.deductible.toLocaleString()} deductible`
+                              : null,
+                            p.year,
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        </p>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {searchLoading && (
+                  <p className="mt-3 text-center text-xs text-gray-400">Searching…</p>
+                )}
+                {/* S322 — the shared under-floor prompt (the compare pickers'
+                    exact string + 3-char floor; one home, PlanSearchCountLine). */}
+                {searchQuery.trim().length > 0 &&
+                  searchQuery.trim().length < PLAN_SEARCH_MIN_CHARS && (
+                    <p className="mt-3 text-xs text-gray-500">{PLAN_SEARCH_KEEP_TYPING}</p>
+                  )}
+                {!searchLoading &&
+                  searchQuery.trim().length >= PLAN_SEARCH_MIN_CHARS &&
+                  searchResults.length === 0 && (
+                    <p className="mt-3 text-center text-xs text-gray-400">
+                      {OB_DOC_COPY.searchEmpty}
+                    </p>
+                  )}
+              </>
+            )}
+          </div>
+
+          <div className="my-4 flex items-center gap-3 text-xs font-semibold text-gray-400">
+            <span className="h-px flex-1 bg-gray-200" />
+            {OB_DOC_COPY.orDivider}
+            <span className="h-px flex-1 bg-gray-200" />
+          </div>
+
           <div
             {...getRootProps()}
             className={`flex min-h-[180px] cursor-pointer flex-col items-center justify-center gap-3 rounded-[18px] border-2 border-dashed p-6 text-center transition-all ${
@@ -1092,105 +1204,6 @@ export function OnboardingDocStep({
               </p>
             </div>
           </div>
-
-          {/* S288 — the search is upload's PEER: either establishes the plan. */}
-          {!searchOpen ? (
-            <div className="mt-4 text-center">
-              <button
-                type="button"
-                onClick={openSearch}
-                className="rounded-[10px] px-3 py-2 text-[13.5px] font-semibold text-blue-600 transition-colors hover:bg-blue-50"
-              >
-                {searchToggleLabel}
-              </button>
-            </div>
-          ) : (
-            <div className="mt-4 rounded-[18px] border border-gray-200 bg-white p-4 shadow-sm">
-              <div className="mb-2.5 flex items-center justify-between">
-                <p className="text-[10.5px] font-bold tracking-[0.09em] text-gray-400">
-                  FIND YOUR PLAN
-                </p>
-                <button
-                  type="button"
-                  onClick={() => setSearchOpen(false)}
-                  className="rounded-lg px-2 py-1 text-xs font-semibold text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
-                >
-                  {OB_DOC_COPY.searchBack}
-                </button>
-              </div>
-              <input
-                type="text"
-                autoFocus
-                value={searchQuery}
-                onChange={(e) => {
-                  setSearchQuery(e.target.value);
-                  setSearchError("");
-                }}
-                placeholder={OB_DOC_COPY.searchPlaceholder}
-                disabled={searchSelecting}
-                className="w-full rounded-xl border border-gray-200 px-3.5 py-2.5 text-sm text-gray-900 placeholder:text-gray-400 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60"
-              />
-              <p className="mt-2 text-xs leading-relaxed text-gray-400">{OB_DOC_COPY.searchHint}</p>
-
-              {searchError && (
-                <div className="mt-3 rounded-xl border border-red-100 bg-red-50 p-3">
-                  <p className="text-sm text-red-700">{searchError}</p>
-                </div>
-              )}
-
-              {searchSelecting ? (
-                <div className="mt-3 flex items-center gap-2.5 rounded-xl border border-gray-100 bg-gray-50 px-3.5 py-3">
-                  <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center text-blue-600">
-                    <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />
-                  </span>
-                  <p className="text-sm font-medium text-gray-700">{OB_DOC_COPY.searchSelecting}</p>
-                </div>
-              ) : (
-                <>
-                  {searchResults.length > 0 && (
-                    <div className="mt-3 max-h-[320px] divide-y divide-gray-100 overflow-y-auto rounded-xl border border-gray-200">
-                      <PlanSearchCountLine shown={searchResults.length} total={searchTotal} />
-                      {searchResults.map((p) => (
-                        <button
-                          key={p.canonicalPlanId}
-                          type="button"
-                          onClick={() => void selectPlan(p)}
-                          className="block w-full px-3.5 py-2.5 text-left transition-colors hover:bg-blue-50/60"
-                        >
-                          <p className="text-[13.5px] font-medium leading-snug text-gray-900">
-                            {[p.insurerName, p.name].filter(Boolean).join(": ")}
-                          </p>
-                          <p className="mt-0.5 text-xs text-gray-500">
-                            {[
-                              p.type,
-                              p.metalLevel,
-                              p.state,
-                              p.deductible != null
-                                ? `$${p.deductible.toLocaleString()} deductible`
-                                : null,
-                              p.year,
-                            ]
-                              .filter(Boolean)
-                              .join(" · ")}
-                          </p>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                  {searchLoading && (
-                    <p className="mt-3 text-center text-xs text-gray-400">Searching…</p>
-                  )}
-                  {!searchLoading &&
-                    searchQuery.trim().length >= 2 &&
-                    searchResults.length === 0 && (
-                      <p className="mt-3 text-center text-xs text-gray-400">
-                        {OB_DOC_COPY.searchEmpty}
-                      </p>
-                    )}
-                </>
-              )}
-            </div>
-          )}
         </>
       )}
 

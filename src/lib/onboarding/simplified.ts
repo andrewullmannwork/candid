@@ -30,7 +30,9 @@ export const OB_COPY = {
   s1SubManual: "Just the IDs from the front of your card — they're the two things no other document has. Or drop a photo and we'll read it for you, copays included.",
   s1Skip: "No card handy? Skip — you can add it anytime",
   s2Title: "Add a plan document or a bill",
-  s2Sub: "A plan document (SBC, EOC, booklet) fills in your coverage information like deductibles, OOP max, covered services. A bill or EOB gets audited for overcharges on the spot.",
+  /* S322 (Andrew) — s2Sub deleted: the subtitle's what-each-doc-does prose is
+     replaced by the collapsed HOW TO FIND YOUR PLAN DOCUMENT bar (the /upload
+     FindTipsPanel content) rendered by the doc step itself. */
   s2Skip: "Skip — we'll keep a reminder on your dashboard",
   s3Title: "Last thing — 30 seconds about you",
   s3Sub: "Just the things documents can't tell us. Everything else, Candid reads on its own.",
@@ -104,31 +106,30 @@ export const OB_DOC_COPY = {
   parsedPlan: "Parsed — coverage set up",
   parsedBill: "Audited — here's what we found",
   settling: "Pulling in your results…",
-  explainer: [
-    { tag: "PLAN DOC", items: "Deductibles · OOP max · covered services" },
-    { tag: "BILL · EOB", items: "Line-item overcharge audit, on the spot" },
-  ],
+  /* S322 (Andrew) — the PLAN DOC / BILL · EOB explainer rows are deleted in
+     both modes; their slot is the collapsed find-guide bar + the always-
+     visible search card. */
+  showTips: "Show tips",
+  orDivider: "or",
   /* S317 (Andrew) — plan-change mode variants. The shared strings above stay
      exactly as S289 approved them because in SIGNUP they are correct: there you
      genuinely may upload a plan document or a bill. On a plan change a bill is
      not the job, so advertising a line-item audit is noise. Mode-specific keys
-     rather than edits, so signup and both verbatim fixtures are untouched. */
-  planModeExplainer: [
-    { tag: "PLAN DOC", items: "Deductibles · OOP max · covered services" },
-  ],
+     rather than edits, so signup and both verbatim fixtures are untouched.
+     S322 — planModeExplainer + planModeSearchToggle deleted with the explainer
+     block and the click-away search toggle (search is now always visible). */
   planModeDropTitle: "Drop your plan document",
-  planModeSearchToggle: "No document handy? Search Candid's library instead",
   /* S288 plan-library search (upload's peer alternative) — copy APPROVED by
-     Andrew S289 (2026-07-27); fixture-asserted verbatim. */
-  searchToggle: "No document handy? Search for your plan instead",
+     Andrew S289 (2026-07-27); fixture-asserted verbatim. S322 — searchToggle +
+     searchBack retired (no longer a mode to enter or leave); searchHint
+     refined to Andrew's exact S322 words. */
   searchPlaceholder: "Plan name or insurer — e.g. UHC Gold Advantage",
   searchHint:
-    "Picking your plan from Candid's library fills in your coverage like a document would. You can add the document anytime for verified details.",
+    "Picking your plan from Candid's library fills in your coverage like a document would. Just start typing.",
   searchEmpty: "No matches — try fewer words, or upload a document instead.",
   searchSelecting: "Setting up your plan…",
   searchDone: "Plan on file — from Candid's plan library",
   searchError: "Couldn't find that plan. Please try again.",
-  searchBack: "Back to upload",
   /* S288 plan-change mode — prominent current-plan framing (copy APPROVED S289). */
   currentPlanEyebrow: "YOUR CURRENT PLAN",
   replacePlan: "Replace plan",

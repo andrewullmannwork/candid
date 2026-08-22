@@ -73,11 +73,8 @@ eq(
 );
 eq("copy.s1Skip", OB_COPY.s1Skip, "No card handy? Skip — you can add it anytime");
 eq("copy.s2Title", OB_COPY.s2Title, "Add a plan document or a bill");
-eq(
-  "copy.s2Sub",
-  OB_COPY.s2Sub,
-  "A plan document (SBC, EOC, booklet) fills in your coverage information like deductibles, OOP max, covered services. A bill or EOB gets audited for overcharges on the spot.",
-);
+/* S322 — s2Sub deleted: the subtitle is replaced by the doc step's collapsed
+   find-guide bar (the /upload FindTipsPanel content). */
 eq("copy.s2Skip", OB_COPY.s2Skip, "Skip — we'll keep a reminder on your dashboard");
 eq("copy.s3Title", OB_COPY.s3Title, "Last thing — 30 seconds about you");
 eq(

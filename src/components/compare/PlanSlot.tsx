@@ -17,7 +17,11 @@
  * clear empty/active/committed states, smooth mode transitions.
  */
 
-import { PlanSearchCountLine } from "@/components/shared/PlanSearchCountLine";
+import {
+  PlanSearchCountLine,
+  PLAN_SEARCH_MIN_CHARS,
+  PLAN_SEARCH_KEEP_TYPING,
+} from "@/components/shared/PlanSearchCountLine";
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/lib/auth/auth-context";
 import { effectiveClientMaxBytes } from "@/lib/upload/upload-policy";
@@ -373,7 +377,7 @@ function SearchActive({
   }, []);
 
   useEffect(() => {
-    if (!user || query.length < 3) {
+    if (!user || query.length < PLAN_SEARCH_MIN_CHARS) {
       setResults([]);
       return;
     }
@@ -435,7 +439,7 @@ function SearchActive({
         </button>
       </div>
 
-      {query.length >= 3 && results.length > 0 && (
+      {query.length >= PLAN_SEARCH_MIN_CHARS && results.length > 0 && (
         <div className="rounded-2xl bg-white ring-1 ring-slate-200 shadow-sm max-h-72 overflow-y-auto">
           <PlanSearchCountLine shown={results.length} total={searchTotal} />
           {results.map((plan) => (
@@ -465,13 +469,11 @@ function SearchActive({
         </div>
       )}
 
-      {query.length > 0 && query.length < 3 && (
-        <p className="text-xs text-slate-500 px-2">
-          Keep typing — at least 3 characters needed to search.
-        </p>
+      {query.length > 0 && query.length < PLAN_SEARCH_MIN_CHARS && (
+        <p className="text-xs text-slate-500 px-2">{PLAN_SEARCH_KEEP_TYPING}</p>
       )}
 
-      {query.length >= 3 && results.length === 0 && !searching && (
+      {query.length >= PLAN_SEARCH_MIN_CHARS && results.length === 0 && !searching && (
         // S107: when search returns no canonical matches, point the user at
         // upload. The cold-start inventory is growing daily; a missing plan
         // means we don't have it yet — uploading their SBC adds it for them
