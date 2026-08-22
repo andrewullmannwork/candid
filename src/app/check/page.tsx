@@ -38,7 +38,11 @@ import { FindTipsPanel } from "@/components/upload/FindTipsPanel";
 import { PICKER_OPTIONS } from "@/lib/classifier/doc-type-vocabulary";
 import { UnifiedParseScreen, type ParseDoc } from "@/components/parsing/UnifiedParseScreen";
 import { ClaimDetail } from "@/components/claims/ClaimDetail";
-import { PlanSearchCountLine } from "@/components/shared/PlanSearchCountLine";
+import {
+  PlanSearchCountLine,
+  PLAN_SEARCH_MIN_CHARS,
+  PLAN_SEARCH_KEEP_TYPING,
+} from "@/components/shared/PlanSearchCountLine";
 import { getConsentDocument } from "@/lib/consent/consent-documents";
 import { DisputeDraftOverlayProvider } from "@/lib/loading/dispute-draft-overlay";
 import { UploadFlowProvider } from "@/lib/upload/upload-flow-context";
@@ -675,7 +679,7 @@ export default function CheckPage() {
   // ── identity search (the same endpoint every existing picker uses) ──
   const runSearch = useCallback(
     async (q: string) => {
-      if (!user || q.trim().length < 2) {
+      if (!user || q.trim().length < PLAN_SEARCH_MIN_CHARS) {
         setResults([]);
         return;
       }
@@ -1252,11 +1256,15 @@ export default function CheckPage() {
                       {claimDosYear}.
                     </p>
                   )}
-                  {(searching || results.length > 0 || query.trim().length >= 2) && (
+                  {/* S322 — the shared under-floor prompt (one home: PlanSearchCountLine). */}
+                  {query.trim().length > 0 && query.trim().length < PLAN_SEARCH_MIN_CHARS && (
+                    <p className="mt-3 text-xs text-gray-500">{PLAN_SEARCH_KEEP_TYPING}</p>
+                  )}
+                  {(searching || results.length > 0 || query.trim().length >= PLAN_SEARCH_MIN_CHARS) && (
                     <div className="mt-3 max-h-72 divide-y divide-gray-100 overflow-y-auto rounded-xl ring-1 ring-gray-200">
                       <PlanSearchCountLine shown={results.length} total={totalMatches} />
                       {searching && <div className="px-4 py-3.5 text-sm text-gray-400">Searching…</div>}
-                      {!searching && query.trim().length >= 2 && results.length === 0 && (
+                      {!searching && query.trim().length >= PLAN_SEARCH_MIN_CHARS && results.length === 0 && (
                         <div className="px-4 py-3.5 text-sm text-gray-500">
                           No matches — try fewer words, or use &quot;My plan isn&apos;t listed&quot;.
                         </div>
