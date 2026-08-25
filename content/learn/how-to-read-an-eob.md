@@ -6,7 +6,7 @@ cluster: "benefits"
 order: "2"
 target_query: "how to read an EOB"
 published: "2026-07-27"
-last_updated: "2026-07-30"
+last_updated: "2026-08-25"
 ---
 
 An EOB (explanation of benefits) is not a bill. It's your insurer's math for one claim. It shows what the provider charged, the discount your plan negotiated, what the plan paid, and what's left for you to pay (your share). Read those lines in order, then match every medical bill (the bill your provider sends you) against its EOB (your insurer's math for that same claim) before you pay a dollar.
@@ -27,7 +27,7 @@ Labels vary by insurer; the five stops don't. In order:
 2. **Network discount** (or "plan discount," "adjustments") - These are the discounted rates negotiated between the provider and your insurance network. Essentially, your insurance plan has more negotiating power than you do, so it gets a discount.
 3. **Allowed amount** - the real price: what your insurer and the provider agreed this service costs. Every number after this is just a split of the allowed amount.
 4. **Plan paid** - your insurer's share of that split.
-5. **Your responsibility** (or "member responsibility," "you may owe") - your share, itemized as deductible (what you pay before the plan shares costs), copay (a flat fee), and coinsurance (your percentage of the allowed amount). Those three terms have their own guide.
+5. **Your responsibility** (or "member responsibility," "you may owe") - your share, itemized as deductible (what you pay before the plan shares costs), copay (a flat fee), and coinsurance (your percentage of the allowed amount). Those three terms have [their own guide](/learn/deductible-coinsurance-out-of-pocket-max-explained).
 
 Watch it run on a hypothetical urgent care claim for Leo; example numbers only, not any real plan's terms:
 
