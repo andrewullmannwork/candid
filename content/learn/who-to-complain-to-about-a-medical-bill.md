@@ -6,7 +6,7 @@ cluster: "claim"
 order: "8"
 target_query: "who do I complain to about hospital billing"
 published: "2026-07-30"
-last_updated: "2026-07-30"
+last_updated: "2026-08-25"
 ---
 
 Complaints fail when they land at the wrong agency - not because complaining doesn't work. Match your problem to the right door and know what happens after you file. That's this guide.
@@ -72,7 +72,7 @@ This lever has teeth. In December 2023, the CFPB [shut down Commonwealth Financi
 Two things: 
 1. **Surprise billing** - out-of-network bills for emergencies or for out-of-network providers at in-network facilities
 AND
-2.  **Good-faith-estimate violations** for self-pay patients, including bills that run $400+ over the estimate (that formal dispute path has a 120-day clock). File [online](https://www.cms.gov/medical-bill-rights/help/submit-a-complaint) or call **1-800-985-3059**; you'll get a confirmation number you can use to add documents to your complaint later. Complaints feed the enforcement machinery described above - state regulators first, CMS as the federal backstop. Attach the bill, your EOB or estimate, and dates.
+2.  **Good-faith-estimate violations** for self-pay patients, including bills that run $400+ over the estimate ([that formal dispute path](/learn/good-faith-estimate-dispute) has a 120-day clock). File [online](https://www.cms.gov/medical-bill-rights/help/submit-a-complaint) or call **1-800-985-3059**; you'll get a confirmation number you can use to add documents to your complaint later. Complaints feed the enforcement machinery described above - state regulators first, CMS as the federal backstop. Attach the bill, your EOB or estimate, and dates.
 
 ## When do you call the HHS Office of Inspector General?
 

@@ -6,7 +6,7 @@ cluster: "claim"
 order: "3"
 target_query: "how to know if you were overcharged medical bill"
 published: "2026-07-27"
-last_updated: "2026-07-30"
+last_updated: "2026-08-25"
 ---
 
 To find out if you were overcharged, put your itemized bill next to your Explanation of Benefits (EOB) which is your insurer's statement of what you actually owe. Match them line by line. Every charge should appear on both documents. Anything unmatched, denied, or inflated is a dispute candidate.
@@ -77,7 +77,7 @@ Each of these has a specific tell and a specific challenge script - the full lis
 
 ## How do you price-check a single charge?
 
-**IMPORTANT NOTE:** Studies find the majority of hospitals do not comply with the federal Hospital Transparency rule. See our article on hospital prices for more information. So take the numbers below with a (large) grain of salt.
+**IMPORTANT NOTE:** Studies find the majority of hospitals do not comply with the federal Hospital Transparency rule. See our article on [hospital prices](/learn/hospital-chargemaster-prices-explained) for more information. So take the numbers below with a (large) grain of salt.
 
 Sometimes every line is real but one number looks absurd. Two free lookups and a bonus question:
 

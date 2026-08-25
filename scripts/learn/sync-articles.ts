@@ -48,6 +48,18 @@ const PUBLISHED: string[] = [
   "Approved-editorial-03_how-to-verify-your-bill-with-medical-records",
   "Approved-editorial-06_hospital-billing-phone-scripts",
   "Approved-editorial-08_who-to-complain-to-about-a-medical-bill",
+  // ── Wave E3 (2026-08-25) — closes the portfolio: the last three editorial
+  // pieces plus the two `compare` guides, which are the first articles in that
+  // cluster and therefore the ones that make the hub's "Choose the right plan"
+  // section render at all (the hub drops empty clusters). Publishing this wave
+  // promotes the 8 cross-links E1/E2 shipped as plain text, so several already
+  // live articles change and honestly advance their `last_updated`.
+  "Approved-benefits-03_deductible-coinsurance-out-of-pocket-max-explained",
+  "Approved-compare-01_how-to-compare-health-insurance-plans",
+  "Approved-compare-02_hdhp-vs-ppo-which-saves-money",
+  "Approved-editorial-04_air-ambulance-bill-no-surprises-act",
+  "Approved-editorial-05_good-faith-estimate-dispute",
+  "Approved-editorial-07_hospital-chargemaster-prices-explained",
 ];
 
 /**

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse, type NextFetchEvent } from "next/server";
+import { INDEXNOW_KEY_PATH } from "@/lib/seo/indexnow";
 
 /** Public routes that don't require authentication */
 const PUBLIC_ROUTES = [
@@ -55,6 +56,9 @@ const NON_PAGE_FILES = new Set([
   "/llms.txt",
   "/logo.png",
   "/apple-touch-icon.png",
+  // Machine-fetched ownership proof, not a page a human ever lands on —
+  // counting it would put a search engine's verification poll in "top pages".
+  INDEXNOW_KEY_PATH,
 ]);
 
 function isCountablePage(pathname: string): boolean {
@@ -129,6 +133,9 @@ export function middleware(req: NextRequest, event: NextFetchEvent) {
     pathname === "/sitemap.xml" ||
     pathname === "/robots.txt" ||
     pathname === "/llms.txt" ||
+    // Without this the key file auth-walls: the matcher below catches every
+    // path except `_next/*` and `favicon.ico`, so `public/` is not public.
+    pathname === INDEXNOW_KEY_PATH ||
     pathname === "/logo.png" ||
     pathname === "/apple-touch-icon.png" ||
     pathname.startsWith("/opengraph-image") ||

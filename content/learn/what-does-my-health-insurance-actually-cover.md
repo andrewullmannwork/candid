@@ -6,7 +6,7 @@ cluster: "benefits"
 order: "1"
 target_query: "what does my health insurance cover"
 published: "2026-07-27"
-last_updated: "2026-07-30"
+last_updated: "2026-08-25"
 ---
 
 Your health insurance covers exactly what your plan documents say it covers - nothing more, nothing less. Four documents hold the full answer: the Summary of Benefits and Coverage (SBC), the plan contract (often called the Evidence of Coverage, or EOC), the drug formulary, and the provider directory. Here's how to read them in minutes, and how to verify coverage before every appointment.
@@ -32,14 +32,14 @@ Four documents, four jobs:
 
 All four typically live in your insurer's member portal. Can't find one? Call the member-services number on the back of your insurance card and ask for each by name, or ask your employer's benefits contact. The SBC isn't optional - [every plan must provide one](https://www.healthcare.gov/health-care-law-protections/summary-of-benefits-and-coverage/).
 
-And because SBCs are standardized, they're built for side-by-side reading. That's the backbone of comparing plans during open enrollment.
+And because SBCs are standardized, they're built for side-by-side reading. That's the backbone of [comparing plans](/learn/how-to-compare-health-insurance-plans) during open enrollment.
 
 ## How do I read my SBC in 10 minutes?
 
 Open your SBC. Six checks, in order:
 
-1. **Find your deductible** - what you pay for covered care before the plan starts sharing costs. Note every version: individual and family, in-network and out. (New to these terms? Here's the plain-English breakdown)
-2. **Find your out-of-pocket maximum** - your worst-case annual total for covered in-network care, and the most consequential number on the page. (New to these terms? Here's the plain-English breakdown)
+1. **Find your deductible** - what you pay for covered care before the plan starts sharing costs. Note every version: individual and family, in-network and out. (New to these terms? Here's [the plain-English breakdown](/learn/deductible-coinsurance-out-of-pocket-max-explained))
+2. **Find your out-of-pocket maximum** - your worst-case annual total for covered in-network care, and the most consequential number on the page. (New to these terms? Here's [the plain-English breakdown](/learn/deductible-coinsurance-out-of-pocket-max-explained))
 3. **Check "services covered before you meet your deductible."** That's care the plan shares costs on from day one - preventive care typically appears here, and sometimes office visits do too.
 4. **Scan the common-medical-events table** for the rows you actually use: primary care, specialists, mental health visits, therapy, tests, drug tiers, urgent care, the ER.
 5. **Read the excluded-services box.** It's short and blunt, and it prevents expensive assumptions.

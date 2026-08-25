@@ -221,6 +221,13 @@ jobs:
         # + a real created_at inside the TTL (null/garbage/future = challenge).
         run: npx tsx scripts/calibration/fixtures/security/turnstile-session.ts
 
+      - name: IndexNow key reachability (S323)
+        # The key, the hosted public/<key>.txt, and the two middleware entries
+        # must agree exactly. Every drift is SILENT: drop the middleware bypass
+        # and the path 307s to the landing page, which answers 200 with HTML —
+        # so the site looks fine while the engines stop accepting submissions.
+        run: npx tsx scripts/calibration/fixtures/seo/indexnow.ts
+
       - name: Canonical link is a pair (S292 / mig 218)
         # Fails the build if any code writes insurance_plans.canonical_plan_id
         # without canonical_match_confidence. An unscored link reads as UNKNOWN to

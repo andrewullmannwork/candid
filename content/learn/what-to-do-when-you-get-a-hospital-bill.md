@@ -6,7 +6,7 @@ cluster: "claim"
 order: "1"
 target_query: "what to do when you get a hospital bill"
 published: "2026-07-30"
-last_updated: "2026-07-30"
+last_updated: "2026-08-25"
 ---
 
 Don't pay it yet. A hospital bill is a claim, not a verdict. The first bill often goes out before your insurance finishes its math. Your job in the first month: get the itemized bill, pull your EOB, compare them, and apply for financial assistance early. Federal rules give you real deadlines. Here's the plan, day by day.
@@ -57,7 +57,7 @@ The hold isn't guaranteed - but the request costs nothing, and it puts on record
 
 **2. Pull your EOB.** Log into your insurer's portal and download the EOB matching those dates. If the hospital's number and the insurer's "patient responsibility" number disagree, the bill is premature, wrong, or both.
 
-**3. Uninsured or self-pay? Find your good faith estimate.** Providers generally must give self-pay patients a written estimate before scheduled care. If the final bill runs at least $400 over the estimate for any provider on it, [CMS runs a formal dispute process](https://www.cms.gov/medical-bill-rights/help/dispute-a-bill): you have 120 days from the bill date, it costs $25, and the provider can't move the bill to collections while the dispute is pending. Details: good faith estimate disputes.
+**3. Uninsured or self-pay? Find your good faith estimate.** Providers generally must give self-pay patients a written estimate before scheduled care. If the final bill runs at least $400 over the estimate for any provider on it, [CMS runs a formal dispute process](https://www.cms.gov/medical-bill-rights/help/dispute-a-bill): you have 120 days from the bill date, it costs $25, and the provider can't move the bill to collections while the dispute is pending. Details: [good faith estimate disputes](/learn/good-faith-estimate-dispute).
 
 ## Weeks 1-2: Compare the documents to what actually happened
 

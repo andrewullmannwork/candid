@@ -6,7 +6,7 @@ cluster: "claim"
 order: "6"
 target_query: "what to say to hospital billing department"
 published: "2026-07-30"
-last_updated: "2026-07-30"
+last_updated: "2026-08-25"
 ---
 
 Here are the 6 conversations covered in this article: 
@@ -57,7 +57,7 @@ Income thresholds, the application walkthrough, and what to do if you're denied:
 
 ### Script 4: The Self-pay / Prompt-pay Discount
 
-If you're uninsured, out of network, or just paying the balance yourself, there is very often a lower price available for the asking. Hospitals publish discounted cash prices now (that's a federal requirement - see hospital chargemaster prices, explained), and many offer a further cut for fast payment.
+If you're uninsured, out of network, or just paying the balance yourself, there is very often a lower price available for the asking. Hospitals publish discounted cash prices now (that's a federal requirement - see [hospital chargemaster prices, explained](/learn/hospital-chargemaster-prices-explained)), and many offer a further cut for fast payment.
 
 > "I'm paying this myself. What's your self-pay rate for this account? And is there a prompt-pay discount if I settle within [7/14] days? Please send me the discounted amount in writing - I'll pay the same day I receive it."
 
