@@ -37,7 +37,13 @@ import {
 } from "@/lib/disputes/evidence-fingerprint";
 import { emitCaseEvent } from "@/lib/case/case-events";
 import { loadServerSubscription } from "@/lib/subscription/server";
-import { letterRequiresPro, evaluateLetterAccess } from "@/lib/disputes/letter-access";
+import {
+  letterRequiresPro,
+  letterGeoRelevant,
+  evaluateLetterAccess,
+  GEO_GATE_MESSAGE,
+} from "@/lib/disputes/letter-access";
+import { loadUserStateForLetterAccess } from "@/lib/disputes/letter-access-state";
 import { resolveLetterTypeFromDispute, letterPatientIdentityFromMeta, isLiveDraftStatus } from "@/lib/disputes/letter-type";
 
 async function getAuthUser(req: NextRequest) {
@@ -104,18 +110,26 @@ export async function POST(
   // Refresh succeeded on the SAME letter. Dispute existence is not probeable
   // cross-user: the load above is userScoped (a foreign id 404s regardless of tier).
   const redraftLetterType = resolveLetterTypeFromDispute(dispute);
-  if (letterRequiresPro(redraftLetterType)) {
-    const subscription = await loadServerSubscription(supabase, user.id);
-    const access = evaluateLetterAccess({
-      letterType: redraftLetterType,
-      isPro: subscription.isPro,
-    });
+  // S324 — always consult letter-access (geo + tier, one home). Lazy loads:
+  // subscription only for Pro-listed types; profile state only for geo-gated
+  // types (the CA gate on `negotiation` reaches redraft too — a re-composed
+  // draft is a freshly provided letter).
+  {
+    const isPro = letterRequiresPro(redraftLetterType)
+      ? (await loadServerSubscription(supabase, user.id)).isPro
+      : false;
+    const userState = letterGeoRelevant(redraftLetterType)
+      ? await loadUserStateForLetterAccess(supabase, user.id)
+      : null;
+    const access = evaluateLetterAccess({ letterType: redraftLetterType, isPro, userState });
     if (!access.allowed) {
       console.log(
-        `[disputes/redraft] tier gate blocked: user ${user.id} tier=${subscription.tier} status=${subscription.status} letterType=${redraftLetterType} → 403`,
+        `[disputes/redraft] letter-access blocked: user ${user.id} letterType=${redraftLetterType} reason=${access.reason} → 403`,
       );
       return NextResponse.json(
-        { error: "subscription_required", requiredTier: "pro" },
+        access.reason === "geo_unavailable"
+          ? { error: "geo_unavailable", reason: GEO_GATE_MESSAGE }
+          : { error: "subscription_required", requiredTier: "pro" },
         { status: 403 },
       );
     }

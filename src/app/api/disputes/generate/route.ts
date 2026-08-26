@@ -32,7 +32,13 @@ import { isFeatureEnabled } from "@/lib/config/product-flags";
 import { requireAuthenticatedUser } from "@/lib/security/require-authenticated-user";
 import { userScoped, selectOwnedChildren } from "@/lib/security/user-scoped";
 import { loadServerSubscription } from "@/lib/subscription/server";
-import { letterRequiresPro, evaluateLetterAccess } from "@/lib/disputes/letter-access";
+import {
+  letterRequiresPro,
+  letterGeoRelevant,
+  evaluateLetterAccess,
+  GEO_GATE_MESSAGE,
+} from "@/lib/disputes/letter-access";
+import { loadUserStateForLetterAccess } from "@/lib/disputes/letter-access-state";
 
 export async function POST(req: NextRequest) {
   try {
@@ -100,20 +106,30 @@ export async function POST(req: NextRequest) {
       // escalation letters (final_notice / external_review) are Pro; the first-contact dispute letters
       // + debt_validation are FREE (consumer-protection funnel). Itemized (Case 2) + negotiation
       // (Case 3) remain free as before.
-      // Single source of truth for the tier rule — src/lib/disputes/letter-access.
-      // Load the subscription only when the type could require Pro (lazy).
-      if (letterRequiresPro(letterType)) {
-        const subscription = await loadServerSubscription(supabase, authedUser.id);
+      // Single source of truth for the tier + geo rules — src/lib/disputes/letter-access.
+      // Lazy loads: subscription only when the type could require Pro; profile
+      // state only when the type is geo-gated (S324 — the CA gate on
+      // `negotiation`; fail-closed on unknown state).
+      {
+        const isPro = letterRequiresPro(letterType)
+          ? (await loadServerSubscription(supabase, authedUser.id)).isPro
+          : false;
+        const userState = letterGeoRelevant(letterType as DisputeLetterType)
+          ? await loadUserStateForLetterAccess(supabase, authedUser.id)
+          : null;
         const access = evaluateLetterAccess({
           letterType: letterType as DisputeLetterType,
-          isPro: subscription.isPro,
+          isPro,
+          userState,
         });
         if (!access.allowed) {
           console.log(
-            `[disputes/generate] tier gate blocked (${letterType}): user ${authedUser.id} tier=${subscription.tier} status=${subscription.status} → 403`,
+            `[disputes/generate] letter-access blocked (${letterType}): user ${authedUser.id} reason=${access.reason} → 403`,
           );
           return NextResponse.json(
-            { error: "subscription_required", requiredTier: "pro" },
+            access.reason === "geo_unavailable"
+              ? { error: "geo_unavailable", reason: GEO_GATE_MESSAGE }
+              : { error: "subscription_required", requiredTier: "pro" },
             { status: 403 },
           );
         }
@@ -667,6 +683,36 @@ export async function POST(req: NextRequest) {
 
     // Case 3: Generate negotiation letter (uninsured / self-pay)
     if (body.type === "negotiation") {
+      // S324 — Case 3 now requires authentication. The negotiation letter is a
+      // geo-gated type (letter-access GEO_GATED_LETTER_TYPES: unavailable to CA
+      // residents pending DFPI registration), and an unauthenticated caller has
+      // no profile state to check — so the anonymous path FAILS CLOSED by
+      // requiring an identity first. No UI posts type:"negotiation" today
+      // (verified S324); this closes the direct-API hole only.
+      const negotiationUser = await requireAuthenticatedUser(req);
+      if (!negotiationUser || negotiationUser.isAnonymous) {
+        return NextResponse.json({ error: "authentication_required" }, { status: 401 });
+      }
+      const negotiationSupabase = createServerClient();
+      const negotiationUserState = await loadUserStateForLetterAccess(
+        negotiationSupabase,
+        negotiationUser.id,
+      );
+      const negotiationAccess = evaluateLetterAccess({
+        letterType: "negotiation",
+        isPro: false, // negotiation is not Pro-gated; geo is the live check here
+        userState: negotiationUserState,
+      });
+      if (!negotiationAccess.allowed) {
+        console.log(
+          `[disputes/generate] letter-access blocked (negotiation): user ${negotiationUser.id} state=${negotiationUserState ?? "unknown"} reason=${negotiationAccess.reason} → 403`,
+        );
+        return NextResponse.json(
+          { error: "geo_unavailable", reason: GEO_GATE_MESSAGE },
+          { status: 403 },
+        );
+      }
+
       const { patientName, providerName, serviceName, serviceDate, billedAmount, medicareBenchmark, communityMedian, suggestedRate, communityReportCount } = body;
 
       if (!patientName || !providerName || !serviceName || !suggestedRate) {
