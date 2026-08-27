@@ -57,6 +57,17 @@ import {
 } from "@/lib/disputes/outcome-taxonomy";
 import { letterRequiresPro } from "@/lib/disputes/letter-access";
 import {
+  route,
+  orderForums,
+  fallbackForums,
+  NO_FORUM_NOTICE,
+  disputeKindForInsurerLetter,
+  type Forum,
+  type DenialBasis,
+  type DisputeKind,
+  type RegulatoryClassification,
+} from "@/lib/disputes/forums";
+import {
   formatLetterDateShort,
   daysSinceLocal,
   daysUntilLocal,
@@ -175,6 +186,23 @@ export interface RailDoorTile {
     /** That filing's confirmation number, shown read-only. */
     note: string | null;
   } | null;
+  /** S325 routed pool only — the agency's phone, shown on the tile. */
+  phone?: string | null;
+  /**
+   * S325 routed pool — true = a post-letter ACTION the member files
+   * themselves (licensing boards, criminal-referral units). The filing
+   * attest + confirmation-number machinery still applies; the tile just
+   * renders the "you file this yourself" variant and never links a letter.
+   */
+  actionOnly?: boolean;
+  /** S325 routed pool — the agency's own verbatim "cannot" language. */
+  cannotLines?: readonly string[];
+  /**
+   * S325 — true for a licensing board that publishes NO billing limitation:
+   * the UI renders the honest "publishes no jurisdictional limitation"
+   * sentence, never synthesized text (memo 05 invariant 3).
+   */
+  noLimitationNote?: boolean;
 }
 
 export interface RailNextMove {
@@ -216,6 +244,20 @@ export interface RailNextMove {
      */
     skip: { stepId: string; declined: boolean; declinedAtLabel: string | null } | null;
     foot: string;
+    /**
+     * S325 (`forum_menu_v1` ON) — the routed state. Null on the legacy path.
+     * When present the renderer shows, in order: the screening questions
+     * (screeningNeeded), the jurisdiction notice, the denial-basis question
+     * (insurer letters, unanswered), then the routed door grid — fixed role
+     * order, nothing featured (R14; every tile's chip is null).
+     */
+    routed: {
+      notice: string | null;
+      screeningNeeded: boolean;
+      denialBasisNeeded: boolean;
+      /** The claim's plan row the screening answers persist to; null = no plan (screening hidden, generic pool shown). */
+      planId: string | null;
+    } | null;
   } | null;
 }
 
@@ -388,8 +430,81 @@ export interface RailLetterGroup {
   steps: RailStepModel[];
 }
 
+export interface RailForumMenuInput {
+  /** The member's plan-level screening answers (null = unanswered). */
+  classification: RegulatoryClassification | null;
+  /** profiles.state (null fail-soft → generic pool). */
+  userState: string | null;
+  /** Per-dispute denial-basis answers (claim-scoped guide-step notes). */
+  denialBasisByDispute: Record<string, DenialBasis | undefined>;
+  /** The claim's plan row id — where screening answers persist. */
+  planId: string | null;
+}
+
+/**
+ * S325 — the routed door pool for one letter, PURE (fixture-tested). Routing
+ * consumes only member-supplied facts; the pool renders in the fixed role
+ * order with nothing featured (R14). Provider-track letters route to the
+ * billing-conduct pool; `negotiation` (self-pay) routes to the affordability
+ * pool (HCAI / WA charity care); insurer letters narrow by the member's own
+ * denial-basis answer, with the complaint track shown while it is unanswered
+ * (the complaint door is valid regardless — the basis only adds/removes the
+ * IMR/external-review doors).
+ */
+export function routedPoolForLetter(
+  fm: RailForumMenuInput,
+  letter: { recipientKind: string; letterType: string; disputeId: string },
+): {
+  doors: Forum[];
+  notice: string | null;
+  screeningNeeded: boolean;
+  denialBasisNeeded: boolean;
+} {
+  if (fm.userState !== "CA" && fm.userState !== "WA") {
+    return { doors: fallbackForums(), notice: null, screeningNeeded: false, denialBasisNeeded: false };
+  }
+  if (!fm.classification) {
+    // No answers yet: the screening panel renders; the generic pool stays
+    // available behind the "skip" affordance (renderer-local), so a member
+    // who declines the questions still gets the directory.
+    return { doors: fallbackForums(), notice: null, screeningNeeded: true, denialBasisNeeded: false };
+  }
+  const isInsurer = letter.recipientKind === "insurer";
+  const basis = fm.denialBasisByDispute[letter.disputeId];
+  const dispute: DisputeKind = isInsurer
+    ? disputeKindForInsurerLetter(basis ?? "other")
+    : letter.letterType === "balance_billing"
+      ? "balance_bill"
+      : letter.letterType === "negotiation"
+        ? "hospital_bill_affordability"
+        : "provider_billing_conduct";
+  const result = route({
+    state: fm.userState,
+    coverage: fm.classification.coverageType,
+    dispute,
+    caRegulator: fm.classification.caRegulator,
+    waSelfFundedOptedIn: fm.classification.waBbpaOptedIn,
+  });
+  const doors = orderForums(result.forums);
+  const notice =
+    result.notice ?? (doors.length === 0 ? NO_FORUM_NOTICE : null);
+  return {
+    doors,
+    notice,
+    screeningNeeded: false,
+    denialBasisNeeded: isInsurer && basis == null,
+  };
+}
+
 export interface ComposeRailInput {
   letters: ProjectedLetterStep[];
+  /**
+   * S325 — the forum-menu state. REQUIRED `| null` for the same S301/S303
+   * reason `regulator` is required: an optional field is what lets a call
+   * site forget it. `null` = legacy path (flag off / not loaded) — an
+   * explicit decision, not an accident.
+   */
+  forumMenu: RailForumMenuInput | null;
   /**
    * S303 — the case's regulator complaint. REQUIRED, not optional: the S301
    * lesson was that an optional field is exactly what lets a call site forget
@@ -935,17 +1050,57 @@ function buildLetterSteps(
       // is always UNKNOWN — tracker Item U), so filtering doors on our own
       // signal would hide a legitimate regulator behind a detection we know is
       // blind. The descriptions do the filtering; the chip does the steering.
-      const suggested = suggestDoors({
-        track: l.recipientKind === "insurer" ? "insurer" : "provider",
-        hasCollections: letters.some(
-          (x) => x.letterType === "debt_validation" && x.stage !== "none",
-        ),
-        grounds: l.letterType === "balance_billing" ? ["balance_billing"] : [],
-      });
-      const doorOrder = [
-        ...suggested,
-        ...COMPLAINT_DOORS.map((d) => d.id).filter((id) => !suggested.includes(id)),
-      ];
+      // S325 (`forum_menu_v1`) — the routed pool replaces the generic doors
+      // when the flag-ON input is present: member-fact routing, fixed role
+      // order, nothing featured (R14). Legacy path (forumMenu null) is
+      // byte-identical to pre-S325 behavior, suggestDoors ordering included.
+      const routedState = input.forumMenu
+        ? routedPoolForLetter(input.forumMenu, {
+            recipientKind: l.recipientKind,
+            letterType: l.letterType,
+            disputeId: l.disputeId,
+          })
+        : null;
+      const suggested = routedState
+        ? []
+        : suggestDoors({
+            track: l.recipientKind === "insurer" ? "insurer" : "provider",
+            hasCollections: letters.some(
+              (x) => x.letterType === "debt_validation" && x.stage !== "none",
+            ),
+            grounds: l.letterType === "balance_billing" ? ["balance_billing"] : [],
+          });
+      // ONE tile pipeline for both paths: the routed pool projects into the
+      // same (id, name, desc, href) shape the generic doors use, plus the
+      // routed-only fields — so the filing-record machinery below cannot
+      // fork between paths.
+      const doorSource: Array<{
+        id: string;
+        name: string;
+        desc: string;
+        href: string;
+        phone?: string | null;
+        actionOnly?: boolean;
+        cannotLines?: readonly string[];
+        noLimitationNote?: boolean;
+      }> = routedState
+        ? routedState.doors.map((f) => ({
+            id: f.id,
+            name: f.menuLabel,
+            desc: f.menuHint,
+            href: f.url,
+            phone: f.phone ?? null,
+            actionOnly: f.actionOnly,
+            cannotLines: f.cannot,
+            noLimitationNote: f.role === "licensing_discipline" && f.cannot.length === 0,
+          }))
+        : [
+            ...suggested,
+            ...COMPLAINT_DOORS.map((d) => d.id).filter((id) => !suggested.includes(id)),
+          ].flatMap((id) => {
+            const d = COMPLAINT_DOORS.find((x) => x.id === id);
+            return d ? [{ id: d.id, name: d.name, desc: d.desc, href: d.href }] : [];
+          });
       const filedStep = PACK_D_STEPS.find((s) => s.id === "packD:filed");
       steps.push({
         kind: "next-move",
@@ -974,9 +1129,7 @@ function buildLetterSteps(
             ? {
                 title: PACK_D_TITLE,
                 lead: CASE_RAIL.regulatorLead,
-                doors: doorOrder.flatMap((id, i) => {
-                  const d = COMPLAINT_DOORS.find((x) => x.id === id);
-                  if (!d) return [];
+                doors: doorSource.map((d, i) => {
                   const mine =
                     regulator.filings.find(
                       (f) => f.doorId === d.id && f.disputeId === l.disputeId,
@@ -988,13 +1141,18 @@ function buildLetterSteps(
                     : (regulator.filings
                         .filter((f) => f.doorId === d.id && f.disputeId !== l.disputeId)
                         .at(-1) ?? null);
-                  return [
-                    {
+                  return {
                       id: d.id,
                       name: d.name,
                       desc: d.desc,
                       href: d.href,
-                      chip: i === 0 ? PACK_D_SUGGESTED_CHIP : null,
+                      // R14: the routed pool features nothing — chip only on
+                      // the legacy path's track door.
+                      chip: !routedState && i === 0 ? PACK_D_SUGGESTED_CHIP : null,
+                      phone: d.phone ?? null,
+                      actionOnly: d.actionOnly ?? false,
+                      cannotLines: d.cannotLines ?? [],
+                      noLimitationNote: d.noLimitationNote ?? false,
                       filedAt: mine?.filedAt ?? null,
                       filedAtLabel: mine ? fmtRailDate(mine.filedAt) : null,
                       note: mine?.note ?? null,
@@ -1014,10 +1172,11 @@ function buildLetterSteps(
                             note: other.note,
                           }
                         : null,
-                    },
-                  ];
+                    };
                 }),
-                filedLabel: filedStep?.checkboxLabel ?? "Complaint filed",
+                // Routed doors include IMR APPLICATIONS, not just complaints —
+                // "Filed" is the word that is true of every routed door.
+                filedLabel: routedState ? "Filed" : (filedStep?.checkboxLabel ?? "Complaint filed"),
                 notePlaceholder: CASE_RAIL.filedNotePlaceholder,
                 fileAgainLabel: CASE_RAIL.regulatorFileAgainLabel,
                 // Offered only while THIS letter has nothing filed — "I'm not
@@ -1034,6 +1193,14 @@ function buildLetterSteps(
                         : null,
                     },
                 foot: CASE_RAIL.regulatorFoot,
+                routed: routedState
+                  ? {
+                      notice: routedState.notice,
+                      screeningNeeded: routedState.screeningNeeded,
+                      denialBasisNeeded: routedState.denialBasisNeeded,
+                      planId: input.forumMenu?.planId ?? null,
+                    }
+                  : null,
               }
             : null,
         },

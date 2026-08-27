@@ -41,6 +41,7 @@ export const EXPOSED_FLAGS = [
   "bill_totals_source_v1", // S302 — "which of our two parses is right" row in the step-1 assumptions block
   "savings_math_derivation_v1", // S307 — priced-answer plan card + "Where these numbers come from" strip
   "anonymous_bill_check_v1", // S315 — no-account bill check (/check) + landing/signup escape links
+  "forum_menu_v1", // S325 PR-B — verified forum menu: rail screening + routed door tiles (mig 233)
 ] as const;
 
 /**

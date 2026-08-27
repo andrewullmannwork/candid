@@ -24,6 +24,7 @@ import { plainDate, easternDate } from "@/lib/format/dates";
 import { RECIPIENT_DEPARTMENT_LINE } from "./letter-type";
 import { adjudicationBand } from "@/lib/care/interface";
 import { resolveStateCitation } from "./citation-registry";
+import { routedConsequence } from "./forums";
 
 interface LetterTemplate {
   type: DisputeLetterType;
@@ -1174,9 +1175,17 @@ export function buildRequestSection(params: {
   // Deadline anchored to the §1024(b)(4) document-production window (30 days);
   // L1 will plan-type-tune (ERISA penalty / urgency-shortening).
   const numbered = asks.map((a, i) => `${i + 1}. ${a}`).join("\n");
-  // S325 (C1): the recipient-appropriate consequence is the approved neutral
-  // sentence — no agency named until the verified forum menu (PR-B) routes one.
-  const consequence = isInsurer ? NEUTRAL_INSURER_CONSEQUENCE : NEUTRAL_PROVIDER_CONSEQUENCE;
+  // S325 (C1 → PR-B): when the member's own screening answers identify their
+  // regulator (plan-level regulatory_classification, written by the flag-ON
+  // forum menu), the consequence names it with the counsel-verified sentence;
+  // otherwise the approved neutral sentence. Data-driven — no classification
+  // (flag OFF, unanswered, self-funded, non-CA/WA) → byte-identical neutral.
+  const consequence =
+    routedConsequence(
+      planContext?.plan?.regulatoryClassification ?? null,
+      planContext?.userState ?? null,
+      isInsurer ? "insurer" : "provider",
+    ) ?? (isInsurer ? NEUTRAL_INSURER_CONSEQUENCE : NEUTRAL_PROVIDER_CONSEQUENCE);
 
   return [
     "RELIEF REQUESTED",

@@ -189,7 +189,7 @@ async function dryRunRail(prefix: string) {
       };
     });
 
-  const { groups, resolution } = composeRail({
+  const { groups, resolution } = composeRail({ forumMenu: null,
     letters,
     regulator: projection?.projected.regulator ?? EMPTY_PROJECTED_REGULATOR,
     offers,

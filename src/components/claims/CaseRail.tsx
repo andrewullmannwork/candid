@@ -44,6 +44,13 @@ import {
   type RailStepModel,
   type RailWaitCard,
 } from "@/lib/case/rail-steps";
+import {
+  COVERAGE_PROMPT,
+  CA_REGULATOR_PROMPT,
+  WA_BBPA_PROMPT,
+  type DenialBasis,
+  type RegulatoryClassification,
+} from "@/lib/disputes/forums";
 
 // ── Surface 3 — flagged-bill guided step rail chrome ──────────────────────
 // Numbered step section per design bill-detail.jsx StepSection + styles.css
@@ -497,6 +504,145 @@ function LetterBand({ group }: { group: RailLetterGroup }) {
   );
 }
 
+/**
+ * S325 (`forum_menu_v1`) — the screening panel: the member answers coverage
+ * type (+ the CA regulator document test / the WA opt-in check when those
+ * branches apply) ONCE per plan; answers persist to
+ * insurance_plans.metadata.regulatory_classification and every letter's
+ * regulator card routes from them. The generic directory stays rendered
+ * below the panel, so a member who skips the questions still has doors.
+ */
+function ForumScreeningPanel({
+  planId,
+  getAuthToken,
+  onSaved,
+}: {
+  planId: string;
+  getAuthToken: () => Promise<string | null>;
+  onSaved?: (c?: RegulatoryClassification) => void | Promise<void>;
+}) {
+  const [coverage, setCoverage] = useState<string>("");
+  const [caReg, setCaReg] = useState<string>("");
+  const [waOptIn, setWaOptIn] = useState<string>("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(false);
+  const needsCaReg = coverage === "commercial_fully_insured";
+  const needsWaOptIn = coverage === "employer_self_funded";
+  const canSave = coverage !== "" && (!needsCaReg || caReg !== "");
+  const save = async () => {
+    setBusy(true);
+    setErr(false);
+    try {
+      const token = await getAuthToken();
+      if (!token) throw new Error("no token");
+      const res = await fetch("/api/plan/regulatory-classification", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          planId,
+          coverageType: coverage,
+          ...(needsCaReg && caReg ? { caRegulator: caReg } : {}),
+          ...(needsWaOptIn && waOptIn ? { waBbpaOptedIn: waOptIn === "true" } : {}),
+        }),
+      });
+      if (!res.ok) throw new Error(String(res.status));
+      const body = (await res.json()) as { classification?: RegulatoryClassification };
+      await onSaved?.(body.classification);
+    } catch {
+      setErr(true);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="mb-2.5 rounded-[10px] border border-blue-200 bg-blue-50/40 px-3 py-2.5 text-[13px]">
+      <div className="font-bold text-gray-900">Which agencies can actually help you?</div>
+      {/* S325 test round 1 (Andrew-approved string; "agencies" plural because
+          the answer is often several doors and sometimes honestly none). */}
+      <div className="mt-0.5 text-[12px] text-gray-500">
+        Answer the questions below to determine the correct agencies.
+      </div>
+      <label className="mt-2 block text-[12px] font-semibold text-gray-700">
+        {COVERAGE_PROMPT.question}
+        <select
+          value={coverage}
+          onChange={(e) => setCoverage(e.target.value)}
+          className="mt-1 block w-full rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-[13px] font-normal text-gray-900"
+        >
+          <option value="">Choose…</option>
+          {COVERAGE_PROMPT.options.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      {needsCaReg && (
+        <div className="mt-2">
+          <div className="text-[12px] font-semibold text-gray-700">{CA_REGULATOR_PROMPT.question}</div>
+          <ul className="mt-1 list-disc pl-4 text-[11.5px] text-gray-500">
+            {CA_REGULATOR_PROMPT.help.slice(0, 3).map((h) => (
+              <li key={h}>{h}</li>
+            ))}
+          </ul>
+          <div className="mt-1.5 flex flex-col gap-1">
+            {CA_REGULATOR_PROMPT.options.map((o) => (
+              <label key={o.value} className="flex items-center gap-2 text-[12.5px] text-gray-800">
+                <input
+                  type="radio"
+                  name="ca-regulator"
+                  checked={caReg === o.value}
+                  onChange={() => setCaReg(o.value)}
+                />
+                {o.label}
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+      {needsWaOptIn && (
+        <div className="mt-2">
+          <div className="text-[12px] font-semibold text-gray-700">{WA_BBPA_PROMPT.question}</div>
+          <div className="mt-0.5 text-[11.5px] text-gray-500">
+            {WA_BBPA_PROMPT.help}{" "}
+            <a href={WA_BBPA_PROMPT.listUrl} target="_blank" rel="noopener noreferrer" className="text-blue-600 underline">
+              Check the live list
+            </a>
+          </div>
+          <div className="mt-1.5 flex gap-4">
+            {[
+              { v: "true", label: "Yes, it's on the list" },
+              { v: "false", label: "No / I don't know" },
+            ].map((o) => (
+              <label key={o.v} className="flex items-center gap-2 text-[12.5px] text-gray-800">
+                <input
+                  type="radio"
+                  name="wa-optin"
+                  checked={waOptIn === o.v}
+                  onChange={() => setWaOptIn(o.v)}
+                />
+                {o.label}
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+      <div className="mt-2.5 flex items-center gap-2">
+        <button
+          type="button"
+          disabled={!canSave || busy}
+          onClick={() => void save()}
+          className="inline-flex items-center rounded-lg bg-blue-600 px-3.5 py-1.5 text-[12.5px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {busy ? "Saving…" : "Confirm my choices"}
+        </button>
+        {err && <span className="text-[12px] text-red-600">Couldn&apos;t save — try again.</span>}
+        <span className="text-[11.5px] text-gray-400">The general directory below works either way.</span>
+      </div>
+    </div>
+  );
+}
+
 export function CaseRail({
   groups,
   claimId,
@@ -511,6 +657,8 @@ export function CaseRail({
   onSaveFirstContactDate,
   onRefetch,
   onStepInteraction,
+  onClassificationSaved,
+  onAnswerDenialBasis,
 }: {
   /**
    * S303 — the rail arrives COMPOSED. ClaimDetail composes once (composeRail)
@@ -563,6 +711,12 @@ export function CaseRail({
    *  regulator doors, collections). ClaimDetail collapses the savings math on
    *  it: interacting with a later step means the answer has been read. One
    *  hook at the one write funnel (runClaimStep), not per-step wiring. */
+  /** S325 — receives the SAVED classification for an instant recompose (no
+   *  GET round-trip); called with nothing to request a refetch instead. */
+  onClassificationSaved?: (c?: RegulatoryClassification) => void | Promise<void>;
+  /** S325 — optimistic denial-basis answer (the owner applies it synchronously
+   *  and persists in the background). */
+  onAnswerDenialBasis?: (disputeId: string, basis: DenialBasis) => void;
   onStepInteraction?: () => void;
 }) {
   const router = useRouter();
@@ -1023,6 +1177,66 @@ export function CaseRail({
                   <div className="rounded-xl border border-gray-200 bg-white px-4 py-3.5">
                     <div className="text-[14px] font-bold text-gray-900">{reg.title}</div>
                     <div className="mb-2.5 mt-0.5 text-[12.5px] text-gray-500">{reg.lead}</div>
+                    {/* S325 (`forum_menu_v1`) — the routed state: screening
+                        first (once per plan), then any jurisdiction notice,
+                        then the denial-basis fact question (insurer letters).
+                        The door grid below always renders — generic while
+                        unanswered, routed after. */}
+                    {reg.routed?.screeningNeeded && reg.routed.planId && (
+                      <ForumScreeningPanel
+                        planId={reg.routed.planId}
+                        getAuthToken={getAuthToken}
+                        onSaved={onClassificationSaved}
+                      />
+                    )}
+                    {reg.routed?.notice && (
+                      <div className="mb-2.5 rounded-[10px] border border-amber-200 bg-amber-50/70 px-3 py-2 text-[12.5px] text-amber-900">
+                        {reg.routed.notice}
+                      </div>
+                    )}
+                    {reg.routed?.denialBasisNeeded && (
+                      <div className="mb-2.5 rounded-[10px] border border-gray-200 bg-gray-50/70 px-3 py-2">
+                        <div className="text-[12.5px] font-semibold text-gray-800">
+                          What did the plan&apos;s letter say the denial was based on?
+                        </div>
+                        <div className="mt-0.5 text-[11.5px] text-gray-500">
+                          Read it off your own denial notice — it decides whether the free, binding
+                          Independent Medical Review doors apply.
+                        </div>
+                        <div className="mt-1.5 flex flex-wrap gap-2">
+                          {(
+                            [
+                              ["medical_necessity", "Not medically necessary"],
+                              ["experimental", "Experimental / investigational"],
+                              ["other", "Something else / billing"],
+                            ] as Array<[DenialBasis, string]>
+                          ).map(([basis, label]) => (
+                            <button
+                              key={basis}
+                              type="button"
+                              onClick={() => {
+                                if (onAnswerDenialBasis) {
+                                  // Optimistic: the owner recomposes the rail
+                                  // synchronously and persists in the background.
+                                  onAnswerDenialBasis(s.move.disputeId, basis);
+                                  return;
+                                }
+                                void (async () => {
+                                  const ok = await runGuideStep({
+                                    stepId: `packD:screen:denialBasis:${s.move.disputeId}`,
+                                    note: basis,
+                                  });
+                                  if (ok) await onRefetch();
+                                })();
+                              }}
+                              className="inline-flex items-center rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-[12.5px] font-semibold text-gray-800 hover:border-blue-400"
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                     {/* Two rows of two (Andrew, S303 mock). A GRID, not a wrap:
                         grid cells stretch to the tallest in their row, and each
                         tile pins its controls with mt-auto — so every field and
@@ -1073,7 +1287,39 @@ export function CaseRail({
                               <span className="mt-0.5 block text-[12px] text-gray-500">
                                 {d.desc}
                               </span>
+                              {d.phone && (
+                                <span className="mt-0.5 block text-[11.5px] text-gray-400">{d.phone}</span>
+                              )}
+                              {/* S325 test round 1 (Andrew): EVERY door is
+                                  member-filed, so the badge is universal on the
+                                  routed grid — marking only the letter-wall
+                                  (actionOnly) subset read as an inconsistency.
+                                  actionOnly stays a composition wall, not a
+                                  badge condition. */}
+                              {reg.routed != null && (
+                                <span className="mt-1 inline-flex items-center rounded-full bg-violet-50 px-2 py-[2px] text-[10.5px] font-semibold text-violet-700 ring-1 ring-inset ring-violet-200">
+                                  You file this yourself
+                                </span>
+                              )}
                             </a>
+                            {(d.cannotLines?.length ?? 0) > 0 && (
+                              <details className="mt-1 text-[11.5px] text-gray-500">
+                                <summary className="cursor-pointer select-none font-semibold text-gray-600">
+                                  What this agency can&apos;t do
+                                </summary>
+                                <ul className="mt-1 list-disc pl-4">
+                                  {d.cannotLines!.map((c) => (
+                                    <li key={c}>{c}</li>
+                                  ))}
+                                </ul>
+                              </details>
+                            )}
+                            {d.noLimitationNote && (
+                              <div className="mt-1 text-[11.5px] text-gray-400">
+                                This board does not publish a jurisdictional limitation on billing
+                                disputes.
+                              </div>
+                            )}
                             <div className="mt-auto flex items-center gap-2 pt-2.5">
                               <input
                                 type="text"

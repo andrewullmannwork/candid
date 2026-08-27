@@ -160,6 +160,12 @@ jobs:
         # those values exist only when there IS community data, so a scan would
         # pass vacuously and stay green.
         run: npx tsx scripts/calibration/fixtures/legal/case-file.ts
+      - name: Letter geo-gate — the CA legal gate stays fail-closed (S324)
+        # The geo-gate's watchdog (27 checks) was built with #315 but never
+        # CI-wired — an un-wired fixture rots silently (S308), and this one
+        # guards a LEGAL gate: negotiation blocked for CA, unknown state fails
+        # closed, geo evaluated before tier, the escalate-ladder tripwire.
+        run: npx tsx scripts/calibration/fixtures/legal/letter-geo-gate.ts
       - name: Citation registry — every cite verified, banned forms locked out (S325)
         # The citation sync guard (PR-A, C2). A citation-shaped literal in the
         # disputes/legal lanes must be covered by a CITATION_REGISTRY entry
@@ -170,6 +176,15 @@ jobs:
         # pinned byte-exact; and the C4 posture statics hold (auto-routing can
         # never reach a negotiate/validate instrument).
         run: npx tsx scripts/calibration/fixtures/legal/citation-registry.ts
+      - name: Forum router — the four counsel invariants + misroute locks (S325)
+        # Memo 05's router invariants over the merged forums registry: every
+        # licensing/criminal forum is action-only (letterString null, composer
+        # throws — CRPC 3.10 / extortion shape); `cannot` stays verbatim agency
+        # language; zero-forum results render honestly; and the memo-04
+        # caught-and-fixed misroutes stay fixed (.030 behavioral-health only,
+        # ground ambulance = .200, unknown→DMHC, self-funded exclusions, the
+        # generic doors byte-exact for the flag-OFF path).
+        run: npx tsx scripts/calibration/fixtures/legal/forum-router.ts
       - name: Letter tracks — which parties a claim has evidence against (S304/S305)
         # Written at S304 and never wired in; registered here now that the rung
         # offer reads it. Locks the SILENCE cases first: `overcharge` — the

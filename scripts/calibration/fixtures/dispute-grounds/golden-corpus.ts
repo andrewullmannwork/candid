@@ -430,6 +430,60 @@ for (const { type, findings } of ZERO_BUG_TYPES) {
   check("ERISA employer request asks the plan to confirm the appeal-received date", insReqErisa.includes(APPEAL_DATE_ASK));
   check("non-employer insurer request OMITS the ERISA claim-file cite", !insReq.includes(CLAIMFILE));
 
+  // ── S325 PR-B — routed consequences: a member whose plan-level screening
+  //    answers (regulatory_classification) identify their regulator gets the
+  //    counsel-verified agency sentence; no classification (all cases above)
+  //    stays byte-identical neutral — pinned by the untouched snapshots. ──
+  const routedCls = {
+    coverageType: "commercial_fully_insured",
+    caRegulator: "DMHC",
+    source: "user_screening",
+    answeredAt: "2026-08-26T00:00:00Z",
+  };
+  const insReqRoutedCa = buildRequestSection({
+    evidence: evFrom([evidenceLine(makeFinding(), "li-routed-ca")]),
+    planContext: { userState: "CA", plan: { regulatoryClassification: routedCls } } as unknown as PlanContext,
+    recipient: "insurer", demandsEnabled: true,
+  });
+  snapshot("insurer_request.routed_ca_dmhc", insReqRoutedCa);
+  check(
+    "routed CA/DMHC consequence names the DMHC Help Center (counsel sentence)",
+    insReqRoutedCa.includes("California Department of Managed Health Care Help Center (1-888-466-2219; TDD 1-877-688-9891)"),
+    insReqRoutedCa,
+  );
+  check(
+    "routed consequence displaces the neutral sentence",
+    !insReqRoutedCa.includes("regulatory complaint avenues available to me"),
+  );
+  const provReqRoutedWa = buildRequestSection({
+    evidence: evFrom([evidenceLine(makeFinding(), "li-routed-wa")]),
+    planContext: {
+      userState: "WA",
+      plan: { regulatoryClassification: { ...routedCls, caRegulator: undefined } },
+    } as unknown as PlanContext,
+    recipient: "provider", demandsEnabled: true,
+  });
+  snapshot("provider_request.routed_wa", provReqRoutedWa);
+  check(
+    "routed WA provider consequence is the AG/CPA counsel sentence",
+    provReqRoutedWa.includes("Washington State Office of the Attorney General, Consumer Protection Division") &&
+      provReqRoutedWa.includes("chapter 19.86 RCW"),
+    provReqRoutedWa,
+  );
+  const insReqSelfFunded = buildRequestSection({
+    evidence: evFrom([evidenceLine(makeFinding(), "li-routed-sf")]),
+    planContext: {
+      userState: "CA",
+      plan: { regulatoryClassification: { ...routedCls, coverageType: "employer_self_funded" } },
+    } as unknown as PlanContext,
+    recipient: "insurer", demandsEnabled: true,
+  });
+  check(
+    "self-funded classification stays NEUTRAL (no state forum has jurisdiction)",
+    insReqSelfFunded.includes("regulatory complaint avenues available to me"),
+    insReqSelfFunded,
+  );
+
   // A.2 — duplicate_charge now routes through buildRequestSection → carries the itemized ask + (owes>0) the hold.
   const dupReq = renderGenerateON("duplicate_charge", bill,
     [makeFinding({ type: "duplicate", title: "Duplicate charge", estimatedOvercharge: 120, billedAmount: 120 })],

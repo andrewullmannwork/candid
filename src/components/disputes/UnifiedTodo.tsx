@@ -268,7 +268,7 @@ export interface UnifiedTodoProps {
     firstContactDateLabel: string | null;
     validationDeadlineLabel: string | null;
   } | null;
-  guidedPackD?: { suggested: Array<"ag" | "cfpb" | "cms" | "doi"> } | null;
+  guidedPackD?: { suggested: Array<string> } | null; // S325: door ids widened (forum registry fold)
   /** Persisted per-row notes from dispute.metadata.checklistNotes. */
   initialNotes?: Record<string, string>;
   /** Persist one note (fire-and-forget; local state is optimistic). */

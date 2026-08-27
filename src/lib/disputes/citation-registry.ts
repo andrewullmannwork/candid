@@ -99,6 +99,136 @@ export const CITATION_REGISTRY: Record<string, CitationEntry> = {
     verified: "2026-08-26",
     note: "The corrected form — 'HIPAA Section 164.524' conflated the statute with its CFR regulation.",
   },
+  // --- California (S325 PR-B — the forum menu's verified statutes) ---------
+  ca_knox_keene: {
+    cite: "Knox-Keene Health Care Service Plan Act of 1975, Health & Safety Code § 1340 et seq.",
+    label: "The act under which the DMHC licenses most CA commercial plans (incl. most PPOs/EPOs).",
+    verified: "2026-08-26",
+  },
+  ca_ins_code_imr: {
+    cite: "California Insurance Code §§ 10169–10169.5",
+    label: "CDI's Independent Medical Review program (binding on the insurer, free).",
+    verified: "2026-08-26",
+  },
+  ca_fair_pricing_act: {
+    cite: "Hospital Fair Pricing Act, Health & Safety Code §§ 127400–127446",
+    label: "CA hospital charity-care/discount obligations (≤400% FPL; HCAI-administered).",
+    verified: "2026-08-26",
+  },
+  ca_fair_pricing_no_deadline: {
+    cite: "Health & Safety Code § 127405(e)(3)",
+    label: "A hospital may not impose time limits on charity-care applications.",
+    verified: "2026-08-26",
+  },
+  ca_ab2297: {
+    cite: "AB 2297 (Ch. 511, Stats. 2024)",
+    label: "No asset test for CA hospital financial assistance (eff. 2025-01-01).",
+    verified: "2026-08-26",
+    note: "The credit-reporting prohibition is SB 1061's — always cite BOTH (memo 04 flag 14).",
+  },
+  ca_sb1061: {
+    cite: "SB 1061 (Ch. 520, Stats. 2024)",
+    label: "No adverse credit reporting of CA hospital debt (eff. 2025-01-01).",
+    verified: "2026-08-26",
+  },
+  ca_facility_licensing: {
+    cite: "Health & Safety Code §1250 et seq.",
+    label: "CA health-facility licensing (CDPH Licensing & Certification).",
+    verified: "2026-08-26",
+  },
+  ca_rosenthal: {
+    cite: "Rosenthal Fair Debt Collection Practices Act, Civ. Code §1788 et seq.",
+    label: "CA debt-collection conduct rules — reach original creditors, EXCEPT §1692g validation (§1788.17 carve-back).",
+    verified: "2026-08-26",
+  },
+  ca_dcla: {
+    cite: "Debt Collection Licensing Act, Fin. Code §100000 et seq.",
+    label: "CA debt-collector licensing (NMLS lookup is fact-finding, never an assertion).",
+    verified: "2026-08-26",
+  },
+  // --- Washington ----------------------------------------------------------
+  wa_external_review: {
+    cite: "RCW 48.43.535(8)",
+    label: "WA independent external review; carriers must pay the IRO and implement its determination.",
+    verified: "2026-08-26",
+    note: "Two live versions; the second takes effect 2027-01-01 — re-diff before then.",
+  },
+  wa_carrier_timelines: {
+    cite: "RCW 48.43.530",
+    label: "WA carrier grievance-process timelines (blown timelines excuse exhaustion).",
+    verified: "2026-08-26",
+  },
+  wa_iro_notice_rule: {
+    cite: "WAC 284-43-3150(5)",
+    label: "The carrier's internal-determination notice must state the 180-day external-review window (a carrier-DISCLOSURE rule — phrase it as such).",
+    verified: "2026-08-26",
+  },
+  wa_health_plan_def: {
+    cite: "RCW 48.43.005",
+    label: "WA 'health plan' definition — self-funded employer plans are excluded definitionally.",
+    verified: "2026-08-26",
+  },
+  wa_bbpa_chapter: {
+    cite: "chapter 48.49 RCW",
+    label: "WA Balance Billing Protection Act (the chapter).",
+    verified: "2026-08-26",
+  },
+  wa_bbpa_prohibition: {
+    cite: "RCW 48.49.020(2)(c)",
+    label: "The GENERAL balance-billing prohibition is .020(1); the enrollee refund (30 business days + 12%) is .020(2)(c).",
+    verified: "2026-08-26",
+    note: "NEVER cite .030 as the general rule (memo 04 §0.5 / flag 12 — behavioral-health only).",
+  },
+  wa_bbpa_bh: {
+    cite: "RCW 48.49.030(1)(e)",
+    label: "Behavioral-health emergency services ONLY: (1)(a) satisfies-obligation; (1)(e) provider refund duty.",
+    verified: "2026-08-26",
+  },
+  wa_bbpa_optin: {
+    cite: "RCW 48.49.130",
+    label: "Self-funded plans reach the BBPA only by election (check the OIC list live).",
+    verified: "2026-08-26",
+  },
+  wa_bbpa_ground: {
+    cite: "RCW 48.49.200",
+    label: "WA ground-ambulance balance billing — its OWN section, plans issued/renewed 2025+ (never cite .020 for ground ambulance).",
+    verified: "2026-08-26",
+  },
+  wa_uda: {
+    cite: "Uniform Disciplinary Act, chapter 18.130 RCW",
+    label: "WA provider professional-conduct discipline (DOH HSQA).",
+    verified: "2026-08-26",
+  },
+  wa_uda_refund: {
+    cite: "RCW 18.130.160(11)",
+    label: "A DOH fee refund exists only as a post-hearing disciplinary sanction — never a consumer remedy to request.",
+    verified: "2026-08-26",
+  },
+  wa_cpa: {
+    cite: "Consumer Protection Act, chapter 19.86 RCW; RCW 19.86.020",
+    label: "WA unfair/deceptive practices prohibition (the AG's charity-care enforcement hook).",
+    verified: "2026-08-26",
+  },
+  wa_cpa_enforcement: {
+    cite: "RCW 19.86.080",
+    label: "AG suit authority incl. restoration of money obtained by unlawful practices.",
+    verified: "2026-08-26",
+  },
+  wa_charity_statute: {
+    cite: "RCW 70.170.060(5)(c)(iii)(A)",
+    label: "WA hospital charity care: tiers at (5); screening-precedes-collection at (10)(c); asset-info bar at (5)(c)(iv).",
+    verified: "2026-08-26",
+  },
+  wa_charity_wac: {
+    cite: "WAC 246-453-020",
+    label: "WA charity-care procedure: collection precluded pending determination; 14-day processing; 30-day refunds.",
+    verified: "2026-08-26",
+  },
+  wa_charity_penalties: {
+    cite: "RCW 70.170.070",
+    label: "WA charity-care penalties — pre-2018-renumbering text; the AG's CPA route is stronger for screening violations.",
+    verified: "2026-08-26",
+  },
 } as const;
 
 /** Every registered exact citation string — the fixture's coverage universe. */
