@@ -49,6 +49,8 @@ import {
   route,
 } from "../../../../src/lib/disputes/forums";
 import { CITATION_REGISTRY } from "../../../../src/lib/disputes/citation-registry";
+import { routedConsequence, FORUM_BY_ID } from "../../../../src/lib/disputes/forums";
+import { routedPoolForLetter } from "../../../../src/lib/case/rail-steps";
 
 let pass = 0;
 let fail = 0;
@@ -240,6 +242,89 @@ check("VERIFIED_ON stamped", /^\d{4}-\d{2}-\d{2}$/.test(VERIFIED_ON));
 check("ENROLLMENT_SPLIT is internal-only", ENROLLMENT_SPLIT.useAsLetterCopy === false);
 const templatesSrc = readFileSync(resolve(__dirname, "../../../../src/lib/disputes/templates.ts"), "utf8");
 check("templates.ts never imports ENROLLMENT_SPLIT", !templatesSrc.includes("ENROLLMENT_SPLIT"));
+
+// --- S325 PR-B: the routed letter consequence (site B upgrade) ---------------
+const caCls = {
+  coverageType: "commercial_fully_insured" as const,
+  caRegulator: "DMHC" as const,
+  source: "user_screening" as const,
+  answeredAt: "2026-08-26T00:00:00Z",
+};
+const caRouted = routedConsequence(caCls, "CA", "insurer");
+check(
+  "routedConsequence CA/DMHC insurer = the DMHC Help Center counsel sentence, leading-space convention",
+  !!caRouted && caRouted.startsWith(" ") && caRouted.includes("California Department of Managed Health Care Help Center"),
+  caRouted,
+);
+check(
+  "routedConsequence CA/CDI insurer names the CDI",
+  (routedConsequence({ ...caCls, caRegulator: "CDI" }, "CA", "insurer") ?? "").includes(
+    "Health Request for Assistance with the California Department of Insurance",
+  ),
+);
+check(
+  "routedConsequence WA provider = the AG/CPA sentence",
+  (routedConsequence({ ...caCls, caRegulator: undefined }, "WA", "provider") ?? "").includes(
+    "chapter 19.86 RCW",
+  ),
+);
+check(
+  "routedConsequence self-funded → null (neutral; no state forum has jurisdiction)",
+  routedConsequence({ ...caCls, coverageType: "employer_self_funded" }, "CA", "insurer") === null,
+);
+check("routedConsequence null classification → null", routedConsequence(null, "CA", "insurer") === null);
+check("routedConsequence non-CA/WA → null", routedConsequence(caCls, "TX", "insurer") === null);
+
+// --- S325 PR-B: the routed rail pool (pure composer half) --------------------
+const fm = (over: Partial<Parameters<typeof routedPoolForLetter>[0]> = {}) => ({
+  classification: caCls,
+  userState: "CA",
+  denialBasisByDispute: {},
+  planId: "plan-1",
+  ...over,
+});
+const insurerLetter = { recipientKind: "insurer", letterType: "insurance_appeal", disputeId: "d1" };
+
+const unanswered = routedPoolForLetter(fm({ classification: null }), insurerLetter);
+check(
+  "no classification → screening needed + the generic directory stays available",
+  unanswered.screeningNeeded && unanswered.doors.map((d) => d.id).join(",") === "ag,cfpb,cms,doi",
+);
+const noBasis = routedPoolForLetter(fm(), insurerLetter);
+check(
+  "insurer letter without a denial-basis answer → basis question + the complaint door meanwhile",
+  noBasis.denialBasisNeeded && noBasis.doors.some((d) => d.id === "ca_dmhc_complaint") && !noBasis.doors.some((d) => d.id === "ca_dmhc_imr"),
+);
+const mnBasis = routedPoolForLetter(fm({ denialBasisByDispute: { d1: "medical_necessity" } }), insurerLetter);
+check(
+  "medical-necessity basis → IMR door appears, external review ordered before the complaint (fixed role order)",
+  mnBasis.doors.map((d) => d.id).join(",") === "ca_dmhc_imr,ca_dmhc_complaint" && !mnBasis.denialBasisNeeded,
+);
+const provPool = routedPoolForLetter(fm(), { recipientKind: "provider", letterType: "overcharge", disputeId: "d2" });
+check(
+  "CA provider letter → the billing-conduct pool with the action-only units flagged",
+  provPool.doors.some((d) => d.id === "ca_ag_piu" && !d.actionOnly) &&
+    provPool.doors.some((d) => d.id === "ca_cdi_fraud" && d.actionOnly),
+);
+const negoPool = routedPoolForLetter(fm(), { recipientKind: "provider", letterType: "negotiation", disputeId: "d3" });
+check(
+  "negotiation (self-pay) letter → the affordability pool (HCAI charity care)",
+  negoPool.doors.length === 1 && negoPool.doors[0].id === "ca_hcai_charity_care",
+);
+const txPool = routedPoolForLetter(fm({ userState: "TX" }), insurerLetter);
+check(
+  "non-CA/WA member → generic directory, no screening",
+  !txPool.screeningNeeded && txPool.doors.map((d) => d.id).join(",") === "ag,cfpb,cms,doi",
+);
+const medicarePool = routedPoolForLetter(
+  fm({ classification: { ...caCls, coverageType: "medicare" } }),
+  insurerLetter,
+);
+check(
+  "medicare classification → zero doors + the jurisdiction notice",
+  medicarePool.doors.length === 0 && !!medicarePool.notice,
+);
+check("FORUM_BY_ID resolves routed AND generic door ids", !!FORUM_BY_ID["ca_dmhc_complaint"] && !!FORUM_BY_ID["ag"]);
 
 // -----------------------------------------------------------------------------
 console.log(`\nforum-router fixture: ${pass} passed, ${fail} failed`);

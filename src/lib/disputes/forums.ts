@@ -1309,6 +1309,60 @@ export function orderForums(forums: readonly Forum[]): Forum[] {
   });
 }
 
+/** Every forum keyed by its public id (ids fixture-proven unique). */
+export const FORUM_BY_ID: Record<string, Forum> = Object.fromEntries(
+  Object.values(ALL_FORUMS).map((f) => [f.id, f]),
+);
+
+/**
+ * The member's answer to "what did the plan's letter say the denial was based
+ * on?" — a fact read off their own denial notice (never a detector). Narrows
+ * the insurer-letter DisputeKind: IMR forums exist only for the first two.
+ */
+export type DenialBasis = "medical_necessity" | "experimental" | "other";
+
+export function disputeKindForInsurerLetter(basis: DenialBasis): DisputeKind {
+  return basis === "medical_necessity"
+    ? "medical_necessity_denial"
+    : basis === "experimental"
+      ? "experimental_denial"
+      : "claim_billing_dispute";
+}
+
+/**
+ * The routed letter-consequence sentence (site B upgrade, PR-B): when the
+ * member's own screening answers identify their regulator, the letter's
+ * closing names it with the counsel-verified sentence; otherwise null and the
+ * caller falls back to the neutral constant. Data-driven, flag-independent:
+ * the classification exists only when the flag-ON screening wrote it, so
+ * flag-OFF letters are byte-identical to the neutral PR-A output.
+ *
+ * Deliberately narrow: only the single payer-complaint forum for insurer
+ * letters (DMHC/CDI/OIC complaint tracks) and the state AG consumer-protection
+ * sentence for provider letters. Self-funded / Medicare / Medicaid / unknown →
+ * null (neutral) — their jurisdiction lives outside these sentences.
+ */
+export function routedConsequence(
+  classification: RegulatoryClassification | null | undefined,
+  userState: string | null | undefined,
+  recipient: "insurer" | "provider",
+): string | null {
+  if (!classification || (userState !== "CA" && userState !== "WA")) return null;
+  if (classification.coverageType !== "commercial_fully_insured") return null;
+  if (recipient === "provider") {
+    const f = userState === "CA" ? CA_BILLING_CONDUCT_FORUMS.ca_ag_piu : WA_FORUMS.wa_ag;
+    return ` ${forumLetterString(f)}`;
+  }
+  const result = route({
+    state: userState,
+    coverage: classification.coverageType,
+    dispute: "claim_billing_dispute",
+    caRegulator: classification.caRegulator,
+  });
+  const complaint = result.forums.find((f) => f.role === "consumer_complaint" && !f.actionOnly);
+  return complaint ? ` ${forumLetterString(complaint)}` : null;
+}
+
 // ===========================================================================
 // DEAD ENDS — an empty menu is a product failure; render these instead.
 // ===========================================================================

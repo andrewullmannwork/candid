@@ -24,6 +24,7 @@
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { isFeatureEnabled } from "@/lib/config/product-flags";
+import type { RegulatoryClassification } from "./forums";
 
 export interface AppealsAddress {
   line1: string;
@@ -80,6 +81,13 @@ export interface ResolvedPlan {
   insurerName: string | null;
   planType: string | null;
   canonicalPlanId: string | null;
+  /**
+   * S325 (PR-B) — the member's plan-level screening answers
+   * (insurance_plans.metadata.regulatory_classification): coverage type + the
+   * regulator their own documents name. Written by the flag-ON forum-menu
+   * screening; read by the routed letter consequence. Null until answered.
+   */
+  regulatoryClassification: RegulatoryClassification | null;
 }
 
 /**
@@ -362,7 +370,7 @@ export async function resolvePlanContext(
   // upload, which is often NOT the user's currently-active plan.
   const { data: userPlans } = await supabase
     .from("insurance_plans")
-    .select("id, plan_name, plan_year, insurer_name, plan_type, canonical_plan_id, coverage_period_start, coverage_period_end, created_at, is_active")
+    .select("id, plan_name, plan_year, insurer_name, plan_type, canonical_plan_id, coverage_period_start, coverage_period_end, created_at, is_active, metadata")
     .eq("user_id", userId)
     .order("created_at", { ascending: false });
 
@@ -411,7 +419,7 @@ export async function resolvePlanContext(
     const { data: pinnedRow } = await supabase
       .from("insurance_plans")
       .select(
-        "id, plan_name, plan_year, insurer_name, plan_type, canonical_plan_id, coverage_period_start, coverage_period_end, created_at, is_active",
+        "id, plan_name, plan_year, insurer_name, plan_type, canonical_plan_id, coverage_period_start, coverage_period_end, created_at, is_active, metadata",
       )
       .eq("id", params.pinnedInsurancePlanId)
       .eq("user_id", userId)
@@ -439,7 +447,7 @@ export async function resolvePlanContext(
     const { data: anchorRow } = await supabase
       .from("insurance_plans")
       .select(
-        "id, plan_name, plan_year, insurer_name, plan_type, canonical_plan_id, coverage_period_start, coverage_period_end, created_at, is_active",
+        "id, plan_name, plan_year, insurer_name, plan_type, canonical_plan_id, coverage_period_start, coverage_period_end, created_at, is_active, metadata",
       )
       .eq("id", claimPinnedPlanId)
       .eq("user_id", userId)
@@ -516,6 +524,9 @@ export async function resolvePlanContext(
       insurerName: p.insurer_name,
       planType: p.plan_type,
       canonicalPlanId: p.canonical_plan_id,
+      regulatoryClassification:
+        (((p as { metadata?: Record<string, unknown> | null }).metadata
+          ?.regulatory_classification ?? null) as RegulatoryClassification | null),
     } : null;
 
   const activeFor = resolvedPlan ?? fallbackPlan;
@@ -954,6 +965,9 @@ async function lookupArchiveCanonical(
     insurerName: insurer?.name ?? null,
     planType: match.plan_type ?? null,
     canonicalPlanId: match.id,
+    // A canonical archive row is reference data, not the member's plan row —
+    // it carries no screening answers.
+    regulatoryClassification: null,
   };
 }
 

@@ -629,7 +629,13 @@ export function isLiveDraftStatus(status: string | null | undefined): boolean {
 // service-not-rendered insurer ask becomes reprocess-and-correct-my-share
 // (the plan-side "reverse"/"investigate and recoup" recoupment demands are
 // out — one posture per letter, C4). Stored drafts re-draft once.
-export const LETTER_COMPOSE_VERSION = "s324.1";
+//
+// s324.1 → s325.1 — PR-B routed consequences: a member whose screening
+// answers identify their regulator (plan-level regulatory_classification)
+// gets the counsel-verified agency sentence in the letter closing (DMHC/CDI/
+// OIC complaint tracks; state-AG for provider letters). No classification →
+// byte-identical to the s324.1 neutral output. Stored drafts re-draft once.
+export const LETTER_COMPOSE_VERSION = "s325.1";
 
 /**
  * S312 (T4, Andrew's ruling) — the ONE lifecycle word a letter surface may

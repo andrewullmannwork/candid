@@ -30,6 +30,7 @@ import { genuineSends, type GenuineSend } from "@/lib/disputes/prior-contact";
 import type { ProjectedLetterStep, ProjectedRegulatorComplaint } from "@/lib/case/timeline-projector";
 import { COMPLAINT_DOORS } from "@/lib/guides/pack-registry";
 import { letterRailCopy } from "@/lib/guides/pack-registry";
+import { FORUM_BY_ID } from "@/lib/disputes/forums";
 
 export interface EvidenceSection {
   /**
@@ -492,7 +493,14 @@ function regulatorSection(regulator: ProjectedRegulatorComplaint | null, sent: P
   if (filings.length === 0) return "";
   return filings
     .map((f) => {
-      const door = COMPLAINT_DOORS.find((d) => d.id === f.doorId);
+      // S325 — routed doors (forum_menu_v1) file under verified-forum ids
+      // (e.g. "ca_dmhc_complaint"); the registry resolves those, and the
+      // legacy projection resolves the four generic ids. Same prefix-scanned
+      // record either way — a filing never loses its name.
+      const forum = FORUM_BY_ID[f.doorId];
+      const door = forum
+        ? { name: forum.agency }
+        : COMPLAINT_DOORS.find((d) => d.id === f.doorId);
       const about = sent.find((l) => l.disputeId === f.disputeId);
       return `  • ${door?.name ?? f.doorId} — filed ${fmtDay(f.filedAt)}${f.note ? `, confirmation ${f.note}` : ""}${about ? `\n      About: the ${letterNoun(about.letterType)}` : ""}`;
     })

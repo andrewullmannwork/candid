@@ -24,6 +24,7 @@ import { AddPlanDetailsModal } from "@/components/claims/AddPlanDetailsModal";
 import type { CostShareAssumption, CostShareOverrides } from "@/lib/claims/recovery-math";
 import { hasPendingAssumption } from "@/lib/claims/recovery-math";
 import { useFeatureFlag } from "@/lib/config/use-feature-flag";
+import type { DenialBasis, RegulatoryClassification } from "@/lib/disputes/forums";
 import { GuidedPhoneSteps, ShowFullStepButton, derivePhonePackState, samePhonePackState, type GuideStepState, type PhonePackState } from "@/components/claims/GuidedPhoneSteps";
 import { CaseRail, CaseResolvedFold, RailStep } from "@/components/claims/CaseRail";
 import { CaseFileBlock } from "@/components/claims/CaseFileBlock";
@@ -701,6 +702,8 @@ export function ClaimDetail({
   // Guided Steps v1 (S297) — one flag gates the phone subflow AND the done-
   // step rail collapse. OFF (or still loading) = today's page, byte-identical.
   const guidedStepsFlag = useFeatureFlag("guided_steps_v1");
+  // S325 PR-B — the verified forum menu (routed regulator doors + screening).
+  const forumMenuFlag = useFeatureFlag("forum_menu_v1");
   // S299 phase 1a — the extended rail's UI flag (the event spine is gated
   // separately by case_timeline_v1; see mig 222).
   const caseRailFlag = useFeatureFlag("case_rail_v1");
@@ -921,6 +924,38 @@ export function ClaimDetail({
     | string
     | null
     | undefined;
+
+  // S325 PR-B — the member's plan-level screening answers + state, fetched
+  // when the forum-menu flag is on. Null until loaded → the rail keeps the
+  // legacy doors (graceful, same as flag-off) rather than flashing screening.
+  const [forumClassification, setForumClassification] = useState<{
+    classification: RegulatoryClassification | null;
+    userState: string | null;
+  } | null>(null);
+  const refetchForumClassification = useCallback(async () => {
+    try {
+      const token = await getAuthToken();
+      if (!token) return;
+      const qs = claimPlanId ? `?planId=${encodeURIComponent(claimPlanId)}` : "";
+      const res = await fetch(`/api/plan/regulatory-classification${qs}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return;
+      const body = (await res.json()) as {
+        classification: RegulatoryClassification | null;
+        userState: string | null;
+      };
+      setForumClassification({
+        classification: body.classification ?? null,
+        userState: body.userState ?? null,
+      });
+    } catch {
+      // fail-soft: rail falls back to the legacy doors
+    }
+  }, [claimPlanId, getAuthToken]);
+  useEffect(() => {
+    if (forumMenuFlag.enabled) void refetchForumClassification();
+  }, [forumMenuFlag.enabled, refetchForumClassification]);
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -2314,6 +2349,20 @@ export function ClaimDetail({
     ((claim.metadata as Record<string, unknown>)?.guideSteps as
       | Record<string, GuideStepState>
       | undefined) ?? {};
+  // Per-dispute denial-basis answers, read from the claim's own guide-step
+  // notes (`packD:screen:denialBasis:<disputeId>` — claim-scoped facts).
+  // Plain derivation, NOT a hook: this sits after the loading early-returns
+  // (beside guideStepsMeta) where a useMemo violates rules-of-hooks, and the
+  // scan is a handful of keys per render.
+  const denialBasisByDispute: Record<string, DenialBasis | undefined> = {};
+  for (const [key, v] of Object.entries(guideStepsMeta)) {
+    if (!key.startsWith("packD:screen:denialBasis:")) continue;
+    const basisDisputeId = key.slice("packD:screen:denialBasis:".length);
+    const note = (v as { note?: string | null } | undefined)?.note ?? null;
+    if (note === "medical_necessity" || note === "experimental" || note === "other") {
+      denialBasisByDispute[basisDisputeId] = note;
+    }
+  }
 
   // S305 — the letters this claim is OWED but has not written: an obligated
   // party with no letter of its own yet.
@@ -2397,6 +2446,17 @@ export function ClaimDetail({
           offers: railOffers,
           firstNumber: guidedCtx ? 5 : railStepRecover,
           insurerNameByDispute: railTimeline?.insurerNameByDispute ?? {},
+          // S325 — the forum-menu state: null (legacy doors) until the flag is
+          // on AND the classification fetch resolved; then the routed pool.
+          forumMenu:
+            forumMenuFlag.enabled && forumClassification
+              ? {
+                  classification: forumClassification.classification,
+                  userState: forumClassification.userState,
+                  denialBasisByDispute,
+                  planId: claimPlanId ?? null,
+                }
+              : null,
           providerName: providerName === "Unknown Provider" ? null : providerName,
           // Client clock — calendars are the user's timezone (letter-type.ts rule).
           now: new Date(),
@@ -4791,6 +4851,7 @@ export function ClaimDetail({
           )}
           <CaseRail
             onStepInteraction={() => setShowMath(false)}
+            onClassificationSaved={refetchForumClassification}
             // S303 — composed ONCE above, alongside the fold that reads it.
             groups={railComposed.groups}
             claimId={claimId}

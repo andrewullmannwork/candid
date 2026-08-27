@@ -108,6 +108,7 @@ const compose = (
     amberDays: 7,
   });
   const composed = composeRail({
+    forumMenu: null, // S325 — legacy-path fixture (flag off)
     letters: t.letters,
     // S303 — the case-level regulator record, straight off the projection the
     // rail is composing. Feeding it separately here is exactly the mistake the
