@@ -2,7 +2,7 @@
  * ExhaustionAttestModal — dispute-letters v2 Zone-3 (S266).
  *
  * External review (I2) is only available AFTER the plan's internal appeal is
- * exhausted (ACA §2719 / 45 CFR §147.136). The escalate route hard-gates on
+ * exhausted (PHSA §2719, 42 U.S.C. §300gg-19 / 45 CFR §147.136). The escalate route hard-gates on
  * appealExhausted.attested (fail-closed), so this modal collects the attestation
  * + the final-denial date before the "Request an external review" CTA fires.
  */

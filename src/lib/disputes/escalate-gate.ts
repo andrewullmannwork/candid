@@ -9,7 +9,7 @@
  *     the consumer-protection funnel, matching generate's "free to start, pay to
  *     escalate");
  *   - exhaustion: external_review requires an attested final internal denial
- *     (ACA §2719 / ERISA — the review is only available post-exhaustion).
+ *     (PHSA §2719 / ERISA — the review is only available post-exhaustion).
  *
  * Pure (no DB / no clock / no server imports) so it's unit-testable; the route
  * loads isPro from the subscription then calls this. Exercised by

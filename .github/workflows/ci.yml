@@ -160,6 +160,16 @@ jobs:
         # those values exist only when there IS community data, so a scan would
         # pass vacuously and stay green.
         run: npx tsx scripts/calibration/fixtures/legal/case-file.ts
+      - name: Citation registry — every cite verified, banned forms locked out (S325)
+        # The citation sync guard (PR-A, C2). A citation-shaped literal in the
+        # disputes/legal lanes must be covered by a CITATION_REGISTRY entry
+        # carrying a verified date; "ACA §2719" (not a real citation form),
+        # "Department of Insurance" (nonexistent in WA, wrong agency for ~94%
+        # of state-regulated CA members), and the C4 recoup clause are banned
+        # outright; the two Andrew-approved neutral consequence sentences are
+        # pinned byte-exact; and the C4 posture statics hold (auto-routing can
+        # never reach a negotiate/validate instrument).
+        run: npx tsx scripts/calibration/fixtures/legal/citation-registry.ts
       - name: Letter tracks — which parties a claim has evidence against (S304/S305)
         # Written at S304 and never wired in; registered here now that the rung
         # offer reads it. Locks the SILENCE cases first: `overcharge` — the

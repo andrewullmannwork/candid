@@ -138,9 +138,42 @@ export function selectObligationVoice(
     : element.voiceIfNot;
 }
 
+/**
+ * S325 (PR-A, C4) — a ground's remedy POSTURE. One letter carries ONE posture
+ * (§4b.4): a correction letter asserts an error and asks that it be fixed; a
+ * negotiation letter concedes validity and asks for a reduction; a validation
+ * letter challenges the debt's existence and must argue nothing else (arguing
+ * merits inside a §1692g letter is the "duplicative dispute" trap). Mixing
+ * postures in one instrument is the shape counsel flagged (the recoup clause
+ * was the live instance — a plan-side recoupment demand inside a member
+ * benefits letter). Every current ground is "correct" — grounds ARE evidence
+ * of billing/adjudication error; the negotiate/validate postures exist only
+ * as whole instruments the USER deliberately picks (never auto-routed — the
+ * citation-registry fixture pins that statically).
+ */
+export type GroundDisposition = "correct" | "negotiate" | "validate";
+
+/**
+ * The one posture each letter type speaks in. Exhaustive Record: a new letter
+ * type does not compile until it declares its posture.
+ */
+export const LETTER_DISPOSITION: Record<DisputeLetterType, GroundDisposition> = {
+  insurance_appeal: "correct",
+  external_review: "correct",
+  overcharge: "correct",
+  duplicate_charge: "correct",
+  balance_billing: "correct",
+  itemized_request: "correct",
+  final_notice: "correct",
+  negotiation: "negotiate",
+  debt_validation: "validate",
+};
+
 export interface DisputeGroundSpec {
   /** Strength / render order (the former private `TYPE_ORDER` in dispute-grounds.ts). */
   readonly order: number;
+  /** S325 (C4) — the ground's remedy posture; see {@link GroundDisposition}. */
+  readonly disposition: GroundDisposition;
   /**
    * The scorer's class for a line dominated by this ground (`classifyDisputeType` output /
    * `SPINE_TIER` key). The per-ground probative tier is `SPINE_TIER[scoringClass]` — we do NOT
@@ -214,6 +247,7 @@ export interface DisputeGroundSpec {
 export const DISPUTE_GROUND_CATALOG: Record<DisputeGroundType, DisputeGroundSpec> = {
   service_not_rendered: {
     order: 0,
+    disposition: "correct",
     scoringClass: "service_not_rendered", // attestation override (evidence-resolver), not classifyDisputeType
     autoLetterType: "overcharge", // fromFindings empty → never reached by deriveFindingToLetter
     requestBucket: "attested",
@@ -225,6 +259,7 @@ export const DISPUTE_GROUND_CATALOG: Record<DisputeGroundType, DisputeGroundSpec
   },
   balance_billing: {
     order: 1,
+    disposition: "correct",
     scoringClass: "balance_billing",
     autoLetterType: "balance_billing",
     requestBucket: "balanceBilling",
@@ -234,7 +269,8 @@ export const DISPUTE_GROUND_CATALOG: Record<DisputeGroundType, DisputeGroundSpec
       { element: "nsa_protection", party: "insurer", authority: "the No Surprises Act", condition: "nsa_applicable", voiceIfMet: "demand", voiceIfNot: "fall_to_facts" },
       { element: "nsa_protection", party: "provider", authority: "the No Surprises Act", condition: "nsa_applicable", voiceIfMet: "demand", voiceIfNot: "fall_to_facts" },
       // contracted-rate ≠ chargemaster (see header): the INSURER APPLIES the negotiated rate.
-      { element: "contracted_rate_apply", party: "insurer", authority: "the plan's duty to process at the contracted rate (§18.10.B)", condition: "contract_exists", voiceIfMet: "demand", voiceIfNot: "omit" },
+      // (the contracted-rate duty is plan §18.10.B — internal refs stay in comments, never in authority DATA that drives letter copy)
+      { element: "contracted_rate_apply", party: "insurer", authority: "the plan's duty to process at the contracted rate", condition: "contract_exists", voiceIfMet: "demand", voiceIfNot: "omit" },
       // Item B (R3 5.4 Phase 3) — PROVIDER side: an in-network provider accepts the contracted rate
       // as payment in full; billing the difference is a contractual breach. Patient-facing copy is
       // DATA-AWARE (templates.ts buildRequestSection cites the per-line $) — `contracted_rate_apply`
@@ -245,6 +281,7 @@ export const DISPUTE_GROUND_CATALOG: Record<DisputeGroundType, DisputeGroundSpec
   },
   duplicate: {
     order: 2,
+    disposition: "correct",
     scoringClass: "other", // duplicate-only line → classifyDisputeType falls through to "other"
     autoLetterType: "duplicate_charge",
     requestBucket: null, // no standalone request bucket today → fallback (post-R3 fix backlog)
@@ -254,6 +291,7 @@ export const DISPUTE_GROUND_CATALOG: Record<DisputeGroundType, DisputeGroundSpec
   },
   unbundling: {
     order: 3,
+    disposition: "correct",
     scoringClass: "benchmark", // unbundling finding → classifyDisputeType benchmark branch
     autoLetterType: "overcharge",
     requestBucket: null,
@@ -263,6 +301,7 @@ export const DISPUTE_GROUND_CATALOG: Record<DisputeGroundType, DisputeGroundSpec
   },
   coverage_contradiction: {
     order: 4,
+    disposition: "correct",
     scoringClass: "coverage_contradiction",
     autoLetterType: "overcharge", // missing_adjustment→overcharge in FINDING_TO_LETTER (byte-identical)
     requestBucket: "coverage",
@@ -272,11 +311,12 @@ export const DISPUTE_GROUND_CATALOG: Record<DisputeGroundType, DisputeGroundSpec
     // dispute wants the adjudication). D3's coverage_assertion / produce_plan_document are
     // plan-presence-gated → deferred to incr-5 (a `plan_on_file` predicate), not seeded here.
     obligationElements: [
-      { element: "plan_provision_basis", party: "insurer", authority: "29 CFR §2560.503-1 / ACA §2719 (full and fair review)", condition: null, voiceIfMet: "demand", voiceIfNot: "fall_to_facts" },
+      { element: "plan_provision_basis", party: "insurer", authority: "29 CFR §2560.503-1 / PHSA §2719 (full and fair review)", condition: null, voiceIfMet: "demand", voiceIfNot: "fall_to_facts" },
     ],
   },
   cost_share_misapplication: {
     order: 5,
+    disposition: "correct",
     scoringClass: "cost_share_misapplication",
     autoLetterType: "overcharge", // zero_cost_share_overcharge not in FINDING_TO_LETTER → default overcharge
     requestBucket: "costShare",
@@ -288,6 +328,7 @@ export const DISPUTE_GROUND_CATALOG: Record<DisputeGroundType, DisputeGroundSpec
   },
   benchmark: {
     order: 6,
+    disposition: "correct",
     scoringClass: "benchmark",
     autoLetterType: "overcharge",
     requestBucket: null,
@@ -297,6 +338,7 @@ export const DISPUTE_GROUND_CATALOG: Record<DisputeGroundType, DisputeGroundSpec
   },
   unallocated_balance: {
     order: 7,
+    disposition: "correct",
     scoringClass: "other",
     autoLetterType: "overcharge", // unallocated_balance not in FINDING_TO_LETTER → default overcharge
     requestBucket: null,
@@ -336,6 +378,7 @@ export const DISPUTE_GROUND_CATALOG: Record<DisputeGroundType, DisputeGroundSpec
   },
   coding_peer: {
     order: 8,
+    disposition: "correct",
     scoringClass: "coding_peer",
     autoLetterType: "overcharge", // fromFindings empty → never reached by deriveFindingToLetter
     requestBucket: "coding",
@@ -347,6 +390,7 @@ export const DISPUTE_GROUND_CATALOG: Record<DisputeGroundType, DisputeGroundSpec
   },
   chargemaster: {
     order: 9,
+    disposition: "correct",
     scoringClass: "benchmark", // statistical tier (same as unbundling/overcharge); NO new DisputeTypeClass
     autoLetterType: "overcharge",
     requestBucket: null, // finding-keyed data-aware ask in buildRequestSection (disputeType resolves to "benchmark", so it can't bucket-route); copy is NOT registry prose
@@ -372,6 +416,7 @@ export const DISPUTE_GROUND_CATALOG: Record<DisputeGroundType, DisputeGroundSpec
   // ask lives in templates.
   provider_overpayment: {
     order: 10,
+    disposition: "correct",
     scoringClass: "other",
     autoLetterType: "overcharge",
     requestBucket: null,
@@ -436,6 +481,17 @@ export function deriveFindingToParties(): Partial<Record<FindingType, readonly O
     const parties = Array.from(new Set(spec.obligationElements.map((e) => e.party)));
     if (parties.length === 0) continue;
     for (const f of spec.fromFindings) out[f] = parties;
+  }
+  return out;
+}
+
+/** S325 (C4) — finding type → its ground's posture, projected exactly as
+ *  `deriveFindingToLetter` projects letter types. Consumed by the compose-time
+ *  posture assertion in disputes/index.ts. */
+export function deriveFindingToDisposition(): Partial<Record<FindingType, GroundDisposition>> {
+  const out: Partial<Record<FindingType, GroundDisposition>> = {};
+  for (const spec of Object.values(DISPUTE_GROUND_CATALOG)) {
+    for (const f of spec.fromFindings) out[f] = spec.disposition;
   }
   return out;
 }

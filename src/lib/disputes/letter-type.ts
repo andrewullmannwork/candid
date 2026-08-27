@@ -621,7 +621,15 @@ export function isLiveDraftStatus(status: string | null | undefined): boolean {
 // `estimate` borrow no longer carries money into shouldOwe, so any stored
 // draft whose demand rested on a borrowed rate re-drafts once to the
 // conservative, groundable number.
-export const LETTER_COMPOSE_VERSION = "s318.1";
+//
+// s318.1 → s324.1 — the S325 letter-fixes batch (PR-A): the neutral
+// consequence sentences replace `the ${state} Department of Insurance`
+// (wrong or nonexistent agency in most states); "ACA §2719" corrected to
+// "PHSA §2719 (42 U.S.C. §300gg-19)" everywhere a letter emits it; the
+// service-not-rendered insurer ask becomes reprocess-and-correct-my-share
+// (the plan-side "reverse"/"investigate and recoup" recoupment demands are
+// out — one posture per letter, C4). Stored drafts re-draft once.
+export const LETTER_COMPOSE_VERSION = "s324.1";
 
 /**
  * S312 (T4, Andrew's ruling) — the ONE lifecycle word a letter surface may

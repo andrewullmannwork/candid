@@ -465,7 +465,9 @@ for (const { type, findings } of ZERO_BUG_TYPES) {
   });
   snapshot("external_review.generate", externalReview);
   check("external_review → insurer Appeals Department", externalReview.includes("Appeals Department"), externalReview);
-  check("external_review cites ACA §2719 / 45 CFR §147.136", externalReview.includes("ACA §2719 / 45 CFR §147.136"));
+  // S325 (C2): the corrected citation form — "ACA §2719" is not a real citation
+  // (§2719 is a PHSA section); the citation-registry fixture bans the old form.
+  check("external_review cites PHSA §2719 (42 U.S.C. §300gg-19) + 45 CFR §147.136", externalReview.includes("PHSA §2719 (42 U.S.C. §300gg-19) and its implementing regulation 45 CFR §147.136"));
   check("external_review lists enclosures", externalReview.includes("Enclosed with this request:"));
   check("external_review renders attested denial date", externalReview.includes("April 1, 2024"));
 

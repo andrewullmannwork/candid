@@ -23,6 +23,7 @@ import { normalizeCoinsurancePct } from "@/lib/billing/coinsurance";
 import { plainDate, easternDate } from "@/lib/format/dates";
 import { RECIPIENT_DEPARTMENT_LINE } from "./letter-type";
 import { adjudicationBand } from "@/lib/care/interface";
+import { resolveStateCitation } from "./citation-registry";
 
 interface LetterTemplate {
   type: DisputeLetterType;
@@ -272,17 +273,9 @@ export function renderGated<T>(value: T | null | undefined, clause: (v: T) => st
  * history into one builder so a letter can never receive two contact blocks;
  * it does not rewrite the prose. See that module's header for the full rule. */
 
-/** dispute-letters v2 S2 — state-specific citation registry. INERT at launch (no verified entries),
- *  so `resolveStateCitation` returns null for every (state, lever). Counsel-verified, per-entry
- *  activation is post-launch (map §10 / tracker Item R). */
-const LEGAL_CITATION_REGISTRY: Record<string, string> = {}; // keyed `${state}:${lever}` — empty until verified
-
-/** State-aware via profiles.state (planContext.userState); fail-closed to null (unverified state →
- *  federal levers + generic only, per map §5). */
-function resolveStateCitation(state: string | null | undefined, lever: string): string | null {
-  if (!state) return null;
-  return LEGAL_CITATION_REGISTRY[`${state}:${lever}`] ?? null;
-}
+/** S325 (PR-A, C2) — the state-lever registry moved to citation-registry.ts (ONE
+ *  home for every citation a letter may emit, each with a verified date). Same
+ *  behavior: INERT until counsel-verified entries land (tracker Item R). */
 
 /** Patient + reference block. Surfaces Provider NPI when it's known —
  *  preferring planContext.providerContact, falling back to bill.provider.npi
@@ -395,21 +388,23 @@ function buildClaimIdHeader(params: {
 }
 
 /**
- * S109 PR #2 (Chunk A) — escalation-path paragraph for the dispute letter
- * closing. Names the user's state Department of Insurance when known (from
- * profiles.state via PlanContext.userState); falls back to generic copy
- * when state is missing. Tone: assertive-professional, NOT adversarial —
- * cites ACA §2719 + 45 CFR §147.136 external review path. §1132(c)(1)
- * penalty deliberately omitted; held for follow-up letters if insurer
- * fails to respond within the 30-day §1024(b)(4) window.
+ * S325 (PR-A, C1/C3 — Andrew-approved exact strings, ruling R13). The neutral
+ * consequence sentences: ONE home for the closing "what happens if you don't
+ * fix this" line, per recipient. They replace `buildEscalationParagraph` and
+ * the inline `${state} Department of Insurance` interpolations — which named a
+ * nonexistent agency in Washington and the WRONG agency for ~94% of
+ * state-regulated Californians (DMHC, not CDI, regulates most CA commercial
+ * coverage; counsel memo 04). Until the verified per-state forum menu ships
+ * (PR-B, `forum_menu_v1`), letters name NO specific agency: a letter that
+ * threatens a forum that does not exist or has no jurisdiction tells the
+ * recipient it was machine-generated and never checked.
+ * Leading space: these append directly after a sentence, matching the
+ * consequence-assembly convention in buildRequestSection.
  */
-function buildEscalationParagraph(planContext: PlanContext | null | undefined): string {
-  const state = planContext?.userState ?? null;
-  const stateClause = state
-    ? `the ${state} Department of Insurance`
-    : "the applicable state Department of Insurance";
-  return `If this matter is not resolved through internal appeal, I intend to pursue external review under ACA §2719 / 45 CFR §147.136 and may file a complaint with ${stateClause}.`;
-}
+export const NEUTRAL_INSURER_CONSEQUENCE =
+  " If this matter is not resolved, I intend to pursue external review under PHSA §2719 (42 U.S.C. §300gg-19) and the regulatory complaint avenues available to me.";
+export const NEUTRAL_PROVIDER_CONSEQUENCE =
+  " If this matter is not resolved, I may file a complaint with my state's consumer-protection authority and, where applicable, the federal No Surprises Help Desk.";
 
 /**
  * S109 PR #2 (Chunk A) — 4-case closing argument for the dispute letter,
@@ -572,7 +567,7 @@ function buildClosingArgument(
 //
 // v3-gated by the caller (flag OFF → the fixed legacy list renders, byte-
 // identical). Statutory backbone = COMMERCIAL DEFAULT this session: the broadly-
-// correct external-review hook (ACA §2719 / 45 CFR §147.136) + plain-English
+// correct external-review hook (PHSA §2719 / 45 CFR §147.136) + plain-English
 // determination/itemized-statement asks. dispute-letters v2 S1 — plan_source is
 // now threaded: the ERISA claim-file ask (§2560.503-1(h)(2)(iii)) is emitted for
 // self-reported employer plans (isERISA) via the tail below. The §1024(b)(4)/
@@ -724,18 +719,21 @@ export function buildRequestSection(params: {
     const forgive = letterRecovery
       ? sumAssertable(b.attested, letterRecovery, "writeOff")
       : sumOf(dollarLines, (li) => li.patientOwes);
-    const insPaid = isInsurer ? sumOf(dollarLines, (li) => li.insurancePaid) : 0;
     const clauses: string[] = [];
     if (isInsurer) {
+      // S325 (C4, defect-F reframe — review doc §3.4 conduct line): the MEMBER's
+      // ask is reprocessing + correction of the member's own cost-share
+      // ("benefits due"). "Reverse the $X you paid the provider" and
+      // "investigate and recoup" were PLAN-side recoupment demands — the plan's
+      // business with its provider, not a benefit the member is owed — and
+      // recoup-language in a member letter is the mixed-posture shape the
+      // disposition invariant (dispute-ground-catalog.ts) now bans.
       clauses.push(
-        insPaid > 0
-          ? `reverse the ${formatCurrency(insPaid)} paid for the ${many ? "services" : "service"} I have attested I did not receive (${names})`
-          : `deny and reverse any payment for the ${many ? "services" : "service"} I have attested I did not receive (${names}${billed > 0 ? `, billed ${formatCurrency(billed)}` : ""})`,
+        `reprocess this claim excluding the ${many ? "services" : "service"} I have attested I did not receive (${names}${billed > 0 ? `, billed ${formatCurrency(billed)}` : ""}) and correct my cost-share accordingly`,
       );
       if (refund > 0) clauses.push(`refund the ${formatCurrency(refund)} I paid`);
       if (forgive > 0) clauses.push(`ensure the ${formatCurrency(forgive)} billed to me is removed`);
       clauses.push(`confirm I bear no responsibility for ${it}`);
-      clauses.push(`investigate and recoup any payment made for a service not rendered`);
       asks.push(`${capFirst(joinClauses(clauses))}. If you have documentation that the ${many ? "services were" : "service was"} provided to me, please send it.`);
     } else {
       clauses.push(
@@ -1176,12 +1174,9 @@ export function buildRequestSection(params: {
   // Deadline anchored to the §1024(b)(4) document-production window (30 days);
   // L1 will plan-type-tune (ERISA penalty / urgency-shortening).
   const numbered = asks.map((a, i) => `${i + 1}. ${a}`).join("\n");
-  const state = planContext?.userState ?? null;
-  const insurerRegulator = state ? `the ${state} Department of Insurance` : "the appropriate state insurance regulator";
-  const providerForum = state ? `my state's consumer-protection authority (the ${state} Attorney General's office)` : "my state's consumer-protection authority";
-  const consequence = isInsurer
-    ? ` If this matter is not resolved, I intend to pursue external review under ACA §2719 / 45 CFR §147.136 and may file a complaint with ${insurerRegulator}.`
-    : ` If this matter is not resolved, I may file a complaint with ${providerForum} and, where applicable, the federal No Surprises Help Desk.`;
+  // S325 (C1): the recipient-appropriate consequence is the approved neutral
+  // sentence — no agency named until the verified forum menu (PR-B) routes one.
+  const consequence = isInsurer ? NEUTRAL_INSURER_CONSEQUENCE : NEUTRAL_PROVIDER_CONSEQUENCE;
 
   return [
     "RELIEF REQUESTED",
@@ -2199,15 +2194,14 @@ const insuranceAppealTemplate: LetterTemplate = {
       evidence,
     });
 
-    // S109 PR #2 (Chunk A) — 4-case closing argument + escalation paragraph
-    // emitted here (NOT inside renderEvidenceBlock) so provider-bound letters
-    // don't pick up "Plan Administrator" / state-DOI language. Per Subplan §4
-    // this rewrite is localized to insurance_appeal. Removed the duplicate
-    // "Under the ACA / §503-1" paragraph that previously followed the
-    // evidence block — the closing argument now carries the statutory ask
-    // and the escalation paragraph carries the §2719 disclosure.
+    // S109 PR #2 (Chunk A) — 4-case closing argument emitted here (NOT inside
+    // renderEvidenceBlock) so provider-bound letters don't pick up "Plan
+    // Administrator" language. S325 (C3): `buildEscalationParagraph` deleted —
+    // the v3 request tree carries its own recipient-aware consequence, and the
+    // v3-OFF legacy branch closes with the neutral consequence constant (the
+    // old paragraph named "the ${state} Department of Insurance", wrong or
+    // nonexistent in most states).
     const closingArgument = buildClosingArgument(planContext, evidence ?? null);
-    const escalationParagraph = buildEscalationParagraph(planContext);
 
     // Block C2 item 4 — v3 reorders to detail → relief: the top boilerplate
     // "full review 1/2/3" list becomes a one-line pointer, and the ERISA closing
@@ -2228,7 +2222,7 @@ const insuranceAppealTemplate: LetterTemplate = {
       : ` I am requesting a full review of this denial, including:\n\n1. The specific reason for denial, including the applicable plan provision or exclusion\n2. The clinical criteria used to determine medical necessity\n3. Instructions for requesting an external review if this internal appeal is denied`;
     const reliefSection = v3
       ? buildRequestSection({ evidence, planContext, recipient: "insurer", letterRecovery, recovery, noPlanCoverageRequestOn, demandsEnabled: disputeGroundsOn ?? false, gateUnverified: gateUnverified ?? false })
-      : `${closingArgument ? `${closingArgument}\n\n` : ""}${escalationParagraph}`;
+      : `${closingArgument ? `${closingArgument}\n\n` : ""}${NEUTRAL_INSURER_CONSEQUENCE.trim()}`;
 
     return `${easternDate(new Date())}
 
@@ -2564,7 +2558,7 @@ Patient: ${patientName}${accountNumber ? `\nClaim/Account #: ${accountNumber}` :
 
 To Whom It May Concern:
 
-I have completed your internal appeals process and received a final adverse determination${denialLine}. Under the Affordable Care Act (ACA §2719 / 45 CFR §147.136), I am entitled to an independent external review of this denial, and I am requesting one.
+I have completed your internal appeals process and received a final adverse determination${denialLine}. Under PHSA §2719 (42 U.S.C. §300gg-19) and its implementing regulation 45 CFR §147.136, I am entitled to an independent external review of this denial, and I am requesting one.
 
 Enclosed with this request:
 1. The final internal denial (adverse benefit determination)
@@ -2572,7 +2566,7 @@ Enclosed with this request:
 3. The Explanation of Benefits for the claim
 4. Supporting documentation (medical records or provider letter, as applicable)
 
-Please initiate the external review and confirm in writing the date this request was received and the external review organization to which it is assigned. If external review must instead be requested through my state Department of Insurance or the federal HHS-administered process, please advise so I can submit it there.
+Please initiate the external review and confirm in writing the date this request was received and the external review organization to which it is assigned. If external review must instead be requested through my state's insurance regulator or the federal HHS-administered process, please advise so I can submit it there.
 
 Sincerely,
 

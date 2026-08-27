@@ -9,7 +9,7 @@ Claim/Account #: CLM-9
 
 To Whom It May Concern:
 
-I have completed your internal appeals process and received a final adverse determination on April 1, 2024. Under the Affordable Care Act (ACA §2719 / 45 CFR §147.136), I am entitled to an independent external review of this denial, and I am requesting one.
+I have completed your internal appeals process and received a final adverse determination on April 1, 2024. Under PHSA §2719 (42 U.S.C. §300gg-19) and its implementing regulation 45 CFR §147.136, I am entitled to an independent external review of this denial, and I am requesting one.
 
 Enclosed with this request:
 1. The final internal denial (adverse benefit determination)
@@ -17,7 +17,7 @@ Enclosed with this request:
 3. The Explanation of Benefits for the claim
 4. Supporting documentation (medical records or provider letter, as applicable)
 
-Please initiate the external review and confirm in writing the date this request was received and the external review organization to which it is assigned. If external review must instead be requested through my state Department of Insurance or the federal HHS-administered process, please advise so I can submit it there.
+Please initiate the external review and confirm in writing the date this request was received and the external review organization to which it is assigned. If external review must instead be requested through my state's insurance regulator or the federal HHS-administered process, please advise so I can submit it there.
 
 Sincerely,
 
