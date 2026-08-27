@@ -8,6 +8,7 @@ import type {
   FindingType,
 } from "../billing/types";
 import { letterRecipientKind } from "./letter-type";
+import { withConspicuousStatement } from "./letter-type";
 import { LETTER_TEMPLATES, buildSenderBlock } from "./templates";
 import type { PlanBenefitEvidence } from "./templates";
 import { RECITAL_IN_OPENING } from "./prior-contact";
@@ -241,6 +242,10 @@ export function generateDisputeLetter(
     body = `${senderBlock}\n\n${body}`;
   }
 
+  // S326 (Rule 4, §81.101(c)) — the conspicuous statement on EVERY letter,
+  // appended last (idempotent; mirrored in rerenderDisputeLetter — lockstep).
+  body = withConspicuousStatement(body);
+
   // Recipient: insurance appeals use insurer + appeals address when available;
   // fall back to provider for billing-department letters.
   // dispute-letters v2 S2 — recipient metadata is recipientKind-aware (was isAppeal-only): insurer
@@ -327,7 +332,7 @@ export function generateItemizedBillRequest(
 ): DisputeLetter {
   const template = LETTER_TEMPLATES.itemized_request;
 
-  const body = template.body({
+  const rawBody = template.body({
     patientName: bill.patientName,
     providerName: bill.providerName,
     serviceDate: bill.serviceDate,
@@ -339,6 +344,8 @@ export function generateItemizedBillRequest(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any,
   });
+  // S326 — §81.101(c) on the itemized request too (every composed letter).
+  const body = withConspicuousStatement(rawBody);
 
   return {
     id: randomUUID(),

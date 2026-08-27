@@ -7,6 +7,7 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
+import type { MemberSelection } from "./evidence-resolver";
 import type { DisputeLetterType } from "@/lib/billing/types";
 
 export interface PersistDisputeInput {
@@ -54,6 +55,16 @@ export interface PersistDisputeInput {
    * like insurancePlanId.
    */
   deadline?: { governingDeadlineDate: string | null; deadlineType: string | null };
+  /**
+   * S326 (member_composition_v1) — the member's composition record (selected
+   * grounds + adopted citations), persisted verbatim to
+   * `dispute_outcomes.metadata.member_selection`. Written on INSERT and
+   * REFRESHED on a dedup re-draft (unlike set-once fields: the new selection
+   * describes the new letter content — they move together). Rerender paths
+   * (GET / redraft / escalate) read it back through memberSelectionFromMeta →
+   * resolveEvidence, so a stored letter re-composes under its own scope.
+   */
+  memberSelection?: MemberSelection | null;
 }
 
 /**
@@ -197,6 +208,8 @@ export async function persistDisputeLetter(
               ...(input.citationSource
                 ? { citation_source: input.citationSource }
                 : {}),
+              // S326 — the composition record moves WITH the letter content.
+              ...(input.memberSelection ? { member_selection: input.memberSelection } : {}),
             },
           })
           .eq("id", existing.id);
@@ -242,6 +255,8 @@ export async function persistDisputeLetter(
           ...(input.citationSource
             ? { citation_source: input.citationSource }
             : {}),
+          // S326 — the member's composition record (grounds + adopted citations).
+          ...(input.memberSelection ? { member_selection: input.memberSelection } : {}),
         },
         // dispute-letters v2 S4 — INSERT-only governing deadline (map §3). Spread only when the
         // engine flag is ON (input.deadline present), so these columns are never REFERENCED while

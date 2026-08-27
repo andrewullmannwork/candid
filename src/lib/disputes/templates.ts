@@ -402,6 +402,44 @@ function buildClaimIdHeader(params: {
  * Leading space: these append directly after a sentence, matching the
  * consequence-assembly convention in buildRequestSection.
  */
+/**
+ * S326 (eleven-rules Rule 3, member_composition_v1) — the letter's citation
+ * posture, derived ONCE per compose from the evidence's member-composition
+ * record (the one carrier). Unscoped (flag OFF / legacy letters) →
+ * `adopted()` is always true → every cited sentence renders exactly as today
+ * (byte-identical). Scoped → a citation renders ONLY when the member adopted
+ * its registry key at the composition step; un-adopted sentences fall to
+ * their fact form (the ask without the authority — the existing
+ * fall_to_facts degradation, now member-driven). Provider-directed letters
+ * have EMPTY citation menus (LETTER_CITATION_MENU), so under scope their
+ * statute mentions strip to fact forms unconditionally.
+ */
+export function citationCtx(evidence: DisputeEvidence | null | undefined): {
+  scoped: boolean;
+  adopted: (key: string) => boolean;
+} {
+  const sel = evidence?.compositionScope ?? null;
+  if (!sel) return { scoped: false, adopted: () => true };
+  const set = new Set(sel.adoptedCitations);
+  return { scoped: true, adopted: (k: string) => set.has(k) };
+}
+
+/**
+ * S326 (Rule 4, Andrew-approved string) — the member-composed letter's
+ * lead-in: the instrument itself declares that the member, not the software,
+ * selected the grounds (*Landlords*' "specific direction of the client",
+ * stated on the face of the letter; the spine events are the record behind
+ * it). Renders ONLY under a member composition scope, as the request
+ * section's preamble.
+ */
+export const MEMBER_COMPOSED_LEADIN =
+  "I dispute the following charges on grounds I have selected myself:";
+
+/** S326 — the fact form of the neutral insurer consequence: same intent,
+ *  no statutory citation (renders when the member did not adopt phsa_2719). */
+export const NEUTRAL_INSURER_CONSEQUENCE_FACT =
+  " If this matter is not resolved, I intend to pursue external review and the regulatory complaint avenues available to me.";
+
 export const NEUTRAL_INSURER_CONSEQUENCE =
   " If this matter is not resolved, I intend to pursue external review under PHSA §2719 (42 U.S.C. §300gg-19) and the regulatory complaint avenues available to me.";
 export const NEUTRAL_PROVIDER_CONSEQUENCE =
@@ -426,6 +464,23 @@ function buildClosingArgument(
   evidence: DisputeEvidence | null | undefined,
 ): string {
   if (!evidence) return "";
+  // S326 — member-adopted citations (unscoped → every branch byte-identical).
+  const cite = citationCtx(evidence);
+  const gSentence = cite.adopted("erisa_claims_reg_g")
+    ? "Per 29 CFR §2560.503-1(g), I request a written determination citing the specific plan provision on which any denial is based."
+    : "I request a written determination citing the specific plan provision on which any denial is based.";
+  // The SPD-production ask: adopted → the statutory form; not → the same ask
+  // without the authority (produced by transform so the year variants stay in
+  // one place; deterministic on our own literals, pinned by the goldens + the
+  // citation-party-split fixture).
+  const spdAsk = (cited: string): string =>
+    cite.adopted("erisa_spd_production")
+      ? cited
+      : cited
+          .split(" under 29 USC §1024(b)(4)")
+          .join("")
+          .split("the 30-day statutory period")
+          .join("30 days");
   // S313 — "exact" now means exact FOR THIS CARE, which includes the year. A
   // plan document is authority only for care delivered in its own plan year, so
   // a 2024 bill pinned to the member's 2026 plan is NOT an exact-plan cite; it
@@ -452,7 +507,10 @@ function buildClosingArgument(
 
   // Case B — exact plan but no benefit-row matched.
   if (hasExactPlan && !anyBenefit) {
-    return "Per 29 CFR §2560.503-1(g), I request a written determination citing the specific plan provision on which any denial is based. Per §2560.503-1(h)(2)(iii), I request reasonable access to and copies of all documents relevant to this claim, including the applicable cost-sharing and coverage provisions.";
+    const h = cite.adopted("erisa_claims_reg_h2iii")
+      ? "Per §2560.503-1(h)(2)(iii), I request reasonable access to and copies of all documents relevant to this claim, including the applicable cost-sharing and coverage provisions."
+      : "I also request reasonable access to and copies of all documents relevant to this claim, including the applicable cost-sharing and coverage provisions.";
+    return `${gSentence} ${h}`;
   }
 
   // S110 Chunk C / S111 smoke #6 — Case C-archive: canonical archive (auto-
@@ -486,12 +544,14 @@ function buildClosingArgument(
     const archiveIsProxy =
       missingYear != null && archiveYear != null && archiveYear !== missingYear;
     if (!archiveIsProxy) {
-      return "Per 29 CFR §2560.503-1(g), I request a written determination citing the specific plan provision on which any denial is based.";
+      return gSentence;
     }
-    const yearAskClause = missingYear != null
-      ? `To the extent the ${missingYear} plan provisions differ materially from the cited terms, please produce the ${missingYear} Summary Plan Description and plan document under 29 USC §1024(b)(4) within the 30-day statutory period, and identify the specific provision applied to these charges.`
-      : "To the extent the plan provisions in effect on the date of service differ materially from the cited terms, please produce the applicable Summary Plan Description and plan document under 29 USC §1024(b)(4) within the 30-day statutory period.";
-    return `Per 29 CFR §2560.503-1(g), I request a written determination citing the specific plan provision on which any denial is based. The terms cited above reflect the same plan administered under this insurer, currently in effect. ${yearAskClause}`;
+    const yearAskClause = spdAsk(
+      missingYear != null
+        ? `To the extent the ${missingYear} plan provisions differ materially from the cited terms, please produce the ${missingYear} Summary Plan Description and plan document under 29 USC §1024(b)(4) within the 30-day statutory period, and identify the specific provision applied to these charges.`
+        : "To the extent the plan provisions in effect on the date of service differ materially from the cited terms, please produce the applicable Summary Plan Description and plan document under 29 USC §1024(b)(4) within the 30-day statutory period.",
+    );
+    return `${gSentence} The terms cited above reflect the same plan administered under this insurer, currently in effect. ${yearAskClause}`;
   }
 
   // S109 PR #2 (Chunk B) — Case C-fallback: same-plan-confirmed proxy cite.
@@ -509,10 +569,12 @@ function buildClosingArgument(
     const fbClause = fbYear != null
       ? `My ${fbYear} plan documents are on file with this plan and specify the cost-sharing terms cited above.`
       : "My current plan documents are on file with this plan and specify the cost-sharing terms cited above.";
-    const yearAskClause = missingYear != null
-      ? `To the extent the ${missingYear} plan provisions differ materially from these terms, please produce the ${missingYear} Summary Plan Description and plan document under 29 USC §1024(b)(4) within the 30-day statutory period, and identify the specific provision applied to these charges.`
-      : "To the extent the plan provisions in effect on the date of service differ materially from these terms, please produce the applicable Summary Plan Description and plan document under 29 USC §1024(b)(4) within the 30-day statutory period, and identify the specific provision applied to these charges.";
-    return `Per 29 CFR §2560.503-1(g), I request a written determination citing the specific plan provision on which any denial is based. ${fbClause} ${yearAskClause}`;
+    const yearAskClause = spdAsk(
+      missingYear != null
+        ? `To the extent the ${missingYear} plan provisions differ materially from these terms, please produce the ${missingYear} Summary Plan Description and plan document under 29 USC §1024(b)(4) within the 30-day statutory period, and identify the specific provision applied to these charges.`
+        : "To the extent the plan provisions in effect on the date of service differ materially from these terms, please produce the applicable Summary Plan Description and plan document under 29 USC §1024(b)(4) within the 30-day statutory period, and identify the specific provision applied to these charges.",
+    );
+    return `${gSentence} ${fbClause} ${yearAskClause}`;
   }
 
   // Case D — no plan OR fallback-only without confirmation (Chunk A default).
@@ -544,8 +606,10 @@ function buildClosingArgument(
     : "The Explanation of Benefits records";
 
   const parts: string[] = [
-    "Per 29 CFR §2560.503-1(g), I request a written determination citing the specific plan provision on which any denial is based.",
-    "Per 29 USC §1024(b)(4), please provide the applicable Summary Plan Description and plan document within the 30-day statutory period.",
+    gSentence,
+    cite.adopted("erisa_spd_production")
+      ? "Per 29 USC §1024(b)(4), please provide the applicable Summary Plan Description and plan document within the 30-day statutory period."
+      : "Please provide the applicable Summary Plan Description and plan document within 30 days.",
   ];
   if (totalBilledAdjusted > 0) {
     parts.push(
@@ -1166,15 +1230,21 @@ export function buildRequestSection(params: {
   // Non-employer/unknown → omitted (the generic EOB/adjudication ask above carries the document
   // request). §1024(b)(4) SPD-production is the deferred separate administrator letter (tracker Q3).
   if (isInsurer && isERISA) {
+    // S326 — the statutory hook renders only when member-adopted (unscoped → always).
     asks.push(
-      `As documents relevant to this claim under 29 CFR §2560.503-1(h)(2)(iii), please provide, free of charge, copies of the plan provisions, guidelines, and records relied upon in adjudicating it, and confirm in writing the date this appeal was received.`,
+      citationCtx(evidence).adopted("erisa_claims_reg_h2iii")
+        ? `As documents relevant to this claim under 29 CFR §2560.503-1(h)(2)(iii), please provide, free of charge, copies of the plan provisions, guidelines, and records relied upon in adjudicating it, and confirm in writing the date this appeal was received.`
+        : `Please provide, free of charge, copies of the plan provisions, guidelines, and records relied upon in adjudicating this claim, and confirm in writing the date this appeal was received.`,
     );
   }
 
   // Assemble: numbered relief + deadline + recipient-appropriate consequence.
   // Deadline anchored to the §1024(b)(4) document-production window (30 days);
   // L1 will plan-type-tune (ERISA penalty / urgency-shortening).
-  const numbered = asks.map((a, i) => `${i + 1}. ${a}`).join("\n");
+  // S326 (Rule 4) — the member-composed lead-in: the instrument declares the
+  // member's own selection, as the request preamble. Scoped only.
+  const memberLeadin = citationCtx(evidence).scoped ? `${MEMBER_COMPOSED_LEADIN}\n\n` : "";
+  const numbered = memberLeadin + asks.map((a, i) => `${i + 1}. ${a}`).join("\n");
   // S325 (C1 → PR-B): when the member's own screening answers identify their
   // regulator (plan-level regulatory_classification, written by the flag-ON
   // forum menu), the consequence names it with the counsel-verified sentence;
@@ -1185,7 +1255,12 @@ export function buildRequestSection(params: {
       planContext?.plan?.regulatoryClassification ?? null,
       planContext?.userState ?? null,
       isInsurer ? "insurer" : "provider",
-    ) ?? (isInsurer ? NEUTRAL_INSURER_CONSEQUENCE : NEUTRAL_PROVIDER_CONSEQUENCE);
+    ) ??
+    (isInsurer
+      ? citationCtx(evidence).adopted("phsa_2719")
+        ? NEUTRAL_INSURER_CONSEQUENCE
+        : NEUTRAL_INSURER_CONSEQUENCE_FACT
+      : NEUTRAL_PROVIDER_CONSEQUENCE);
 
   return [
     "RELIEF REQUESTED",
@@ -2022,7 +2097,7 @@ const overchargeTemplate: LetterTemplate = {
 2. A review and explanation of the charges identified above.
 3. An appropriate adjustment to my account if these charges are found to be in error.
 
-Under the No Surprises Act and applicable state consumer protection laws, I am entitled to a clear and accurate bill. I request a written response within 30 days of receipt of this letter.`;
+${citationCtx(evidence).scoped ? "I am entitled to a clear and accurate bill." : "Under the No Surprises Act and applicable state consumer protection laws, I am entitled to a clear and accurate bill."} I request a written response within 30 days of receipt of this letter.`;
 
     return `${easternDate(new Date())}
 
@@ -2231,7 +2306,7 @@ const insuranceAppealTemplate: LetterTemplate = {
       : ` I am requesting a full review of this denial, including:\n\n1. The specific reason for denial, including the applicable plan provision or exclusion\n2. The clinical criteria used to determine medical necessity\n3. Instructions for requesting an external review if this internal appeal is denied`;
     const reliefSection = v3
       ? buildRequestSection({ evidence, planContext, recipient: "insurer", letterRecovery, recovery, noPlanCoverageRequestOn, demandsEnabled: disputeGroundsOn ?? false, gateUnverified: gateUnverified ?? false })
-      : `${closingArgument ? `${closingArgument}\n\n` : ""}${NEUTRAL_INSURER_CONSEQUENCE.trim()}`;
+      : `${closingArgument ? `${closingArgument}\n\n` : ""}${(citationCtx(evidence).adopted("phsa_2719") ? NEUTRAL_INSURER_CONSEQUENCE : NEUTRAL_INSURER_CONSEQUENCE_FACT).trim()}`;
 
     return `${easternDate(new Date())}
 
@@ -2345,7 +2420,7 @@ To Whom It May Concern:
 
 I am writing to dispute what appears to be balance billing on my account for services rendered on ${formatDate(serviceDate)}.
 
-${eobRecital} If these services are subject to the No Surprises Act (for example, emergency services, or services from an out-of-network provider at an in-network facility) or to applicable state balance-billing protections, I should not be billed beyond my in-network cost-sharing for covered services. Please confirm whether these protections apply to these charges and, to the extent they do, correct the balance accordingly.
+${eobRecital} ${citationCtx(evidence).scoped ? "If these services are subject to federal or state surprise-billing protections (for example, emergency services, or services from an out-of-network provider at an in-network facility), I should not be billed beyond my in-network cost-sharing for covered services." : "If these services are subject to the No Surprises Act (for example, emergency services, or services from an out-of-network provider at an in-network facility) or to applicable state balance-billing protections, I should not be billed beyond my in-network cost-sharing for covered services."} Please confirm whether these protections apply to these charges and, to the extent they do, correct the balance accordingly.
 
 Specifically:
 
@@ -2554,10 +2629,23 @@ DISCLAIMER: This letter was prepared using Candid, a consumer billing analysis t
 const externalReviewTemplate: LetterTemplate = {
   type: "external_review",
   subject: (provider) => `Request for External Review — ${provider}`,
-  body: ({ patientName, serviceDate, accountNumber, planContext, appealExhausted }) => {
+  body: ({ patientName, serviceDate, accountNumber, planContext, appealExhausted, evidence }) => {
     const insurerName = planContext?.insurer?.name ?? "My Health Plan";
     const recipientBlock = buildInsurerRecipientBlock(insurerName, planContext);
     const denialLine = renderGated(appealExhausted?.denialDate, (d) => ` on ${formatDate(d)}`);
+    // S326 — the review-entitlement frame cites only member-adopted authorities
+    // (unscoped → both adopted → byte-identical to the prior fixed sentence).
+    const erCite = citationCtx(evidence);
+    const erAuthorities = [
+      erCite.adopted("phsa_2719") ? "PHSA §2719 (42 U.S.C. §300gg-19)" : null,
+      erCite.adopted("external_review_reg") ? "its implementing regulation 45 CFR §147.136" : null,
+    ].filter((x): x is string => x != null);
+    const erFrame =
+      erAuthorities.length === 2
+        ? `Under ${erAuthorities[0]} and ${erAuthorities[1]}, I am entitled to an independent external review of this denial, and I am requesting one.`
+        : erAuthorities.length === 1
+          ? `Under ${erAuthorities[0].replace("its implementing regulation ", "")}, I am entitled to an independent external review of this denial, and I am requesting one.`
+          : "I am entitled to an independent external review of this denial, and I am requesting one.";
     return `${easternDate(new Date())}
 
 ${recipientBlock}
@@ -2567,7 +2655,7 @@ Patient: ${patientName}${accountNumber ? `\nClaim/Account #: ${accountNumber}` :
 
 To Whom It May Concern:
 
-I have completed your internal appeals process and received a final adverse determination${denialLine}. Under PHSA §2719 (42 U.S.C. §300gg-19) and its implementing regulation 45 CFR §147.136, I am entitled to an independent external review of this denial, and I am requesting one.
+I have completed your internal appeals process and received a final adverse determination${denialLine}. ${erFrame}
 
 Enclosed with this request:
 1. The final internal denial (adverse benefit determination)
@@ -2589,15 +2677,33 @@ DISCLAIMER: This letter was prepared using Candid, a consumer billing analysis t
 const debtValidationTemplate: LetterTemplate = {
   type: "debt_validation",
   subject: () => `Debt Validation Request`,
-  body: ({ patientName, accountNumber, planContext, collector, debtWithinWindow }) => {
+  body: ({ patientName, providerName, accountNumber, planContext, collector, debtWithinWindow }) => {
     const recipientBlock = buildCollectorRecipientBlock(collector);
     const state = planContext?.userState ?? null;
     const creditor = renderGated(collector?.originalCreditor, (oc) => ` (original creditor: ${oc})`);
     const acctLine = renderGated(accountNumber, (a) => ` — Account #: ${a}`);
-    const validationTeeth = debtWithinWindow
+    // S326 (review doc §3.1, UNFLAGGED correctness fix) — an ORIGINAL CREDITOR
+    // owes NO §1692g validation (Cal. Civ. Code §1788.17 carves providers
+    // collecting their own bills back out), and demanding one is the
+    // machine-generated tell counsel flagged. Detection is conservative and
+    // fails SAFE in both directions: name-match the collector against the
+    // bill's provider (or the collector's own stated original creditor) —
+    // a false positive merely omits a demand the letter never needed (the
+    // dispute + itemized ask stand); a false negative is today's behavior.
+    // PR-B's collections redesign replaces this heuristic with the member's
+    // own explicit answer.
+    const normName = (x: string | null | undefined): string =>
+      (x ?? "").toLowerCase().replace(/[.,]/g, "").replace(/\s+/g, " ").trim();
+    const collectorIsOriginalCreditor =
+      !!collector?.name &&
+      ((normName(collector.name) !== "" && normName(collector.name) === normName(providerName)) ||
+        (!!collector.originalCreditor &&
+          normName(collector.name) === normName(collector.originalCreditor)));
+    const fdcpaApplies = debtWithinWindow && !collectorIsOriginalCreditor;
+    const validationTeeth = fdcpaApplies
       ? `\n\nUnder the Fair Debt Collection Practices Act (15 U.S.C. §1692g), please provide: (1) the amount of the debt; (2) the name of the original creditor; and (3) verification that the debt is valid and that you are authorized to collect it, together with an itemized statement of the charges.`
       : "";
-    const cease = debtWithinWindow
+    const cease = fdcpaApplies
       ? `\n\nUntil you provide the requested validation, please cease collection activity on this account.`
       : "";
     const stateCitation = renderGated(resolveStateCitation(state, "credit_furnishing"), (c) => ` ${c}`);
@@ -2613,7 +2719,7 @@ I am writing regarding the above account. I dispute this debt and request valida
 
 Please provide validation of this debt, including documentation that it is valid and that the amount is accurate.${validationTeeth}
 
-Please mark this debt as disputed in your records and in any report you make to a consumer reporting agency, as required by the Fair Debt Collection Practices Act (15 U.S.C. §1692e(8)).${stateCitation}${cease}
+${collectorIsOriginalCreditor ? "Please mark this debt as disputed in your records and in any report you make to a consumer reporting agency." : "Please mark this debt as disputed in your records and in any report you make to a consumer reporting agency, as required by the Fair Debt Collection Practices Act (15 U.S.C. §1692e(8))."}${stateCitation}${cease}
 
 Sincerely,
 

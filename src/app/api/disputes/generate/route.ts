@@ -7,7 +7,14 @@ import { generateDisputeLetter, generateItemizedBillRequest, letterRecipientKind
 import { guidedCallLogFromMeta } from "@/lib/guides/pack-registry";
 import type { PlanBenefitEvidence } from "@/lib/disputes";
 import { resolvePlanContext } from "@/lib/disputes/plan-context";
-import { resolveEvidence } from "@/lib/disputes/evidence-resolver";
+import { resolveEvidence, type MemberSelection } from "@/lib/disputes/evidence-resolver";
+import {
+  isMemberComposable,
+  LETTER_CITATION_MENU,
+  ALL_DISPUTE_GROUND_TYPES,
+} from "@/lib/disputes/dispute-ground-catalog";
+import type { DisputeGroundType } from "@/lib/disputes/dispute-grounds";
+import { LETTER_COMPOSE_VERSION } from "@/lib/disputes/letter-type";
 import { loadDisputeGroundBasis } from "@/lib/disputes/dispute-ground-basis";
 import { resolveLetterRecovery } from "@/lib/disputes/dispute-grounds";
 import {
@@ -16,7 +23,7 @@ import {
   type StrengthResult,
 } from "@/lib/disputes/strength-scoring";
 import { persistDisputeLetter } from "@/lib/disputes/persist";
-import { emitCaseEvent } from "@/lib/case/case-events";
+import { emitCaseEvent, emitCaseEvents, type CaseEventInput } from "@/lib/case/case-events";
 import { loadCaseProjection } from "@/lib/case/load-case-timeline";
 import { buildPriorContactRecital, RECITAL_IN_OPENING } from "@/lib/disputes/prior-contact";
 import { evaluateDeadline, readDeadlineConfig, type DeadlineGuard } from "@/lib/disputes/deadline-engine";
@@ -161,6 +168,50 @@ export async function POST(req: NextRequest) {
         );
       }
 
+      // S326 (member_composition_v1, eleven-rules Rule 2) — the MEMBER selects
+      // the grounds; the engine only maps facts under their selection. When the
+      // flag is ON, every ground-arguing letter type REQUIRES a non-empty
+      // member selection (fail-closed 4xx — never silently-all). An undefined
+      // letterType always auto-resolves to a composable type (FINDING_TO_LETTER
+      // targets are all in MEMBER_COMPOSABLE_LETTER_TYPES), so it requires
+      // selection too. Non-composable instruments (negotiation /
+      // debt_validation / itemized_request) compose unscoped as before — the
+      // C4 disposition wall + their own gates govern them.
+      let memberSelection: MemberSelection | null = null;
+      {
+        const memberCompositionOn = await isFeatureEnabled("member_composition_v1");
+        const requiresSelection =
+          memberCompositionOn &&
+          (letterType == null || isMemberComposable(letterType as DisputeLetterType));
+        if (requiresSelection) {
+          const rawGrounds = Array.isArray(body.selectedGrounds) ? (body.selectedGrounds as unknown[]) : null;
+          const grounds = (rawGrounds ?? []).filter(
+            (g): g is DisputeGroundType =>
+              typeof g === "string" &&
+              (ALL_DISPUTE_GROUND_TYPES as readonly string[]).includes(g),
+          );
+          if (!rawGrounds || grounds.length === 0) {
+            return NextResponse.json(
+              {
+                error: "member_selection_required",
+                reason:
+                  "Select at least one dispute ground to compose this letter. The letter argues only what you select.",
+              },
+              { status: 400 },
+            );
+          }
+          // Adopted citations: only keys the letter type's static menu offers
+          // (unknown/off-menu keys are DROPPED, never trusted — the menu is the
+          // published list, identical for everyone).
+          const menu = LETTER_CITATION_MENU[(letterType as DisputeLetterType) ?? "overcharge"] ?? [];
+          const rawAdopted = Array.isArray(body.adoptedCitations) ? (body.adoptedCitations as unknown[]) : [];
+          const adoptedCitations = rawAdopted.filter(
+            (c): c is string => typeof c === "string" && menu.includes(c),
+          );
+          memberSelection = { grounds, adoptedCitations };
+        }
+      }
+
       // Phase 1: resolve plan context — insurer name + appeals address from
       // the user's plan matching the bill's date of service.
       let planContext = null;
@@ -192,6 +243,8 @@ export async function POST(req: NextRequest) {
             lineItemIds,
             planContext,
             letterType: letterType ?? "overcharge",
+            // S326 — the member's composition scope (null = unscoped legacy).
+            memberSelection,
             // disputeId not yet known at generate time (persistDisputeLetter
             // runs below). The /api/disputes/[disputeId] GET path re-resolves
             // evidence with the correct disputeId on first load, so any
@@ -581,6 +634,8 @@ export async function POST(req: NextRequest) {
           // dispute-letters v2 S4 — INSERT-only governing deadline, passed ONLY when the engine
           // flag is ON so the new columns are never referenced OFF (safe pre-mig-196-apply).
           ...(deadlineEngineOn ? { deadline: { governingDeadlineDate, deadlineType } } : {}),
+          // S326 — the composition record rides the row (INSERT + dedup refresh).
+          memberSelection,
         });
         disputeId = result?.disputeId || null;
         deduplicated = result?.deduplicated ?? false;
@@ -601,6 +656,37 @@ export async function POST(req: NextRequest) {
           kind: "letter_drafted",
           payload: { letterType: letterType || "overcharge" },
         });
+      }
+
+      // S326 — the COMPOSITION record (the member's own hand): one
+      // ground_selected per adopted ground + one letter_adopted per compose.
+      // Emitted on EVERY successful persist carrying a selection (a dedup
+      // re-draft with a fresh selection is a fresh composition act), server-
+      // side only (client claims are never the record), fail-soft inside the
+      // emitter (a lost event blocks the future DFY OPERATOR, never this
+      // member's letter — the safe direction, handoff §5).
+      if (disputeId && body.claimId && memberSelection) {
+        const claimIdStr = body.claimId as string;
+        const compositionEvents: CaseEventInput[] = [
+          ...memberSelection.grounds.map((groundType) => ({
+            claimId: claimIdStr,
+            disputeId: disputeId as string,
+            kind: "ground_selected" as const,
+            payload: { groundType, catalogVersion: LETTER_COMPOSE_VERSION },
+          })),
+          {
+            claimId: claimIdStr,
+            disputeId: disputeId as string,
+            kind: "letter_adopted" as const,
+            payload: {
+              letterType: letterType || "overcharge",
+              groundCount: memberSelection.grounds.length,
+              adoptedCitations: memberSelection.adoptedCitations,
+              composeVersion: LETTER_COMPOSE_VERSION,
+            },
+          },
+        ];
+        await emitCaseEvents(supabase, auditReport.userId, compositionEvents);
       }
 
       // S74.5 D16 — compute initial evidence_fingerprint and persist on the

@@ -44,7 +44,7 @@ import {
   type DisputeTypeClass,
   type CiteGradeTier,
 } from "./strength-scoring";
-import { deriveFindingToGround } from "./dispute-ground-catalog";
+import { deriveFindingToGround, ALL_DISPUTE_GROUND_TYPES } from "./dispute-ground-catalog";
 import type { DisputeGroundType } from "./dispute-grounds";
 import {
   resolveSecondaryCoverage,
@@ -686,7 +686,44 @@ export interface DisputeEvidence {
    * Persisted as `disputes.metadata.member_selection`; rerender paths rebuild
    * it from the row (the attestedLineItemIds metadata→typed-param pattern).
    */
-  compositionScope: readonly DisputeGroundType[] | null;
+  compositionScope: MemberSelection | null;
+}
+
+/**
+ * S326 — the member's composition record as ONE value: the grounds they
+ * selected + the citations they adopted (registry keys). Persisted verbatim
+ * as `disputes.metadata.member_selection`; stamped on the evidence so every
+ * compose-layer consumer reads the same record it was built under.
+ */
+export interface MemberSelection {
+  readonly grounds: readonly DisputeGroundType[];
+  readonly adoptedCitations: readonly string[];
+}
+
+/**
+ * S326 — parse a persisted `member_selection` metadata value back into a typed
+ * MemberSelection (the metadata→typed-param pipeline's read half, shared by
+ * every rerender-path caller so the shape check exists ONCE). Unknown ground
+ * strings are dropped (a catalog rename must not silently widen scope);
+ * null/absent/malformed → null (unscoped legacy behavior).
+ */
+export function memberSelectionFromMeta(
+  meta: Record<string, unknown> | null | undefined,
+): MemberSelection | null {
+  const raw = meta?.member_selection as
+    | { grounds?: unknown; adoptedCitations?: unknown }
+    | null
+    | undefined;
+  if (!raw || !Array.isArray(raw.grounds)) return null;
+  const validGrounds = new Set(Object.keys(FINDING_TO_GROUND_VALID));
+  const grounds = raw.grounds.filter(
+    (g): g is DisputeGroundType => typeof g === "string" && validGrounds.has(g),
+  );
+  if (grounds.length === 0) return null;
+  const adoptedCitations = Array.isArray(raw.adoptedCitations)
+    ? raw.adoptedCitations.filter((c): c is string => typeof c === "string")
+    : [];
+  return { grounds, adoptedCitations };
 }
 
 export async function resolveEvidence(
@@ -732,15 +769,15 @@ export async function resolveEvidence(
      */
     attestedLineItemIds?: string[];
     /**
-     * S326 (member_composition_v1) — the grounds the member selected at the
-     * composition step. Read from `dispute.metadata.member_selection` by the
+     * S326 (member_composition_v1) — the member's composition record (selected
+     * grounds + adopted citations). Read from `dispute.metadata.member_selection` by the
      * rerender-path callers (GET / redraft / escalate) and from the request
      * body by generate — the same metadata→typed-param pipeline as
      * `attestedLineItemIds`. When present, the line build filters findings and
      * signals so ONLY selected grounds can classify, price, or render;
      * null/absent → the unscoped (today's) derivation, byte-identical.
      */
-    selectedGroundTypes?: readonly DisputeGroundType[] | null;
+    memberSelection?: MemberSelection | null;
   },
 ): Promise<DisputeEvidence> {
   const { userId, claimIds, lineItemIds, planContext, disputeId } = params;
@@ -766,12 +803,14 @@ export async function resolveEvidence(
   const userConfirmedSamePlan = params.userConfirmedSamePlan ?? null;
   const canonicalPlanIdForBillYear = params.canonicalPlanIdForBillYear ?? null;
   const attestedLineItemIds = new Set(params.attestedLineItemIds ?? []);
-  // S326 — the member's composition scope, built ONCE; null = unscoped (today).
+  // S326 — the member's composition record + the ground Set, built ONCE;
+  // null = unscoped (today's derivation).
+  const memberSelection = params.memberSelection ?? null;
   const compositionScope: CompositionScopeSet =
-    params.selectedGroundTypes != null ? new Set(params.selectedGroundTypes) : null;
+    memberSelection != null ? new Set(memberSelection.grounds) : null;
 
   if (claimIds.length === 0) {
-    return emptyEvidence(planContext, letterType, compositionScope);
+    return emptyEvidence(planContext, letterType, memberSelection);
   }
 
   // Fetch claims + line items in parallel. Pull metadata on line items so
@@ -1270,8 +1309,8 @@ export async function resolveEvidence(
       ),
       signViolation: claimsArr.some((c) => c.dataTrust.signViolation),
     },
-    // S326 — the scope this evidence was resolved under, for every consumer.
-    compositionScope: compositionScope ? Array.from(compositionScope) : null,
+    // S326 — the member's composition record this evidence was resolved under.
+    compositionScope: memberSelection,
   };
 }
 
@@ -1636,7 +1675,7 @@ function computeEvidenceGaps(
 function emptyEvidence(
   planContext: PlanContext | null,
   letterType?: string,
-  compositionScope?: CompositionScopeSet,
+  memberSelection?: MemberSelection | null,
 ): DisputeEvidence {
   return {
     claims: [],
@@ -1655,7 +1694,7 @@ function emptyEvidence(
     legalBasis: resolveLegalBasis(letterType),
     gaps: [],
     dataTrust: { headerReconciliationFailed: false, signViolation: false },
-    compositionScope: compositionScope ? Array.from(compositionScope) : null,
+    compositionScope: memberSelection ?? null,
   };
 }
 
@@ -2507,6 +2546,11 @@ function buildLineItemEvidence(
  * holds table ⇔ published text together).
  */
 const FINDING_TO_GROUND = deriveFindingToGround();
+
+/** S326 — the valid ground-key set for metadata parsing (catalog keys, one SoT). */
+const FINDING_TO_GROUND_VALID: Record<string, true> = Object.fromEntries(
+  ALL_DISPUTE_GROUND_TYPES.map((g) => [g, true as const]),
+);
 
 /** S326 — drop findings whose ground the member did not select (and, under
  *  scope, findings mapped to no ground — unselectable ⇒ unarguable). Null

@@ -26,7 +26,7 @@ import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { userScoped } from "@/lib/security/user-scoped";
 import { resolvePlanContext } from "@/lib/disputes/plan-context";
-import { resolveEvidence } from "@/lib/disputes/evidence-resolver";
+import { resolveEvidence, memberSelectionFromMeta } from "@/lib/disputes/evidence-resolver";
 import { rerenderDisputeLetter } from "@/lib/disputes/rerender";
 import { reparseField } from "@/lib/plan/reparse-field";
 import { loadDecorationContext } from "@/lib/plan/analyze-decoration";
@@ -208,6 +208,8 @@ export async function POST(
   });
   let evidence = await resolveEvidence(supabase, {
     userId: user.id,
+    // S326 — re-compose under the letter's own persisted scope.
+    memberSelection: memberSelectionFromMeta((dispute.metadata as Record<string, unknown> | null) ?? null),
     claimIds: [dispute.claim_id],
     lineItemIds: allLineItemIds.length > 0 ? allLineItemIds : undefined,
     planContext,
@@ -269,6 +271,8 @@ export async function POST(
             if (cf20UpgradeCount > 0) {
               evidence = await resolveEvidence(supabase, {
                 userId: user.id,
+                // S326 — same scope on the post-reparse re-resolve.
+                memberSelection: memberSelectionFromMeta((dispute.metadata as Record<string, unknown> | null) ?? null),
                 claimIds: [dispute.claim_id],
                 lineItemIds: allLineItemIds.length > 0 ? allLineItemIds : undefined,
                 planContext,

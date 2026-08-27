@@ -25,12 +25,12 @@ import { userScoped } from "@/lib/security/user-scoped";
 import { driftMachineryApplies } from "@/lib/disputes/evidence-fingerprint";
 import { resolvePlanContext, type InsurerAddressOverride } from "@/lib/disputes/plan-context";
 import { validateAnchor } from "@/lib/disputes/deadline-anchors";
-import { resolveEvidence } from "@/lib/disputes/evidence-resolver";
+import { resolveEvidence, memberSelectionFromMeta } from "@/lib/disputes/evidence-resolver";
 import { rerenderDisputeLetter } from "@/lib/disputes/rerender";
 import { persistDisputeLetter } from "@/lib/disputes/persist";
 import { loadClaimLitigationAttested } from "@/lib/disputes/letter-access-state";
 import { checkEscalateGate } from "@/lib/disputes/escalate-gate";
-import { resolveLetterTypeFromDispute, letterPatientIdentityFromMeta } from "@/lib/disputes/letter-type";
+import { resolveLetterTypeFromDispute, letterPatientIdentityFromMeta, LETTER_COMPOSE_VERSION } from "@/lib/disputes/letter-type";
 import type { CaseLetterRef } from "@/lib/disputes/outcome-taxonomy";
 import { evaluateDeadline, readDeadlineConfig } from "@/lib/disputes/deadline-engine";
 import { loadServerSubscription } from "@/lib/subscription/server";
@@ -213,6 +213,9 @@ export async function POST(
   try {
     evidence = await resolveEvidence(supabase, {
       userId: user.id,
+      // S326 — the escalation re-asserts the ORIGINAL adopted selection (the
+      // member's prior composition carries forward; no fresh selection act).
+      memberSelection: memberSelectionFromMeta((dispute.metadata as Record<string, unknown> | null) ?? null),
       claimIds: [dispute.claim_id],
       lineItemIds: allLineItemIds.length > 0 ? allLineItemIds : undefined,
       planContext,
@@ -290,6 +293,11 @@ export async function POST(
   // keys on (user, claim_line_item, dispute_type), so a repeat escalation updates
   // the same target-type row). Carry the source dispute's amount.
   const amountDisputed = Number(dispute.amount_disputed) || 0;
+  // S326 — the escalation CARRIES the source letter's member selection (the
+  // member's prior composition governs the next rung; no fresh selection act).
+  const carriedSelection = memberSelectionFromMeta(
+    (dispute.metadata as Record<string, unknown> | null) ?? null,
+  );
   const result = await persistDisputeLetter(supabase, {
     userId: user.id,
     claimId: dispute.claim_id,
@@ -299,9 +307,28 @@ export async function POST(
     letterContent: rerendered.body,
     insurancePlanId: (dispute.insurance_plan_id as string | null) ?? null,
     ...(deadlineEngineOn ? { deadline: { governingDeadlineDate, deadlineType } } : {}),
+    memberSelection: carriedSelection,
   });
   if (!result?.disputeId) {
     return NextResponse.json({ error: "Failed to persist escalation" }, { status: 500 });
+  }
+
+  // S326 — the member ADOPTED the new instrument (the escalate click); the
+  // carried grounds are the payload, marked carried — the record never
+  // fabricates a fresh selection act. Fail-soft, refs-only.
+  if (carriedSelection && dispute.claim_id) {
+    await emitCaseEvents(supabase, user.id, [{
+      claimId: dispute.claim_id as string,
+      disputeId: result.disputeId,
+      kind: "letter_adopted",
+      payload: {
+        letterType,
+        groundCount: carriedSelection.grounds.length,
+        adoptedCitations: carriedSelection.adoptedCitations,
+        carried: true,
+        composeVersion: LETTER_COMPOSE_VERSION,
+      },
+    }]);
   }
 
   // Persist the escalation inputs onto the NEW dispute's metadata so re-views, the

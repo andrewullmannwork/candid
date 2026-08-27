@@ -598,7 +598,7 @@ export function resolveLetterRecovery(
     evidence.compositionScope == null
       ? []
       : (Object.keys(DISPUTE_GROUND_CATALOG) as DisputeGroundType[]).filter(
-          (g) => !evidence.compositionScope!.includes(g),
+          (g) => !evidence.compositionScope!.grounds.includes(g),
         ),
   );
 

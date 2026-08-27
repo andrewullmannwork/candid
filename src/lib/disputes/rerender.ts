@@ -16,7 +16,7 @@ import type { PlanContext } from "./plan-context";
 import type { DisputeEvidence } from "./evidence-resolver";
 import { LETTER_TEMPLATES, buildSenderBlock } from "./templates";
 import { letterRecipientKind } from "./index";
-import { letterPatientName, pickPatientName, type LetterPatientIdentity } from "./letter-type";
+import { letterPatientName, pickPatientName, type LetterPatientIdentity, withConspicuousStatement } from "./letter-type";
 import { buildPriorContactRecital, RECITAL_IN_OPENING } from "./prior-contact";
 import { loadCaseProjection } from "@/lib/case/load-case-timeline";
 import { guidedCallLogFromMeta } from "@/lib/guides/pack-registry";
@@ -259,7 +259,10 @@ export async function rerenderDisputeLetter(
   // S310 (Andrew) — the sender block above the dateline; same builder + same
   // fail-soft rule as generateDisputeLetter (lockstep).
   const senderBlock = buildSenderBlock(bill.patient.name ?? "", planContext?.userAddress);
-  const finalBody = senderBlock ? `${senderBlock}\n\n${spliced}` : spliced;
+  // S326 — §81.101(c), lockstep with generateDisputeLetter (idempotent).
+  const finalBody = withConspicuousStatement(
+    senderBlock ? `${senderBlock}\n\n${spliced}` : spliced,
+  );
 
   return {
     body: finalBody,
