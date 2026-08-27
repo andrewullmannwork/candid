@@ -407,7 +407,7 @@ function dcaBoard(
     short,
     role: "licensing_discipline",
     menuLabel: `File a licensing complaint — ${short}`,
-    menuHint: "About the care or conduct — never the bill. You file this yourself.",
+    menuHint: "About the care or conduct — never the bill.",
     handles,
     cannot,
     phone,
@@ -427,7 +427,7 @@ export const CA_PROVIDER_CONDUCT_FORUMS: Record<string, Forum> = {
     unit: "Central Complaint Unit",
     role: "licensing_discipline",
     menuLabel: "File a licensing complaint — Medical Board of California (M.D.s)",
-    menuHint: "Quality of care, prescribing, records, impairment. Not billing. You file this yourself.",
+    menuHint: "Quality of care, prescribing, records, impairment. Not billing.",
     handles:
       'Quality of Care (Misdiagnosis, treatment/medication causing side effects, surgical complications, negligent care, etc.); Office Practice (Failure to sign death certificate, failure to provide records, misleading advertising); Inappropriate Prescribing; Provider Impairment; Sexual Misconduct; Unlicensed Activity.',
     cannot: [
@@ -742,7 +742,7 @@ export const CA_BILLING_CONDUCT_FORUMS: Record<string, Forum> = {
     role: "law_enforcement",
     menuLabel: "Report suspected insurance fraud — CDI Fraud Division",
     menuHint:
-      "Charging for services not rendered / inflating claims to an insurer. May be filed anonymously. You file this yourself.",
+      "Charging for services not rendered / inflating claims to an insurer. May be filed anonymously.",
     handles:
       "Professionals and technicians who inflate the cost of services or charge for services not rendered. Notification of insurance fraud may be made anonymously by members of the general public.",
     cannot: [
@@ -766,7 +766,7 @@ export const CA_BILLING_CONDUCT_FORUMS: Record<string, Forum> = {
     unit: "Audits & Investigations — Investigations Division",
     role: "law_enforcement",
     menuLabel: "Report Medi-Cal provider fraud — DHCS",
-    menuHint: "Medi-Cal billing fraud, incl. balance-billing members beyond Medi-Cal rates. Anonymous OK. You file this yourself.",
+    menuHint: "Medi-Cal billing fraud, incl. balance-billing members beyond Medi-Cal rates. Anonymous OK.",
     handles:
       "Fraud occurs when providers misrepresent information or engage in dishonest practices to obtain payments they are not entitled to — including charging Medi-Cal for care that was never provided and charging members for amounts beyond Medi-Cal's reimbursement rate.",
     cannot: [

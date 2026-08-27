@@ -1174,7 +1174,9 @@ function buildLetterSteps(
                         : null,
                     };
                 }),
-                filedLabel: filedStep?.checkboxLabel ?? "Complaint filed",
+                // Routed doors include IMR APPLICATIONS, not just complaints —
+                // "Filed" is the word that is true of every routed door.
+                filedLabel: routedState ? "Filed" : (filedStep?.checkboxLabel ?? "Complaint filed"),
                 notePlaceholder: CASE_RAIL.filedNotePlaceholder,
                 fileAgainLabel: CASE_RAIL.regulatorFileAgainLabel,
                 // Offered only while THIS letter has nothing filed — "I'm not

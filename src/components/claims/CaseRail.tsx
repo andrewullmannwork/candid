@@ -49,6 +49,7 @@ import {
   CA_REGULATOR_PROMPT,
   WA_BBPA_PROMPT,
   type DenialBasis,
+  type RegulatoryClassification,
 } from "@/lib/disputes/forums";
 
 // ── Surface 3 — flagged-bill guided step rail chrome ──────────────────────
@@ -518,7 +519,7 @@ function ForumScreeningPanel({
 }: {
   planId: string;
   getAuthToken: () => Promise<string | null>;
-  onSaved?: () => void | Promise<void>;
+  onSaved?: (c?: RegulatoryClassification) => void | Promise<void>;
 }) {
   const [coverage, setCoverage] = useState<string>("");
   const [caReg, setCaReg] = useState<string>("");
@@ -545,7 +546,8 @@ function ForumScreeningPanel({
         }),
       });
       if (!res.ok) throw new Error(String(res.status));
-      await onSaved?.();
+      const body = (await res.json()) as { classification?: RegulatoryClassification };
+      await onSaved?.(body.classification);
     } catch {
       setErr(true);
     } finally {
@@ -555,8 +557,10 @@ function ForumScreeningPanel({
   return (
     <div className="mb-2.5 rounded-[10px] border border-blue-200 bg-blue-50/40 px-3 py-2.5 text-[13px]">
       <div className="font-bold text-gray-900">Which agencies can actually help you?</div>
+      {/* S325 test round 1 (Andrew-approved string; "agencies" plural because
+          the answer is often several doors and sometimes honestly none). */}
       <div className="mt-0.5 text-[12px] text-gray-500">
-        Two quick facts from your own paperwork route this to the right doors. {COVERAGE_PROMPT.help}
+        Answer the questions below to determine the correct agencies.
       </div>
       <label className="mt-2 block text-[12px] font-semibold text-gray-700">
         {COVERAGE_PROMPT.question}
@@ -630,7 +634,7 @@ function ForumScreeningPanel({
           onClick={() => void save()}
           className="inline-flex items-center rounded-lg bg-blue-600 px-3.5 py-1.5 text-[12.5px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
         >
-          {busy ? "Saving…" : "Route my doors"}
+          {busy ? "Saving…" : "Confirm my choices"}
         </button>
         {err && <span className="text-[12px] text-red-600">Couldn&apos;t save — try again.</span>}
         <span className="text-[11.5px] text-gray-400">The general directory below works either way.</span>
@@ -654,6 +658,7 @@ export function CaseRail({
   onRefetch,
   onStepInteraction,
   onClassificationSaved,
+  onAnswerDenialBasis,
 }: {
   /**
    * S303 — the rail arrives COMPOSED. ClaimDetail composes once (composeRail)
@@ -706,8 +711,12 @@ export function CaseRail({
    *  regulator doors, collections). ClaimDetail collapses the savings math on
    *  it: interacting with a later step means the answer has been read. One
    *  hook at the one write funnel (runClaimStep), not per-step wiring. */
-  /** S325 — refetch the plan-level classification after the screening saves. */
-  onClassificationSaved?: () => void | Promise<void>;
+  /** S325 — receives the SAVED classification for an instant recompose (no
+   *  GET round-trip); called with nothing to request a refetch instead. */
+  onClassificationSaved?: (c?: RegulatoryClassification) => void | Promise<void>;
+  /** S325 — optimistic denial-basis answer (the owner applies it synchronously
+   *  and persists in the background). */
+  onAnswerDenialBasis?: (disputeId: string, basis: DenialBasis) => void;
   onStepInteraction?: () => void;
 }) {
   const router = useRouter();
@@ -1205,15 +1214,21 @@ export function CaseRail({
                             <button
                               key={basis}
                               type="button"
-                              onClick={() =>
+                              onClick={() => {
+                                if (onAnswerDenialBasis) {
+                                  // Optimistic: the owner recomposes the rail
+                                  // synchronously and persists in the background.
+                                  onAnswerDenialBasis(s.move.disputeId, basis);
+                                  return;
+                                }
                                 void (async () => {
                                   const ok = await runGuideStep({
                                     stepId: `packD:screen:denialBasis:${s.move.disputeId}`,
                                     note: basis,
                                   });
                                   if (ok) await onRefetch();
-                                })()
-                              }
+                                })();
+                              }}
                               className="inline-flex items-center rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-[12.5px] font-semibold text-gray-800 hover:border-blue-400"
                             >
                               {label}
@@ -1275,7 +1290,13 @@ export function CaseRail({
                               {d.phone && (
                                 <span className="mt-0.5 block text-[11.5px] text-gray-400">{d.phone}</span>
                               )}
-                              {d.actionOnly && (
+                              {/* S325 test round 1 (Andrew): EVERY door is
+                                  member-filed, so the badge is universal on the
+                                  routed grid — marking only the letter-wall
+                                  (actionOnly) subset read as an inconsistency.
+                                  actionOnly stays a composition wall, not a
+                                  badge condition. */}
+                              {reg.routed != null && (
                                 <span className="mt-1 inline-flex items-center rounded-full bg-violet-50 px-2 py-[2px] text-[10.5px] font-semibold text-violet-700 ring-1 ring-inset ring-violet-200">
                                   You file this yourself
                                 </span>
