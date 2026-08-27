@@ -36,9 +36,55 @@ export function letterRequiresPro(letterType: DisputeLetterType | null | undefin
   return !!letterType && PRO_LETTER_TYPES.includes(letterType);
 }
 
+/**
+ * Letter types that are unavailable in specific U.S. states (S324, 2026-08-26).
+ *
+ * `negotiation` (the self-pay "accept less than billed" letter) is a regulated
+ * debt-settlement service under California's CCFPL registration regime
+ * (10 CCR § 1001(b)(1) + § 1010(a)); it is gated for California residents
+ * until Candid's DFPI registration is effective. The error-dispute and
+ * insurer-appeal letters assert the CORRECT amount / coverage and are a
+ * different analysis — they are deliberately NOT gated.
+ *
+ * ⚠ This is a LEGAL gate, not a product cap: it changes only via a reviewed PR
+ * (no feature flag, no DB config — a flag that could switch it off would
+ * defeat its purpose). `gateUnknownState: true` = fail closed when we do not
+ * know the user's state.
+ *
+ * ⚠ UN-GATING CA IS SEQUENCED — do not remove "CA" from this list without the
+ * runbook (Andrew ruling R15, S325). The lawful ORDER is: business decision →
+ * marketing cleanup verified → DFPI registration FILED (~45 days ahead) →
+ * registration EFFECTIVE → then this PR. Registration pending ≠ registered;
+ * un-gating first makes the first letter sent an unregistered-period violation.
+ * Runbook: vault plans/candid-legal-review-and-dfy-monetization-2026-08-26.md §2.
+ */
+export const GEO_GATED_LETTER_TYPES: Partial<
+  Record<DisputeLetterType, { states: readonly string[]; gateUnknownState: boolean }>
+> = {
+  negotiation: { states: ["CA"], gateUnknownState: true },
+};
+
+/** True when a letter type has any geo restriction — callers use this to decide
+ *  whether the user's state must be loaded before evaluateLetterAccess. */
+export function letterGeoRelevant(letterType: DisputeLetterType | null | undefined): boolean {
+  return !!letterType && letterType in GEO_GATED_LETTER_TYPES;
+}
+
+/** ONE home for the user-facing copy shown when the geo gate refuses. */
+export const GEO_GATE_MESSAGE =
+  "Self-pay negotiation letters aren't available to California residents right now. Your other letter options are unaffected.";
+
 export interface LetterAccessInput {
   letterType: DisputeLetterType;
   isPro: boolean;
+  /**
+   * The user's profile state (profiles.state, e.g. "CA"), or null when absent.
+   * REQUIRED (not optional) so no future call site can compile without deciding
+   * how it sources the state — pass null only to mean "no state on file",
+   * which FAILS CLOSED for geo-gated types. Callers may skip the DB read when
+   * `letterGeoRelevant(letterType)` is false and pass null.
+   */
+  userState: string | null;
   // Future per-count cap inputs go here (disputeCount?, freeQuota?) — one added
   // branch below, callers unchanged.
 }
@@ -54,11 +100,20 @@ export interface LetterAccessResult {
 
 /**
  * Decide whether a user may generate a given dispute letter type.
- * Today: escalation letters need Pro; everything else (first-contact letters +
- * debt_validation) is free.
+ * Geo first (a legal gate — Pro cannot buy past it), then tier: escalation
+ * letters need Pro when listed; everything else is free.
  */
 export function evaluateLetterAccess(input: LetterAccessInput): LetterAccessResult {
-  const { letterType, isPro } = input;
+  const { letterType, isPro, userState } = input;
+
+  const geo = GEO_GATED_LETTER_TYPES[letterType];
+  if (geo) {
+    const state = userState?.trim().toUpperCase() || null;
+    const gated = state ? geo.states.includes(state) : geo.gateUnknownState;
+    if (gated) {
+      return { allowed: false, requiresPro: false, reason: "geo_unavailable" };
+    }
+  }
 
   const requiresPro = PRO_LETTER_TYPES.includes(letterType);
   if (requiresPro && !isPro) {

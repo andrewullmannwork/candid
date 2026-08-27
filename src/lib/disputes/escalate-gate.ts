@@ -86,7 +86,10 @@ export function checkEscalateGate(input: {
 
   // Tier: escalation letters are Pro; debt_validation stays free. Single source
   // of truth for the rule — shared with /api/disputes/generate (Case 1).
-  const access = evaluateLetterAccess({ letterType: targetLetterType, isPro });
+  // userState: null is safe HERE ONLY because ESCALATION_LETTER_TYPES contains
+  // no geo-gated type (S324) — the letter-geo-gate fixture asserts exactly that,
+  // so adding a geo-gated type to the ladder fails CI until state is threaded.
+  const access = evaluateLetterAccess({ letterType: targetLetterType, isPro, userState: null });
   if (!access.allowed) {
     return { ok: false, status: 403, error: access.reason ?? "subscription_required" };
   }

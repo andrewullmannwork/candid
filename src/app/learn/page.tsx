@@ -22,11 +22,15 @@ const CLUSTER_LABEL: Record<Cluster, string> = {
  * lede runs past 240 — it would be cut mid-clause. Using the opening sentence
  * verbatim keeps the snippet within budget without rewording approved copy.
  */
+// S324 (Andrew ruling, 2026-08-26): debt-reduction framing ("negotiate your
+// total medical cost down", "eliminate surprise costs") removed from the hub
+// lede + indexed meta — the accuracy-lane surfaces are marketed on accuracy
+// and coverage, never savings (DFPI primary-purpose discipline).
 const LEDE =
-  "Step-by-step guides to understand your medical bills, dispute incorrect charges, and negotiate your total medical cost down. Plus, information on how to deal with collections, eliminate surprise costs, and how to get the most out of your benefits.";
+  "Step-by-step guides to understand your medical bills, dispute incorrect charges, and find out what you actually owe. Plus, information on how to deal with collections, understand surprise-billing protections, and how to get the most out of your benefits.";
 
 const META_DESCRIPTION =
-  "Step-by-step guides to understand your medical bills, dispute incorrect charges, and negotiate your total medical cost down.";
+  "Step-by-step guides to understand your medical bills, dispute incorrect charges, and find out what you actually owe.";
 
 export const metadata: Metadata = {
   title: "Guides",

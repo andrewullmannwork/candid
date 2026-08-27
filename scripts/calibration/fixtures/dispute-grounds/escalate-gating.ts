@@ -90,15 +90,15 @@ check("allowlist · rejects null", !isEscalationLetterType(null));
 // S299 (Andrew): PRO_LETTER_TYPES emptied — every rung is free; requiresPro
 // false across the board. Machinery proven intact by the Pro→allowed check.
 {
-  const a = evaluateLetterAccess({ letterType: "final_notice", isPro: false });
+  const a = evaluateLetterAccess({ letterType: "final_notice", isPro: false, userState: null });
   check(
     "access · final_notice free → allowed (wall removed S299)",
     a.allowed && a.requiresPro === false,
   );
 }
-check("access · external_review free → allowed (wall removed S299)", evaluateLetterAccess({ letterType: "external_review", isPro: false }).allowed);
-check("access · final_notice Pro → allowed", evaluateLetterAccess({ letterType: "final_notice", isPro: true }).allowed);
-check("access · debt_validation free → allowed", evaluateLetterAccess({ letterType: "debt_validation", isPro: false }).allowed);
+check("access · external_review free → allowed (wall removed S299)", evaluateLetterAccess({ letterType: "external_review", isPro: false, userState: null }).allowed);
+check("access · final_notice Pro → allowed", evaluateLetterAccess({ letterType: "final_notice", isPro: true, userState: null }).allowed);
+check("access · debt_validation free → allowed", evaluateLetterAccess({ letterType: "debt_validation", isPro: false, userState: null }).allowed);
 check("access · letterRequiresPro(final_notice) === false (wall removed S299)", !letterRequiresPro("final_notice"));
 check("access · letterRequiresPro(debt_validation) === false", !letterRequiresPro("debt_validation"));
 check("access · letterRequiresPro(undefined) === false", !letterRequiresPro(undefined));
