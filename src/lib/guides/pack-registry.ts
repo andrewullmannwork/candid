@@ -22,6 +22,7 @@
 // per-letter copy table EXHAUSTIVE: a new DisputeLetterType fails the compile
 // until someone writes its rail copy, instead of silently taking a fallback.
 import type { DisputeLetterType } from "@/lib/billing/types";
+import { fallbackForums } from "@/lib/disputes/forums";
 
 /** Mirrors the checklist routes' key validation — ids here MUST pass it. */
 export const GUIDE_KEY_RE = /^[a-zA-Z0-9_.:-]{1,64}$/;
@@ -602,41 +603,34 @@ export const PACK_D_DOORS_LEAD = "Match the door to who wronged you.";
 export const PACK_D_SUGGESTED_CHIP = "suggested for this case";
 export const PACK_D_CASE_FILE_CHIP = "Case file — Pro";
 
+/**
+ * S325 (PR-B, D4 — the one-registry fold): the door DATA moved to
+ * `src/lib/disputes/forums.ts` (the verified forum registry; ONE home). The
+ * four generic doors live there as `state:"US"` fallback entries whose
+ * menu fields reproduce the former literals BYTE-EXACT, and this projection
+ * keeps every existing consumer (rail, spine steps, evidence-compiler)
+ * compiling unchanged. `id` widens to string so state-routed doors (flag
+ * `forum_menu_v1`, flag-ON path) flow through the same tile pipeline.
+ */
 export type ComplaintDoor = {
-  id: "ag" | "cfpb" | "cms" | "doi";
+  id: string;
   name: string;
   desc: string;
   href: string;
   phone?: string;
 };
 
-export const COMPLAINT_DOORS: ComplaintDoor[] = [
-  {
-    id: "ag",
-    name: "State attorney general",
-    desc: "Hospital billing practices, collection abuse, charity care",
-    href: "https://www.naag.org/find-my-ag/",
-  },
-  {
-    id: "cfpb",
-    name: "CFPB",
-    desc: "Debt collectors, credit-report errors",
-    href: "https://www.consumerfinance.gov/complaint/",
-  },
-  {
-    id: "cms",
-    name: "CMS No Surprises Help Desk",
-    desc: "Surprise billing, good-faith-estimate violations",
-    href: "https://www.cms.gov/medical-bill-rights/help/submit-a-complaint",
-    phone: "1-800-985-3059",
-  },
-  {
-    id: "doi",
-    name: "State insurance department",
-    desc: "Insurer conduct, failed appeals",
-    href: "https://content.naic.org/consumer/how-to-file-complaint",
-  },
-];
+export function doorFromForum(f: import("@/lib/disputes/forums").Forum): ComplaintDoor {
+  return {
+    id: f.id,
+    name: f.menuLabel,
+    desc: f.menuHint,
+    href: f.url,
+    ...(f.phone ? { phone: f.phone } : {}),
+  };
+}
+
+export const COMPLAINT_DOORS: ComplaintDoor[] = fallbackForums().map(doorFromForum);
 
 export const PACK_D_STEPS: GuideStep[] = [
   {
@@ -673,6 +667,10 @@ export function suggestDoors(input: {
   hasCollections: boolean;
   grounds: string[];
 }): Array<ComplaintDoor["id"]> {
+  // S325 / R14: this detection-driven featuring survives ONLY on the
+  // flag-OFF legacy path. The `forum_menu_v1` routed pool renders every
+  // eligible door in the fixed role order with nothing featured; when the
+  // flag is ON everywhere and the legacy path retires, delete this.
   const out: Array<ComplaintDoor["id"]> = [input.track === "provider" ? "ag" : "doi"];
   if (input.hasCollections) out.push("cfpb");
   if (input.grounds.includes("balance_billing")) out.push("cms");
