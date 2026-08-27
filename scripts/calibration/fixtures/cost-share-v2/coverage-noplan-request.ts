@@ -98,6 +98,7 @@ function makeEvidence(lines: LineItemEvidence[]): DisputeEvidence {
     dataTrust: { headerReconciliationFailed: false, signViolation: false },
   } satisfies ClaimEvidence;
   return {
+    compositionScope: null,
     claims: [claim],
     totals: { claimCount: 1, lineItemCount: lines.length, totalBilled: 600, totalDiscrepancy: 0 },
     planEvidence: null, networkEvidence: null, communityEvidence: null, legalBasis: [], gaps: [],

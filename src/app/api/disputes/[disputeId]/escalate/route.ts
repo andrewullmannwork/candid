@@ -28,6 +28,7 @@ import { validateAnchor } from "@/lib/disputes/deadline-anchors";
 import { resolveEvidence } from "@/lib/disputes/evidence-resolver";
 import { rerenderDisputeLetter } from "@/lib/disputes/rerender";
 import { persistDisputeLetter } from "@/lib/disputes/persist";
+import { loadClaimLitigationAttested } from "@/lib/disputes/letter-access-state";
 import { checkEscalateGate } from "@/lib/disputes/escalate-gate";
 import { resolveLetterTypeFromDispute, letterPatientIdentityFromMeta } from "@/lib/disputes/letter-type";
 import type { CaseLetterRef } from "@/lib/disputes/outcome-taxonomy";
@@ -161,12 +162,20 @@ export async function POST(
   // Gate — allowlist + tier + exhaustion + rung-already-taken (fail-closed;
   // same posture as generate).
   const subscription = await loadServerSubscription(supabase, user.id);
+  // S326 (Rule 8) — the litigation hold reaches escalation exactly like
+  // generate/redraft (one gate, one loader).
+  const litigationAttested = await loadClaimLitigationAttested(
+    supabase,
+    user.id,
+    (dispute.claim_id as string | null) ?? null,
+  );
   const gate = checkEscalateGate({
     targetLetterType,
     isPro: subscription.isPro,
     appealExhausted,
     caseLetters,
     sourceDisputeId: dispute.id as string,
+    litigationAttested,
   });
   if (!gate.ok) {
     return NextResponse.json(

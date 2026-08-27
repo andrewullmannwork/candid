@@ -42,8 +42,9 @@ import {
   letterGeoRelevant,
   evaluateLetterAccess,
   GEO_GATE_MESSAGE,
+  LITIGATION_HOLD_MESSAGE,
 } from "@/lib/disputes/letter-access";
-import { loadUserStateForLetterAccess } from "@/lib/disputes/letter-access-state";
+import { loadUserStateForLetterAccess, loadClaimLitigationAttested } from "@/lib/disputes/letter-access-state";
 import { resolveLetterTypeFromDispute, letterPatientIdentityFromMeta, isLiveDraftStatus } from "@/lib/disputes/letter-type";
 
 async function getAuthUser(req: NextRequest) {
@@ -121,15 +122,24 @@ export async function POST(
     const userState = letterGeoRelevant(redraftLetterType)
       ? await loadUserStateForLetterAccess(supabase, user.id)
       : null;
-    const access = evaluateLetterAccess({ letterType: redraftLetterType, isPro, userState });
+    // S326 (Rule 8) — a redraft is a freshly composed letter; the litigation
+    // hold reaches it exactly like generate (one gate, one home).
+    const litigationAttested = await loadClaimLitigationAttested(
+      supabase,
+      user.id,
+      (dispute.claim_id as string | null) ?? null,
+    );
+    const access = evaluateLetterAccess({ letterType: redraftLetterType, isPro, userState, litigationAttested });
     if (!access.allowed) {
       console.log(
         `[disputes/redraft] letter-access blocked: user ${user.id} letterType=${redraftLetterType} reason=${access.reason} → 403`,
       );
       return NextResponse.json(
-        access.reason === "geo_unavailable"
-          ? { error: "geo_unavailable", reason: GEO_GATE_MESSAGE }
-          : { error: "subscription_required", requiredTier: "pro" },
+        access.reason === "litigation_hold"
+          ? { error: "litigation_hold", reason: LITIGATION_HOLD_MESSAGE }
+          : access.reason === "geo_unavailable"
+            ? { error: "geo_unavailable", reason: GEO_GATE_MESSAGE }
+            : { error: "subscription_required", requiredTier: "pro" },
         { status: 403 },
       );
     }

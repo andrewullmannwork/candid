@@ -147,6 +147,7 @@ const CONFIRMED_LINES = [pcpVisit, annualPhysical, vaccine, vaccineAdmin];
 
 function evidenceWith(lines: LineItemEvidence[]): DisputeEvidence {
   return {
+    compositionScope: null,
     claims: [
       {
         claimId: "claim-146b1b9f",

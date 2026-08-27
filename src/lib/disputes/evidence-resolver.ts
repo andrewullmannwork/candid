@@ -39,9 +39,13 @@ import {
   classifyDisputeType,
   deriveCiteGradeTier,
   deriveDollarAtStake,
+  scopeAllows,
+  type CompositionScopeSet,
   type DisputeTypeClass,
   type CiteGradeTier,
 } from "./strength-scoring";
+import { deriveFindingToGround } from "./dispute-ground-catalog";
+import type { DisputeGroundType } from "./dispute-grounds";
 import {
   resolveSecondaryCoverage,
   loadPlanCoverageMeta,
@@ -671,6 +675,18 @@ export interface DisputeEvidence {
     headerReconciliationFailed: boolean;
     signViolation: boolean;
   };
+  /**
+   * S326 (member_composition_v1) — the member's composition scope this evidence
+   * was resolved UNDER, or null for the unscoped derivation (flag OFF, legacy
+   * letters, and the composition step's own full-facts preview). Scope rides
+   * the evidence object — the ONE carrier both generate and rerender pass
+   * through the whole pipeline — so every consumer (classifier stamps,
+   * recovery, detail blocks, templates, the panel) reads the same scope it
+   * was built under and none can be forgotten (the S292 one-derivation rule).
+   * Persisted as `disputes.metadata.member_selection`; rerender paths rebuild
+   * it from the row (the attestedLineItemIds metadata→typed-param pattern).
+   */
+  compositionScope: readonly DisputeGroundType[] | null;
 }
 
 export async function resolveEvidence(
@@ -715,6 +731,16 @@ export async function resolveEvidence(
      * first-draft generate calls (no attestation exists yet).
      */
     attestedLineItemIds?: string[];
+    /**
+     * S326 (member_composition_v1) — the grounds the member selected at the
+     * composition step. Read from `dispute.metadata.member_selection` by the
+     * rerender-path callers (GET / redraft / escalate) and from the request
+     * body by generate — the same metadata→typed-param pipeline as
+     * `attestedLineItemIds`. When present, the line build filters findings and
+     * signals so ONLY selected grounds can classify, price, or render;
+     * null/absent → the unscoped (today's) derivation, byte-identical.
+     */
+    selectedGroundTypes?: readonly DisputeGroundType[] | null;
   },
 ): Promise<DisputeEvidence> {
   const { userId, claimIds, lineItemIds, planContext, disputeId } = params;
@@ -740,9 +766,12 @@ export async function resolveEvidence(
   const userConfirmedSamePlan = params.userConfirmedSamePlan ?? null;
   const canonicalPlanIdForBillYear = params.canonicalPlanIdForBillYear ?? null;
   const attestedLineItemIds = new Set(params.attestedLineItemIds ?? []);
+  // S326 — the member's composition scope, built ONCE; null = unscoped (today).
+  const compositionScope: CompositionScopeSet =
+    params.selectedGroundTypes != null ? new Set(params.selectedGroundTypes) : null;
 
   if (claimIds.length === 0) {
-    return emptyEvidence(planContext, letterType);
+    return emptyEvidence(planContext, letterType, compositionScope);
   }
 
   // Fetch claims + line items in parallel. Pull metadata on line items so
@@ -1045,6 +1074,7 @@ export async function resolveEvidence(
       claimEvidence
         ? { totalBilled: claimEvidence.totalBilled, effectiveTotals: claimEvidence.effectiveTotals }
         : undefined,
+      compositionScope,
     );
     if (claimEvidence) claimEvidence.lineItemEvidence.push(evidence);
   }
@@ -1240,6 +1270,8 @@ export async function resolveEvidence(
       ),
       signViolation: claimsArr.some((c) => c.dataTrust.signViolation),
     },
+    // S326 — the scope this evidence was resolved under, for every consumer.
+    compositionScope: compositionScope ? Array.from(compositionScope) : null,
   };
 }
 
@@ -1604,6 +1636,7 @@ function computeEvidenceGaps(
 function emptyEvidence(
   planContext: PlanContext | null,
   letterType?: string,
+  compositionScope?: CompositionScopeSet,
 ): DisputeEvidence {
   return {
     claims: [],
@@ -1622,6 +1655,7 @@ function emptyEvidence(
     legalBasis: resolveLegalBasis(letterType),
     gaps: [],
     dataTrust: { headerReconciliationFailed: false, signViolation: false },
+    compositionScope: compositionScope ? Array.from(compositionScope) : null,
   };
 }
 
@@ -2301,6 +2335,16 @@ function buildLineItemEvidence(
    * bills). Optional: absent → the pre-F12b null behavior.
    */
   claimMoneyCtx?: { totalBilled: number; effectiveTotals: EffectiveClaimTotals },
+  /**
+   * S326 (member_composition_v1) — the member's composition scope. When set,
+   * the line is built as the LETTER may argue it: findings whose ground the
+   * member did not select are out of the line's evidence (one filter, and the
+   * classifier, dollar weight, ground derivation, and detail blocks all
+   * inherit); the attestation override applies only when service_not_rendered
+   * is selected; peer codes enter only when coding_peer is selected. Null →
+   * unscoped, byte-identical to today.
+   */
+  scope: CompositionScopeSet = null,
 ): LineItemEvidence {
   const billed = Number(li.billed_amount ?? 0);
   const insurancePaid = li.insurance_paid != null ? Number(li.insurance_paid) : null;
@@ -2367,15 +2411,28 @@ function buildLineItemEvidence(
   const communityOutcome = lookupKey ? communityByCode.get(lookupKey) ?? null : null;
   const siblingCodes = lookupKey ? siblingsByCode.get(lookupKey) ?? null : null;
   const pricingBenchmark = lookupKey ? pricingByCode.get(lookupKey) ?? null : null;
-  const auditFindings = extractAuditFindings(li.metadata);
+  // S326 — under a member composition scope, a finding whose ground the member
+  // did not select is OUT of this line's letter evidence: the classifier
+  // signal, the dollar weight, groundsForLine's findingTypes, and the detail
+  // blocks all read this one array, so one filter here scopes them all.
+  // Findings mapped to no ground (upcoding / uncategorized) also drop under
+  // scope — they cannot be selected, so a member-composed letter cannot argue
+  // them. Unscoped (null) → unfiltered, byte-identical.
+  const auditFindings = filterFindingsByScope(extractAuditFindings(li.metadata), scope);
   const auditRan = extractAuditRan(li.metadata);
+  // S326 — the attestation override applies only when the member selected the
+  // service_not_rendered ground (their attestation FACT persists in dispute
+  // metadata either way; the letter argues it only when selected).
+  const attestedInScope = attested && scopeAllows(scope, "service_not_rendered");
   // S74.6 D5 — peer codes for the slug (corroborated cross-user vote map).
   // Template renders the alternative-code section when this array has ≥ 2
   // entries (Q-S87-C7 letterEligible gate). Null when no slug OR no peers
-  // cleared the corroboration gate.
-  const peerCodes = resolvedSlug
-    ? peerCodesBySlug.get(resolvedSlug) ?? null
-    : null;
+  // cleared the corroboration gate. S326: masked under scope unless the
+  // member selected coding_peer (the peer block is an argued ground).
+  const peerCodes =
+    resolvedSlug && scopeAllows(scope, "coding_peer")
+      ? peerCodesBySlug.get(resolvedSlug) ?? null
+      : null;
 
   // Block A — derive the EvidenceBundle normalization fields (§1e) from the
   // signals assembled above. Single producer; computeDisputeStrength consumes.
@@ -2384,23 +2441,26 @@ function buildLineItemEvidence(
   // (documentary spine, §1d), graded `statute` because the spine is the user's
   // attestation — no plan quote backs it (§1f L2; never inflate to verbatim) — and
   // the whole billed amount is at stake (not just a cost-share delta).
-  const signalDisputeType = classifyDisputeType({
-    planBenefit,
-    peerCodes,
-    communityOutcome,
-    siblingCodes,
-    pricingBenchmark,
-    auditFindings,
-    discrepancyAmount,
-  });
-  const baseDollarAtStake = deriveDollarAtStake({ discrepancyAmount, auditFindings });
-  const disputeType: DisputeTypeClass = attested
+  const signalDisputeType = classifyDisputeType(
+    {
+      planBenefit,
+      peerCodes,
+      communityOutcome,
+      siblingCodes,
+      pricingBenchmark,
+      auditFindings,
+      discrepancyAmount,
+    },
+    scope,
+  );
+  const baseDollarAtStake = deriveDollarAtStake({ discrepancyAmount, auditFindings }, scope);
+  const disputeType: DisputeTypeClass = attestedInScope
     ? "service_not_rendered"
     : signalDisputeType;
-  const citeGradeTier: CiteGradeTier = attested
+  const citeGradeTier: CiteGradeTier = attestedInScope
     ? "statute"
     : deriveCiteGradeTier({ planBenefit });
-  const dollarAtStake = attested
+  const dollarAtStake = attestedInScope
     ? Math.max(baseDollarAtStake, billed)
     : baseDollarAtStake;
 
@@ -2431,8 +2491,35 @@ function buildLineItemEvidence(
     disputeType,
     citeGradeTier,
     dollarAtStake,
-    serviceNotRenderedAttested: attested,
+    // S326 — the SCOPED attestation: under member composition this line argues
+    // not-rendered only when the member selected that ground (groundsForLine
+    // reads this field, so the ground derivation self-scopes). The raw
+    // attestation FACT persists in dispute.metadata.serviceAttestedLineIds
+    // regardless — unselected ≠ un-attested.
+    serviceNotRenderedAttested: attestedInScope,
   };
+}
+
+/**
+ * S326 — the static finding→ground table (the catalog's own projection), built
+ * once. The composition scope filters through THIS — the machine half of the
+ * published mapping the member selects against (ground-mapping-sync fixture
+ * holds table ⇔ published text together).
+ */
+const FINDING_TO_GROUND = deriveFindingToGround();
+
+/** S326 — drop findings whose ground the member did not select (and, under
+ *  scope, findings mapped to no ground — unselectable ⇒ unarguable). Null
+ *  scope → input unchanged. Null/empty input → unchanged. */
+function filterFindingsByScope(
+  findings: LineItemEvidence["auditFindings"],
+  scope: CompositionScopeSet,
+): LineItemEvidence["auditFindings"] {
+  if (scope == null || findings == null) return findings;
+  return findings.filter((f) => {
+    const ground = FINDING_TO_GROUND[f.type as keyof typeof FINDING_TO_GROUND];
+    return ground != null && scope.has(ground);
+  });
 }
 
 function extractAuditFindings(metadata: Record<string, unknown> | undefined): LineItemEvidence["auditFindings"] {

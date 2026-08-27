@@ -149,6 +149,7 @@ function makeEvidence(
     claimFindings,
   } satisfies ClaimEvidence;
   return {
+    compositionScope: null,
     claims: [claim],
     totals: {
       claimCount: 1,
@@ -445,6 +446,7 @@ const notRenderedLine = makeLine({
     claimFindings: [],
   });
   const ev: DisputeEvidence = {
+    compositionScope: null,
     claims: [mkClaim("claim-1", c1Line, 500), mkClaim("claim-2", c2Line, 400)],
     totals: { claimCount: 2, lineItemCount: 2, totalBilled: 800, totalDiscrepancy: 0 },
     planEvidence: null, networkEvidence: null, communityEvidence: null, legalBasis: [], gaps: [],

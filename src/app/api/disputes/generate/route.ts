@@ -37,8 +37,9 @@ import {
   letterGeoRelevant,
   evaluateLetterAccess,
   GEO_GATE_MESSAGE,
+  LITIGATION_HOLD_MESSAGE,
 } from "@/lib/disputes/letter-access";
-import { loadUserStateForLetterAccess } from "@/lib/disputes/letter-access-state";
+import { loadUserStateForLetterAccess, loadClaimLitigationAttested } from "@/lib/disputes/letter-access-state";
 
 export async function POST(req: NextRequest) {
   try {
@@ -117,19 +118,30 @@ export async function POST(req: NextRequest) {
         const userState = letterGeoRelevant(letterType as DisputeLetterType)
           ? await loadUserStateForLetterAccess(supabase, authedUser.id)
           : null;
+        // S326 (Rule 8) — the claim's litigation screening answer; attested-yes
+        // refuses EVERY letter type (the unflagged legal gate; null = legacy
+        // unanswered → inert).
+        const litigationAttested = await loadClaimLitigationAttested(
+          supabase,
+          authedUser.id,
+          (body.claimId as string | undefined) ?? null,
+        );
         const access = evaluateLetterAccess({
           letterType: letterType as DisputeLetterType,
           isPro,
           userState,
+          litigationAttested,
         });
         if (!access.allowed) {
           console.log(
             `[disputes/generate] letter-access blocked (${letterType}): user ${authedUser.id} reason=${access.reason} → 403`,
           );
           return NextResponse.json(
-            access.reason === "geo_unavailable"
-              ? { error: "geo_unavailable", reason: GEO_GATE_MESSAGE }
-              : { error: "subscription_required", requiredTier: "pro" },
+            access.reason === "litigation_hold"
+              ? { error: "litigation_hold", reason: LITIGATION_HOLD_MESSAGE }
+              : access.reason === "geo_unavailable"
+                ? { error: "geo_unavailable", reason: GEO_GATE_MESSAGE }
+                : { error: "subscription_required", requiredTier: "pro" },
             { status: 403 },
           );
         }
@@ -698,17 +710,29 @@ export async function POST(req: NextRequest) {
         negotiationSupabase,
         negotiationUser.id,
       );
+      // S326 (Rule 8) — the litigation hold reaches Case 3 when the letter is
+      // tied to a claim; a claim-less negotiation body has no stored answer
+      // (null → inert), and the composition step does not govern this
+      // member-picked instrument.
+      const negotiationLitigation = await loadClaimLitigationAttested(
+        negotiationSupabase,
+        negotiationUser.id,
+        (body.claimId as string | undefined) ?? null,
+      );
       const negotiationAccess = evaluateLetterAccess({
         letterType: "negotiation",
         isPro: false, // negotiation is not Pro-gated; geo is the live check here
         userState: negotiationUserState,
+        litigationAttested: negotiationLitigation,
       });
       if (!negotiationAccess.allowed) {
         console.log(
           `[disputes/generate] letter-access blocked (negotiation): user ${negotiationUser.id} state=${negotiationUserState ?? "unknown"} reason=${negotiationAccess.reason} → 403`,
         );
         return NextResponse.json(
-          { error: "geo_unavailable", reason: GEO_GATE_MESSAGE },
+          negotiationAccess.reason === "litigation_hold"
+            ? { error: "litigation_hold", reason: LITIGATION_HOLD_MESSAGE }
+            : { error: "geo_unavailable", reason: GEO_GATE_MESSAGE },
           { status: 403 },
         );
       }

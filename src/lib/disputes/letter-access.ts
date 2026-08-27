@@ -74,6 +74,12 @@ export function letterGeoRelevant(letterType: DisputeLetterType | null | undefin
 export const GEO_GATE_MESSAGE =
   "Self-pay negotiation letters aren't available to California residents right now. Your other letter options are unaffected.";
 
+/** ONE home for the user-facing copy shown when the litigation hold refuses
+ *  (S326 Rule 8). Factual and directive — no legal advice, no composed
+ *  posture: the matter needs a lawyer, and we say so plainly. */
+export const LITIGATION_HOLD_MESSAGE =
+  "You told us there's a lawsuit over this bill. Once a bill is in litigation, letters aren't the right tool — this needs a lawyer. We've kept your records ready to share with one, and our self-help resources explain how to find free or low-cost legal aid.";
+
 export interface LetterAccessInput {
   letterType: DisputeLetterType;
   isPro: boolean;
@@ -85,6 +91,20 @@ export interface LetterAccessInput {
    * `letterGeoRelevant(letterType)` is false and pass null.
    */
   userState: string | null;
+  /**
+   * S326 (eleven-rules Rule 8 — the kill-switch's litigation slice). The
+   * claim's litigation screening answer: `true` = the member attested a
+   * lawsuit exists / they were served over this bill → EVERY letter type is
+   * refused (litigation demands counsel, not composed letters; the UI routes
+   * to published self-help materials + find-a-lawyer resources). `false` =
+   * answered no; `null` = never asked (legacy claims — the gate is inert, an
+   * honest limitation: the QUESTION ships inside the flagged composition
+   * step, but this GATE is unflagged and permanent, like the geo gate — a
+   * legal gate must not be flaggable). REQUIRED (the S301/S324 lesson): every
+   * call site must decide how it sources the answer — read from
+   * `claims.metadata.guideSteps["screening:litigation"].note` ("yes"/"no").
+   */
+  litigationAttested: boolean | null;
   // Future per-count cap inputs go here (disputeCount?, freeQuota?) — one added
   // branch below, callers unchanged.
 }
@@ -104,7 +124,13 @@ export interface LetterAccessResult {
  * letters need Pro when listed; everything else is free.
  */
 export function evaluateLetterAccess(input: LetterAccessInput): LetterAccessResult {
-  const { letterType, isPro, userState } = input;
+  const { letterType, isPro, userState, litigationAttested } = input;
+
+  // S326 — litigation FIRST: it outranks geo and tier because it blocks every
+  // type (a matter in litigation gets no composed letters of any kind).
+  if (litigationAttested === true) {
+    return { allowed: false, requiresPro: false, reason: "litigation_hold" };
+  }
 
   const geo = GEO_GATED_LETTER_TYPES[letterType];
   if (geo) {

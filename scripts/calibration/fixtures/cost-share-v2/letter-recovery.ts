@@ -144,6 +144,7 @@ function makeEvidence(): DisputeEvidence {
     dataTrust: { headerReconciliationFailed: false, signViolation: false },
   } satisfies ClaimEvidence;
   return {
+    compositionScope: null,
     claims: [claim],
     totals: { claimCount: 1, lineItemCount: 1, totalBilled: 300, totalDiscrepancy: BLIND_DISCREPANCY },
     planEvidence: null, networkEvidence: null, communityEvidence: null, legalBasis: [], gaps: [],
@@ -352,6 +353,7 @@ console.log("\nS6 — single-adjudication bill: prorated per-line money reaches 
     }],
   };
   const proEvidence: DisputeEvidence = {
+    compositionScope: null,
     claims: [{
       claimId: "claim-pro", dateOfService: "2023-08-02", providerName: "Sample Imaging Center",
       totalBilled: 388.5, planYear: 2023, lineItemEvidence: [proLine],
@@ -432,6 +434,7 @@ console.log("\nS312 — the provider letter argues from the bill (evidence restr
     dollarAtStake: 0, auditFindings: null,
   };
   const mk312 = (paid: number): DisputeEvidence => ({
+    compositionScope: null,
     claims: [{
       claimId: "claim-312", dateOfService: "2023-08-02", providerName: "Sample Imaging Center",
       totalBilled: 388.5, planYear: 2026, lineItemEvidence: [mammo, disputed],

@@ -238,6 +238,7 @@ assertSeeding("CLAIM_LEVEL", CLAIM_LEVEL_OBLIGATIONS, EXPECTED_CLAIM_LEVEL);
     dataTrust: { headerReconciliationFailed: false, signViolation: false },
   } satisfies ClaimEvidence;
   const evidence: DisputeEvidence = {
+    compositionScope: null,
     claims: [claim],
     totals: { claimCount: 1, lineItemCount: 1, totalBilled: 300, totalDiscrepancy: 50 },
     planEvidence: null, networkEvidence: null, communityEvidence: null, legalBasis: [], gaps: [],
@@ -317,6 +318,7 @@ assertSeeding("CLAIM_LEVEL", CLAIM_LEVEL_OBLIGATIONS, EXPECTED_CLAIM_LEVEL);
       dataTrust: { headerReconciliationFailed: false, signViolation: false },
     } satisfies ClaimEvidence;
     return {
+    compositionScope: null,
       claims: [claim], totals: { claimCount: 1, lineItemCount: 1, totalBilled: 300, totalDiscrepancy: 100 },
       planEvidence: null, networkEvidence: null, communityEvidence: null, legalBasis: [], gaps: [],
       dataTrust: { headerReconciliationFailed: false, signViolation: false },
@@ -390,6 +392,7 @@ assertSeeding("CLAIM_LEVEL", CLAIM_LEVEL_OBLIGATIONS, EXPECTED_CLAIM_LEVEL);
       dataTrust: { headerReconciliationFailed: false, signViolation: false },
     } satisfies ClaimEvidence;
     return {
+    compositionScope: null,
       claims: [claim], totals: { claimCount: 1, lineItemCount: 1, totalBilled: 9000, totalDiscrepancy: 0 },
       planEvidence: null, networkEvidence: null, communityEvidence: null, legalBasis: [], gaps: [],
       dataTrust: { headerReconciliationFailed: false, signViolation: false },
