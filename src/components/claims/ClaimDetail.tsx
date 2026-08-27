@@ -956,6 +956,50 @@ export function ClaimDetail({
   useEffect(() => {
     if (forumMenuFlag.enabled) void refetchForumClassification();
   }, [forumMenuFlag.enabled, refetchForumClassification]);
+  // S325 test round 1 (Andrew: "all of this should be optimistic") — the
+  // denial-basis answer applies to the rail synchronously; the guide-step
+  // write lands in the background and the override reverts only on failure.
+  const [denialBasisOverride, setDenialBasisOverride] = useState<
+    Record<string, DenialBasis>
+  >({});
+  const answerDenialBasis = useCallback(
+    async (disputeId: string, basis: DenialBasis) => {
+      setDenialBasisOverride((m) => ({ ...m, [disputeId]: basis }));
+      try {
+        const token = await getAuthToken();
+        if (!token) throw new Error("no token");
+        const res = await fetch(`/api/claims/${claimId}/checklist`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ stepId: `packD:screen:denialBasis:${disputeId}`, note: basis }),
+        });
+        if (!res.ok) throw new Error(String(res.status));
+      } catch {
+        setDenialBasisOverride((m) => {
+          const rest = { ...m };
+          delete rest[disputeId];
+          return rest;
+        });
+      }
+    },
+    [claimId, getAuthToken],
+  );
+  // Instant recompose on screening save: the POST returns the stored
+  // classification, so no GET round-trip stands between the click and the
+  // routed doors.
+  const onClassificationSavedInstant = useCallback(
+    (c?: RegulatoryClassification) => {
+      if (c) {
+        setForumClassification((prev) => ({
+          classification: c,
+          userState: prev?.userState ?? null,
+        }));
+      } else {
+        void refetchForumClassification();
+      }
+    },
+    [refetchForumClassification],
+  );
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -2362,6 +2406,10 @@ export function ClaimDetail({
     if (note === "medical_necessity" || note === "experimental" || note === "other") {
       denialBasisByDispute[basisDisputeId] = note;
     }
+  }
+  // Optimistic answers win over (and converge with) the persisted notes.
+  for (const [disputeId, basis] of Object.entries(denialBasisOverride)) {
+    denialBasisByDispute[disputeId] = basis;
   }
 
   // S305 — the letters this claim is OWED but has not written: an obligated
@@ -4851,7 +4899,8 @@ export function ClaimDetail({
           )}
           <CaseRail
             onStepInteraction={() => setShowMath(false)}
-            onClassificationSaved={refetchForumClassification}
+            onClassificationSaved={onClassificationSavedInstant}
+            onAnswerDenialBasis={answerDenialBasis}
             // S303 — composed ONCE above, alongside the fold that reads it.
             groups={railComposed.groups}
             claimId={claimId}
