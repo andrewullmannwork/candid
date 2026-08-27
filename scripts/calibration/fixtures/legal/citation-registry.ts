@@ -157,18 +157,36 @@ check("scanner found a real citation population (≥ 15 matches)", totalMatches 
 // 4) Banned strings (literal scan, same scope)
 // ---------------------------------------------------------------------------
 const BANNED = [
-  "Department of Insurance",
   "ACA §2719",
   "ACA Section 2719",
   "Affordable Care Act Section 2719",
   "investigate and recoup",
 ];
+/** "Department of Insurance" is banned EXCEPT as the verified proper noun
+ *  "California Department of Insurance" (CDI's real name). A literal whose
+ *  occurrence is not preceded by "California " — including a template span
+ *  that BEGINS with the phrase (meaning `${state}` interpolated before it) —
+ *  is the generic/wrong-agency form the S325 sweep removed. */
+function hasGenericDoi(text: string): boolean {
+  let i = text.indexOf("Department of Insurance");
+  while (i !== -1) {
+    if (text.slice(Math.max(0, i - 11), i) !== "California ") return true;
+    i = text.indexOf("Department of Insurance", i + 1);
+  }
+  return false;
+}
 for (const file of files) {
   const rel = file.slice(ROOT.length + 1);
-  const all = literalTexts(file).join("\n");
+  const texts = literalTexts(file);
+  const all = texts.join("\n");
   for (const banned of BANNED) {
     check(`banned string absent: "${banned}" (${rel})`, !all.includes(banned));
   }
+  check(
+    `no generic "Department of Insurance" (${rel})`,
+    !texts.some(hasGenericDoi),
+    "only the proper noun 'California Department of Insurance' is permitted",
+  );
 }
 
 // ---------------------------------------------------------------------------
