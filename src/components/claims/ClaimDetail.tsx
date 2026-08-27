@@ -18,6 +18,9 @@ import { BundleSuggestion } from "@/components/claims/BundleSuggestion";
 import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 import { useDisputeDraftOverlay } from "@/lib/loading/dispute-draft-overlay";
 import { DisputePlanChooser, type DisputePlanChooserPlan } from "@/components/disputes/DisputePlanChooser";
+import { CompositionStep, type MemberCompositionSelection, type CompositionFact } from "@/components/disputes/CompositionStep";
+import { isMemberComposable } from "@/lib/disputes/dispute-ground-catalog";
+import type { DisputeLetterType } from "@/lib/billing/types";
 import { readServicesConfirmedAt } from "@/lib/claims/effective-totals";
 import { CostShareBanner, hasAssumptionRows, pendingAssumptionFields, type BannerAssumption, type CostShareVerdict, type CostShareOverrideRequest } from "@/components/claims/CostShareBanner";
 import { AddPlanDetailsModal } from "@/components/claims/AddPlanDetailsModal";
@@ -6308,6 +6311,14 @@ function BulkDisputeButton({
   const [chooserDefaultId, setChooserDefaultId] = useState<string | null>(null);
   const pinningFlagRef = useRef<boolean | null>(null);
   const preparingRef = useRef(false);
+  // S326 (member_composition_v1) — the composition step. Lazy flag read on
+  // first click (this component's pinning-flag idiom); the member's selection
+  // is held for THIS draft attempt only and cleared on success. The SERVER
+  // independently requires it (fail-closed) — this UI is choreography, never
+  // the gate.
+  const memberFlagRef = useRef<boolean | null>(null);
+  const [compositionOpen, setCompositionOpen] = useState(false);
+  const compositionSelectionRef = useRef<MemberCompositionSelection | null>(null);
 
   // S305 — the three buckets come from the SHARED builder, which the letter-type
   // fallback and the rung derivation read too. Two walks of the same data is how
@@ -6419,6 +6430,14 @@ function BulkDisputeButton({
           claimId,
           claimLineItemIds: distinctLineItemIds,
           insurancePlanId: pinnedPlanId,
+          // S326 — the member's composition (flag ON captures it in the step;
+          // absent otherwise; the server validates independently).
+          ...(compositionSelectionRef.current
+            ? {
+                selectedGrounds: compositionSelectionRef.current.grounds,
+                adoptedCitations: compositionSelectionRef.current.adoptedCitations,
+              }
+            : {}),
         }),
       });
       if (!res.ok) {
@@ -6449,6 +6468,28 @@ function BulkDisputeButton({
     // never reaches the generate route (whose Tier-3 floor would 403 it).
     if (anonymousDraftGate) {
       setGateOpen((open) => !open);
+      return;
+    }
+    // S326 — the composition step intercepts the draft for ground-arguing
+    // letter types when member_composition_v1 is ON: the member selects the
+    // grounds BEFORE any compose. Once a selection is captured for this
+    // attempt, the click proceeds through the existing choreography (pinning
+    // chooser → submit) unchanged.
+    if (memberFlagRef.current === null) {
+      try {
+        const r = await fetch("/api/feature-flags/member_composition_v1");
+        const j = (await r.json()) as { enabled?: boolean };
+        memberFlagRef.current = j?.enabled === true;
+      } catch {
+        memberFlagRef.current = false;
+      }
+    }
+    if (
+      memberFlagRef.current &&
+      isMemberComposable(letterType as DisputeLetterType) &&
+      !compositionSelectionRef.current
+    ) {
+      setCompositionOpen(true);
       return;
     }
     const claimMeta = claim;
@@ -6576,6 +6617,56 @@ function BulkDisputeButton({
           void submitDispute(id);
         }}
       />
+      <CompositionStep
+        open={compositionOpen}
+        onClose={() => setCompositionOpen(false)}
+        letterType={letterType}
+        claimId={claimId}
+        facts={buildCompositionFacts(aggregated, claimActionable, primaryLineItems)}
+        litigationPreAnswer={litigationPreAnswerFromClaim(claim)}
+        getAuthToken={getAuthToken}
+        submitting={loading}
+        onCompose={(selection) => {
+          compositionSelectionRef.current = selection;
+          setCompositionOpen(false);
+          // Re-enter the click flow: the selection is captured, so it proceeds
+          // to the pinning chooser / submit exactly as before.
+          void handleClick();
+        }}
+      />
     </>
   );
+}
+
+/** S326 — the composition step's neutral facts, built from the rows this
+ *  component already holds (the same parsed data that becomes the letter's
+ *  audit-report input; no new fetch). */
+function buildCompositionFacts(
+  aggregated: Array<{ lineNumber: number; lineItemId: string; billedAmount: number; finding: { type: string; benchmarkAmount?: number | null } }>,
+  claimActionable: Array<{ type: string }>,
+  primaryLineItems: LineItem[],
+): CompositionFact[] {
+  const byLineNumber = new Map(primaryLineItems.map((li) => [li.line_number, li]));
+  return [
+    ...aggregated.map((e) => {
+      const li = byLineNumber.get(e.lineNumber);
+      return {
+        lineNumber: e.lineNumber,
+        description: li?.description ?? null,
+        code: li?.billing_code ?? null,
+        billedAmount: e.billedAmount || (li?.billed_amount ?? null),
+        findingType: e.finding.type,
+        benchmarkAmount: e.finding.benchmarkAmount ?? null,
+      };
+    }),
+    ...claimActionable.map((f) => ({ findingType: f.type })),
+  ];
+}
+
+/** S326 — the claim's stored litigation screening answer (guide-step note). */
+function litigationPreAnswerFromClaim(claim: Record<string, unknown>): "yes" | "no" | null {
+  const meta = (claim.metadata as Record<string, unknown> | null) ?? null;
+  const steps = (meta?.guideSteps as Record<string, { note?: unknown }> | undefined) ?? {};
+  const note = steps["screening:litigation"]?.note;
+  return note === "yes" || note === "no" ? note : null;
 }

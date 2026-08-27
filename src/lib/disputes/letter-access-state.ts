@@ -41,7 +41,8 @@ export async function loadUserStateForLetterAccess(
  * matching the geo gate's fail-closed posture; the member re-tries and the
  * next read succeeds.
  */
-export const LITIGATION_STEP_ID = "screening:litigation";
+export { LITIGATION_STEP_ID } from "./letter-access";
+import { LITIGATION_STEP_ID } from "./letter-access";
 
 export async function loadClaimLitigationAttested(
   supabase: SupabaseClient,

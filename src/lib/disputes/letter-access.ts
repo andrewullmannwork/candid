@@ -74,6 +74,12 @@ export function letterGeoRelevant(letterType: DisputeLetterType | null | undefin
 export const GEO_GATE_MESSAGE =
   "Self-pay negotiation letters aren't available to California residents right now. Your other letter options are unaffected.";
 
+/** S326 (Rule 8) — the claim-scoped litigation screening step id (the guide-
+ *  step key under claims.metadata.guideSteps). Lives HERE (pure module) so the
+ *  client composition step and the server loader read ONE constant;
+ *  letter-access-state re-exports it for its reader. */
+export const LITIGATION_STEP_ID = "screening:litigation";
+
 /** ONE home for the user-facing copy shown when the litigation hold refuses
  *  (S326 Rule 8). Factual and directive — no legal advice, no composed
  *  posture: the matter needs a lawyer, and we say so plainly. */
