@@ -50,6 +50,13 @@ export function letterRequiresPro(letterType: DisputeLetterType | null | undefin
  * (no feature flag, no DB config — a flag that could switch it off would
  * defeat its purpose). `gateUnknownState: true` = fail closed when we do not
  * know the user's state.
+ *
+ * ⚠ UN-GATING CA IS SEQUENCED — do not remove "CA" from this list without the
+ * runbook (Andrew ruling R15, S325). The lawful ORDER is: business decision →
+ * marketing cleanup verified → DFPI registration FILED (~45 days ahead) →
+ * registration EFFECTIVE → then this PR. Registration pending ≠ registered;
+ * un-gating first makes the first letter sent an unregistered-period violation.
+ * Runbook: vault plans/candid-legal-review-and-dfy-monetization-2026-08-26.md §2.
  */
 export const GEO_GATED_LETTER_TYPES: Partial<
   Record<DisputeLetterType, { states: readonly string[]; gateUnknownState: boolean }>
