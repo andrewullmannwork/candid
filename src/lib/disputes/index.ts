@@ -14,7 +14,7 @@ import { RECITAL_IN_OPENING } from "./prior-contact";
 import type { PlanContext } from "./plan-context";
 import type { DisputeEvidence } from "./evidence-resolver";
 import { resolveLetterRecovery } from "./dispute-grounds";
-import { deriveFindingToLetter } from "./dispute-ground-catalog";
+import { deriveFindingToLetter, deriveFindingToDisposition, LETTER_DISPOSITION } from "./dispute-ground-catalog";
 import type { CostShareV2Result } from "../claims/recovery-math";
 import { randomUUID } from "crypto";
 
@@ -26,6 +26,8 @@ export type { PlanBenefitEvidence };
 // (upcoding/stale_claim/uncategorized) are absent here and fall to that default. Pinned by the
 // catalog-projection-parity fixture across all FindingType.
 const FINDING_TO_LETTER: Partial<Record<FindingType, DisputeLetterType>> = deriveFindingToLetter();
+// S325 (C4) — finding → its ground's remedy posture, for the one-posture-per-letter assertion below.
+const FINDING_DISPOSITION = deriveFindingToDisposition();
 
 /**
  * Who the finished letter is addressed to — the single source of truth shared by
@@ -141,6 +143,27 @@ export function generateDisputeLetter(
   // recipient.
   const resolvedType =
     letterType || FINDING_TO_LETTER[findings[0].type] || "overcharge";
+  // S325 (C4, §4b.4) — ONE posture per letter. A correction letter (asserts an
+  // error, asks that it be fixed) must never carry a ground whose posture is
+  // negotiate (concedes validity) or validate (challenges existence): mixing
+  // postures in one instrument is the shape counsel flagged. All current
+  // grounds are "correct", so this throws only if a future postured ground
+  // leaks into a correction letter — the fixture pins the static half (auto
+  // letter-type routing can never reach a negotiate/validate instrument).
+  // The negotiate/validate instruments themselves are the USER's deliberate
+  // pick; findings ride along as account context and render no ground asks
+  // there, so no per-finding assertion applies.
+  const letterDisposition = LETTER_DISPOSITION[resolvedType];
+  if (letterDisposition === "correct") {
+    for (const f of findings) {
+      const d = FINDING_DISPOSITION[f.type];
+      if (d && d !== "correct") {
+        throw new Error(
+          `disposition mismatch: finding "${f.type}" carries posture "${d}" but letter type "${resolvedType}" speaks "correct" — postures never mix in one letter; compose separate letters`,
+        );
+      }
+    }
+  }
   const recipientKind = letterRecipientKind(resolvedType);
   // S300 — Position B: the Final Notice renders its recital in the body
   // opening; every other letter takes it before the sign-off. ONE decision,
@@ -342,18 +365,18 @@ function getLegalBasis(type: DisputeLetterType): string {
     case "balance_billing":
       return "No Surprises Act (Public Law 116-260), applicable state balance billing protections";
     case "insurance_appeal":
-      return "Affordable Care Act Section 2719, ERISA Section 503 (if employer-sponsored plan)";
+      return "PHSA §2719 (42 U.S.C. §300gg-19; applied to ERISA plans by 29 U.S.C. §1185d); 29 CFR §2560.503-1 (if employer-sponsored plan)";
     case "overcharge":
     case "duplicate_charge":
       return "State consumer protection laws, Fair Debt Collection Practices Act (if in collections)";
     case "itemized_request":
-      return "HIPAA Section 164.524 (right of access), state itemized bill laws";
+      return "45 CFR §164.524 (the HIPAA right of access), state itemized bill laws";
     case "negotiation":
       return "State consumer protection laws, fair pricing standards";
     case "final_notice":
       return "State consumer protection laws; No Surprises Act (Public Law 116-260) where applicable";
     case "external_review":
-      return "Affordable Care Act Section 2719, 45 CFR §147.136 (external review)";
+      return "PHSA §2719 (42 U.S.C. §300gg-19), 45 CFR §147.136 (external review)";
     case "debt_validation":
       return "Fair Debt Collection Practices Act (15 U.S.C. §1692g, §1692e(8))";
     default: {

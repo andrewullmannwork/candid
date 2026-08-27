@@ -215,10 +215,11 @@ export interface PlanContext {
    */
   collectorContact: CollectorContact | null;
   /**
-   * S109 PR #2 — user's state from profiles.state, used by the dispute letter
-   * escalation paragraph to name the state Department of Insurance the user
-   * may escalate to. Null when profile state is missing; letter falls back to
-   * "the applicable state Department of Insurance".
+   * User's state from profiles.state. S325 (C1/C3): letters no longer name a
+   * state agency from this — today it feeds the final-notice forum line and
+   * the per-state citation levers (citation-registry.ts, INERT), and PR-B's
+   * verified forum menu is its next consumer. Null when profile state is
+   * missing → the neutral, agency-free copy.
    */
   userState: string | null;
   /**
@@ -686,10 +687,11 @@ export async function resolvePlanContext(
     }
   }
 
-  // S109 PR #2 — pull user's state for the dispute letter escalation paragraph
-  // (names the state Department of Insurance the user may escalate to).
-  // dispute-letters v2 S1 — also pull plan_source (self-reported funding type) to
-  // gate the ERISA citations. Null when the profile field is missing → generic copy.
+  // User's state for the letters (S325: no agency is named from it — it feeds
+  // the final-notice forum line + the per-state citation levers, and PR-B's
+  // forum menu next). dispute-letters v2 S1 — also pull plan_source
+  // (self-reported funding type) to gate the ERISA citations. Null when the
+  // profile field is missing → generic copy.
   const { data: profile } = await supabase
     .from("profiles")
     // S310 (sender block) — the address columns join the SAME select userState

@@ -2549,7 +2549,7 @@ function resolveLegalBasis(letterType?: string): LegalBasisRef[] {
           appliesTo: ["plan_benefit_citation"],
         },
         {
-          statute: "ACA §2719",
+          statute: "PHSA §2719 (42 U.S.C. §300gg-19)",
           summary: "Requires full and fair review of internal and external appeals for group health plans.",
           appliesTo: ["appeal_process"],
         },
@@ -2582,7 +2582,7 @@ function resolveLegalBasis(letterType?: string): LegalBasisRef[] {
     case "external_review":
       return [
         {
-          statute: "ACA §2719 / 45 CFR §147.136",
+          statute: "PHSA §2719 (42 U.S.C. §300gg-19) / 45 CFR §147.136",
           summary: "Right to an independent external review after the internal appeal is exhausted.",
           appliesTo: ["appeal_process"],
         },
@@ -2590,12 +2590,12 @@ function resolveLegalBasis(letterType?: string): LegalBasisRef[] {
     case "debt_validation":
       return [
         {
-          statute: "FDCPA 15 U.S.C. §1692g",
+          statute: "15 U.S.C. §1692g",
           summary: "Right to validation of a debt within 30 days of the collector's initial communication.",
           appliesTo: ["debt_validation"],
         },
         {
-          statute: "FDCPA 15 U.S.C. §1692e(8)",
+          statute: "15 U.S.C. §1692e(8)",
           summary: "A disputed debt must be reported as disputed to consumer reporting agencies.",
           appliesTo: ["debt_validation"],
         },
