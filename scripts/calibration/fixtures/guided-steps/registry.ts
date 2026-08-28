@@ -23,6 +23,7 @@
  * CI:   .github/workflows/ci.yml (Guided Steps v1).
  */
 import { resolve } from "path";
+import { lettersUnlockedByCalls } from "../../../../src/components/claims/GuidedPhoneSteps";
 import { readFileSync } from "fs";
 import {
   ALL_GUIDE_STEPS,
@@ -381,6 +382,27 @@ const fullProvider = renderGuidedCallRecital(allKinds, "provider", "final_notice
 check("recital: itemized + flagged + hold all render on provider letters",
   fullProvider.includes("fully itemized bill") && fullProvider.includes("disputed specific charges") && fullProvider.includes("requested a hold"));
 sweep("recital.fullProvider", fullProvider);
+
+// ── S326 (Andrew ruling) — the letter door opens only after the call step ──
+// concludes unresolved. Supersedes S297 §3.6's visible-muted treatment; ONE
+// derivation (lettersUnlockedByCalls) for the rail offers AND the 4b step.
+// DO NOT REVERT: a letter door rendered before the call concludes is the
+// S305-offer regression this pins shut.
+{
+  const g = { guided: true, hasDraftedDispute: false };
+  check("letter door: guided + unanswered call → HIDDEN", lettersUnlockedByCalls({ outcome: null }, g) === false);
+  check("letter door: guided + call resolved it (yes) → HIDDEN", lettersUnlockedByCalls({ outcome: "yes" }, g) === false);
+  check("letter door: guided + call did not fix it (no) → OPEN", lettersUnlockedByCalls({ outcome: "no" }, g) === true);
+  check("letter door: guided + call skipped → OPEN (never blocked; skip is one click)", lettersUnlockedByCalls({ outcome: "skip" }, g) === true);
+  check(
+    "letter door: existing letter grandfathered (never hides on a walked-through case)",
+    lettersUnlockedByCalls({ outcome: null }, { guided: true, hasDraftedDispute: true }) === true,
+  );
+  check(
+    "letter door: unguided world unchanged (no phone step to wait for)",
+    lettersUnlockedByCalls({ outcome: null }, { guided: false, hasDraftedDispute: false }) === true,
+  );
+}
 
 // ── Report ──────────────────────────────────────────────────────────────────
 

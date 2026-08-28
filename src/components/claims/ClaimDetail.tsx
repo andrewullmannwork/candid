@@ -28,7 +28,7 @@ import type { CostShareAssumption, CostShareOverrides } from "@/lib/claims/recov
 import { hasPendingAssumption } from "@/lib/claims/recovery-math";
 import { useFeatureFlag } from "@/lib/config/use-feature-flag";
 import type { DenialBasis, RegulatoryClassification } from "@/lib/disputes/forums";
-import { GuidedPhoneSteps, ShowFullStepButton, derivePhonePackState, samePhonePackState, type GuideStepState, type PhonePackState } from "@/components/claims/GuidedPhoneSteps";
+import { GuidedPhoneSteps, ShowFullStepButton, derivePhonePackState, samePhonePackState, lettersUnlockedByCalls, type GuideStepState, type PhonePackState } from "@/components/claims/GuidedPhoneSteps";
 import { CaseRail, CaseResolvedFold, RailStep } from "@/components/claims/CaseRail";
 import { CaseFileBlock } from "@/components/claims/CaseFileBlock";
 import { OutcomeReportingModal } from "@/components/disputes/OutcomeReportingModal";
@@ -2429,6 +2429,20 @@ export function ClaimDetail({
   // Also gated on there being something to contest: the draft action is
   // BulkDisputeButton, which returns null with nothing in the bundle, and an
   // offer with no way to accept it is worse than no offer.
+  // S326 — hoisted above the offer build (it reads the pack state). Pure
+  // derivation from already-loaded state; rendering below is unchanged.
+  const guidedPack = guidedPackLive ?? derivePhonePackState(guidedTrack, guideStepsMeta);
+  // S326 (Andrew ruling; supersedes S297 §3.6's visible-muted treatment) — the
+  // LETTER DOOR (rail offer rungs AND the 4b create step) exists only after
+  // the call step concludes unresolved ("no"/skip), or when a letter already
+  // exists, or in the unguided world where no phone step renders. ONE
+  // derivation for every door — the S305 offer rungs bypassing 4b's mute is
+  // exactly the regression this kills.
+  const lettersUnlocked = lettersUnlockedByCalls(guidedPack, {
+    guided: guidedCtx != null,
+    hasDraftedDispute,
+  });
+
   const railOffers: RailLetterOffer[] =
     // S319 (Andrew, /check drive) — anonymous sessions get NO letter offers:
     // the owed-letter band derives from FINDINGS (not existing letters), so it
@@ -2436,7 +2450,7 @@ export function ClaimDetail({
     // locked account ask — two step 4s, one of them a door the Tier-3 floor
     // would slam anyway. Same one-signal rule as the guided packs: the locked
     // step owns the whole recover slot until an account exists.
-    isFlagged && caseRailFlag.enabled && hasContestableCharges && anonymousDraftGate == null
+    isFlagged && caseRailFlag.enabled && hasContestableCharges && anonymousDraftGate == null && lettersUnlocked
       ? letterTracks
           .filter((t) => !partiesWithLetters.has(t.party))
           .map((t) => {
@@ -2548,7 +2562,6 @@ export function ClaimDetail({
   });
   // 4a/4b split — pack state for the rail chrome (done pill / resolved chip /
   // skipped) and 4b's activation. Live component state wins once it emits.
-  const guidedPack = guidedPackLive ?? derivePhonePackState(guidedTrack, guideStepsMeta);
   const guidedOutcomeDateLabel =
     guidedPack.outcomeAt != null ? fmtStampDateLocal(guidedPack.outcomeAt) : null;
 
@@ -4710,11 +4723,6 @@ export function ClaimDetail({
       )}
 
       {isFlagged && guidedCtx && (() => {
-        const muted4b = !(
-          guidedPack.outcome === "no" ||
-          guidedPack.outcome === "skip" ||
-          hasDraftedDispute
-        );
         const phoneBodyVisible = !guidedPack.concluded || phoneFullOpen;
         return (
           <>
@@ -4835,7 +4843,7 @@ export function ClaimDetail({
                 by its own rule, so this rendered a "Recover $X from this bill"
                 promise with no door behind it; the fix is the button's own rule
                 applied one level up, not a new one. */}
-            {!railExtends && hasContestableCharges && (
+            {!railExtends && hasContestableCharges && lettersUnlocked && (
               <RailStep
                 n="4b"
                 // KEPT, and inert by construction. `railExtends` is false only
@@ -4853,7 +4861,7 @@ export function ClaimDetail({
                 sub={guidedPack.outcome === "yes" ? GUIDE_4B.subResolved : GUIDE_4B.sub}
                 last
               >
-                {recoverBranchNode(muted4b)}
+                {recoverBranchNode(false)}
               </RailStep>
             )}
           </>

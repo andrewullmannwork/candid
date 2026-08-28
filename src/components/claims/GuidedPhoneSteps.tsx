@@ -82,6 +82,34 @@ export function samePhonePackState(
   );
 }
 
+/**
+ * S326 (Andrew ruling) — the LETTER DOOR opens only after the call step
+ * concludes UNRESOLVED. Sequencing: the product's ladder is call first, letter
+ * second; a letter offer shown before the call concludes puts the second rung
+ * on screen while the first is still open (the regression: S297's 4b carried
+ * this gate as a MUTE; the S305 offer rungs replaced 4b without inheriting it).
+ * This predicate supersedes the S297 §3.6 visible-muted treatment: pre-
+ * conclusion the door is HIDDEN, not muted (Andrew, S326). The path is never
+ * blocked — "skip" is one click and counts as concluded-unresolved.
+ *
+ *   unlocked ⇔ no guided phone step exists (unguided world — nothing to wait
+ *   for) OR the call concluded "didn't fix it" ("no") OR was skipped OR a
+ *   letter already exists (grandfathered: never hide the door on a case that
+ *   already walked through it).
+ *
+ * ONE derivation — the rail offers, the 4b create step, and any future letter
+ * door must all read THIS, never re-derive (how the S305 regression happened).
+ * Pinned by scripts/calibration/fixtures/guided-steps/registry.ts.
+ */
+export function lettersUnlockedByCalls(
+  pack: Pick<PhonePackState, "outcome">,
+  opts: { guided: boolean; hasDraftedDispute: boolean },
+): boolean {
+  if (!opts.guided) return true;
+  if (opts.hasDraftedDispute) return true;
+  return pack.outcome === "no" || pack.outcome === "skip";
+}
+
 export function derivePhonePackState(
   track: "insurer" | "provider",
   stepsState: Record<string, GuideStepState>,
