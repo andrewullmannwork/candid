@@ -23,6 +23,7 @@
 import type { DisputeGroundType } from "./dispute-grounds";
 import type { DisputeTypeClass } from "./strength-scoring";
 import type { FindingType, DisputeLetterType } from "../billing/types";
+import { CITATION_REGISTRY } from "./citation-registry";
 
 /** The request-section bucket a ground's ask renders into (templates.ts `buildRequestSection`). */
 export type RequestBucket =
@@ -204,6 +205,20 @@ export interface DisputeGroundSpec {
    * prose stays versioned in code (templates.ts). Populated per ground in step-3 Part 2 (still `[]` here).
    */
   readonly obligationElements: readonly ObligationElement[];
+  /**
+   * S326 (eleven-rules Rule 2) — the member-facing catalog entry. The full
+   * catalog renders in the composition step for EVERY member, in this file's
+   * `order`, identical every time (a book index, never a recommendation):
+   * `memberLabel` = the checkbox title, `memberDescription` = what the ground
+   * is for, `mappingPlainLanguage` = the "what counts as this" expander (the
+   * ground's `fromFindings` / trigger translated to plain words — the
+   * PUBLISHED static mapping table; the ground-mapping-sync fixture holds the
+   * two in agreement). Copy is user-facing → Andrew rules on exact strings
+   * (drafted S326, presented for his dev-round review).
+   */
+  readonly memberLabel: string;
+  readonly memberDescription: string;
+  readonly mappingPlainLanguage: string;
 }
 
 /**
@@ -247,6 +262,10 @@ export interface DisputeGroundSpec {
 export const DISPUTE_GROUND_CATALOG: Record<DisputeGroundType, DisputeGroundSpec> = {
   service_not_rendered: {
     order: 0,
+    memberLabel: "A service I never received",
+    memberDescription: "The bill charges for care that was not actually provided to you.",
+    mappingPlainLanguage:
+      "Counts when you attest that a billed service was not performed. Your attestation is the basis — the letter disputes the whole charge.",
     disposition: "correct",
     scoringClass: "service_not_rendered", // attestation override (evidence-resolver), not classifyDisputeType
     autoLetterType: "overcharge", // fromFindings empty → never reached by deriveFindingToLetter
@@ -259,6 +278,11 @@ export const DISPUTE_GROUND_CATALOG: Record<DisputeGroundType, DisputeGroundSpec
   },
   balance_billing: {
     order: 1,
+    memberLabel: "Billed beyond my plan's share",
+    memberDescription:
+      "You were billed more than your plan's rules allow for this care — for example, billed the gap above the plan's negotiated rate.",
+    mappingPlainLanguage:
+      "Counts when a line shows charges above the amount your plan's paperwork says you owe for in-network or protected care (like emergency services).",
     disposition: "correct",
     scoringClass: "balance_billing",
     autoLetterType: "balance_billing",
@@ -281,6 +305,10 @@ export const DISPUTE_GROUND_CATALOG: Record<DisputeGroundType, DisputeGroundSpec
   },
   duplicate: {
     order: 2,
+    memberLabel: "The same charge appears twice",
+    memberDescription: "The same service, on the same day, is billed more than once.",
+    mappingPlainLanguage:
+      "Counts when the same billing code appears more than once on one date of service without a modifier explaining why.",
     disposition: "correct",
     scoringClass: "other", // duplicate-only line → classifyDisputeType falls through to "other"
     autoLetterType: "duplicate_charge",
@@ -291,6 +319,11 @@ export const DISPUTE_GROUND_CATALOG: Record<DisputeGroundType, DisputeGroundSpec
   },
   unbundling: {
     order: 3,
+    memberLabel: "One service split into several charges",
+    memberDescription:
+      "A procedure that is normally billed as one bundled charge appears broken into separate pieces, which can raise the total.",
+    mappingPlainLanguage:
+      "Counts when billing codes that belong to one bundled procedure appear as separate line items on the same date.",
     disposition: "correct",
     scoringClass: "benchmark", // unbundling finding → classifyDisputeType benchmark branch
     autoLetterType: "overcharge",
@@ -301,6 +334,11 @@ export const DISPUTE_GROUND_CATALOG: Record<DisputeGroundType, DisputeGroundSpec
   },
   coverage_contradiction: {
     order: 4,
+    memberLabel: "My plan documents say this should be covered differently",
+    memberDescription:
+      "Your plan paperwork or EOB describes coverage for this service that doesn't match how the claim was processed — for example, a denial or payment that contradicts the written benefit.",
+    mappingPlainLanguage:
+      "Counts when a line shows an insurer payment or denial that disagrees with the coverage your own plan documents state, or when an adjustment your EOB promises is missing from the bill.",
     disposition: "correct",
     scoringClass: "coverage_contradiction",
     autoLetterType: "overcharge", // missing_adjustment→overcharge in FINDING_TO_LETTER (byte-identical)
@@ -316,6 +354,11 @@ export const DISPUTE_GROUND_CATALOG: Record<DisputeGroundType, DisputeGroundSpec
   },
   cost_share_misapplication: {
     order: 5,
+    memberLabel: "My copay, deductible, or coinsurance was applied wrong",
+    memberDescription:
+      "The amount you were asked to pay doesn't match your plan's stated copay, deductible, or coinsurance for this service.",
+    mappingPlainLanguage:
+      "Counts when the patient-owes amount on a line differs from what your plan documents say your share should be — including a charge where the plan says you owe $0.",
     disposition: "correct",
     scoringClass: "cost_share_misapplication",
     autoLetterType: "overcharge", // zero_cost_share_overcharge not in FINDING_TO_LETTER → default overcharge
@@ -328,6 +371,11 @@ export const DISPUTE_GROUND_CATALOG: Record<DisputeGroundType, DisputeGroundSpec
   },
   benchmark: {
     order: 6,
+    memberLabel: "Priced far above the typical rate",
+    memberDescription:
+      "The charge is well above public reference prices for this service, like Medicare rates for the same care in your area.",
+    mappingPlainLanguage:
+      "Counts when a line's billed amount exceeds the public benchmark rate for that billing code by a wide margin.",
     disposition: "correct",
     scoringClass: "benchmark",
     autoLetterType: "overcharge",
@@ -338,6 +386,11 @@ export const DISPUTE_GROUND_CATALOG: Record<DisputeGroundType, DisputeGroundSpec
   },
   unallocated_balance: {
     order: 7,
+    memberLabel: "The bill's own math doesn't add up",
+    memberDescription:
+      "The bill's charges, payments, and adjustments don't reconcile to the total it asks you to pay.",
+    mappingPlainLanguage:
+      "Counts when adding up the bill's own printed lines and reductions leaves a gap against its own stated total.",
     disposition: "correct",
     scoringClass: "other",
     autoLetterType: "overcharge", // unallocated_balance not in FINDING_TO_LETTER → default overcharge
@@ -378,6 +431,11 @@ export const DISPUTE_GROUND_CATALOG: Record<DisputeGroundType, DisputeGroundSpec
   },
   coding_peer: {
     order: 8,
+    memberLabel: "The billing code looks unusual for this service",
+    memberDescription:
+      "Bills from other patients for the same service commonly carry a different billing code, which can change the price.",
+    mappingPlainLanguage:
+      "Counts when at least two corroborated bills for the same service show a different code than yours. This asks for a coding review — it doesn't assert the code is wrong.",
     disposition: "correct",
     scoringClass: "coding_peer",
     autoLetterType: "overcharge", // fromFindings empty → never reached by deriveFindingToLetter
@@ -390,6 +448,11 @@ export const DISPUTE_GROUND_CATALOG: Record<DisputeGroundType, DisputeGroundSpec
   },
   chargemaster: {
     order: 9,
+    memberLabel: "Billed above the provider's own listed price",
+    memberDescription:
+      "The charge exceeds the price this provider publishes for the same service under federal price-transparency rules.",
+    mappingPlainLanguage:
+      "Counts when a line's billed amount is higher than the provider's own published standard charge for that billing code.",
     disposition: "correct",
     scoringClass: "benchmark", // statistical tier (same as unbundling/overcharge); NO new DisputeTypeClass
     autoLetterType: "overcharge",
@@ -416,6 +479,11 @@ export const DISPUTE_GROUND_CATALOG: Record<DisputeGroundType, DisputeGroundSpec
   // ask lives in templates.
   provider_overpayment: {
     order: 10,
+    memberLabel: "I already paid more than the bill's total",
+    memberDescription:
+      "Your recorded payments add up to more than what the bill itself says was owed.",
+    mappingPlainLanguage:
+      "Counts when the payments recorded on your account exceed the bill's own stated patient responsibility — the difference is a refund ask.",
     disposition: "correct",
     scoringClass: "other",
     autoLetterType: "overcharge",
@@ -503,3 +571,128 @@ export function deriveFindingToLetter(): Partial<Record<FindingType, DisputeLett
   }
   return out;
 }
+
+// ----------------------------------------------------------------------------
+// S326 (eleven-rules §3.4 / member_composition_v1) — the member-composition
+// projections. All are projections FROM this one catalog (no parallel home).
+// ----------------------------------------------------------------------------
+
+/** Every ground type, in catalog `order` — the composition step's render list
+ *  (fixed, identical for every member; a book index, never a recommendation). */
+export const ALL_DISPUTE_GROUND_TYPES: readonly DisputeGroundType[] = (
+  Object.keys(DISPUTE_GROUND_CATALOG) as DisputeGroundType[]
+).sort((a, b) => DISPUTE_GROUND_CATALOG[a].order - DISPUTE_GROUND_CATALOG[b].order);
+
+/**
+ * S326 — finding type → its ground, projected exactly as `deriveFindingToLetter`
+ * projects letter types (each FindingType belongs to at most one ground — the
+ * catalog's own invariant). THE static mapping table's machine half: the
+ * composition scope filters a line's findings through this (a finding whose
+ * ground the member did not select is out of the letter's evidence), and the
+ * published "what counts as this" text is its human half — the
+ * ground-mapping-sync fixture holds the two together. Findings raised by no
+ * ground (upcoding / stale_claim / the uncategorized pair) are absent: they
+ * cannot be selected, so under a member-composed letter they cannot be argued.
+ */
+export function deriveFindingToGround(): Partial<Record<FindingType, DisputeGroundType>> {
+  const out: Partial<Record<FindingType, DisputeGroundType>> = {};
+  for (const [ground, spec] of Object.entries(DISPUTE_GROUND_CATALOG) as Array<
+    [DisputeGroundType, DisputeGroundSpec]
+  >) {
+    for (const f of spec.fromFindings) out[f] = ground;
+  }
+  return out;
+}
+
+/**
+ * Which recipient a ground is asked of — the STATIC label on each catalog
+ * entry in the composition step ("asked of your insurer" / "asked of the
+ * provider"), derived from the curated `obligationElements[].party` (S304's
+ * "who is obligated" answer; `provider_financial_assistance` normalizes to
+ * provider — it is a render key, not a party). Grounds with NO obligation
+ * elements (duplicate / unbundling / benchmark) fall to "provider": all three
+ * are provider-instrument grounds by `autoLetterType`, and the projection
+ * fixture pins this so a future empty-obligation INSURER ground fails loud
+ * instead of silently mislabeling.
+ */
+export function groundMemberParty(type: DisputeGroundType): "insurer" | "provider" | "both" {
+  const parties = new Set(
+    DISPUTE_GROUND_CATALOG[type].obligationElements.map((e) =>
+      e.party === "provider_financial_assistance" ? "provider" : e.party,
+    ),
+  );
+  if (parties.size === 0) return "provider";
+  if (parties.size > 1) return "both";
+  return parties.has("insurer") ? "insurer" : "provider";
+}
+
+/**
+ * The letter types the composition step governs — the ground-arguing,
+ * correct-posture instruments. When `member_composition_v1` is ON, generate
+ * REQUIRES a member selection for these types (fail-closed). Outside the set,
+ * deliberately: `itemized_request` (a records request — argues nothing),
+ * `negotiation` / `debt_validation` (member-picked whole instruments; the C4
+ * disposition wall + the geo gate govern them; the collections-track redesign
+ * is its own arc).
+ */
+export const MEMBER_COMPOSABLE_LETTER_TYPES: readonly DisputeLetterType[] = [
+  "insurance_appeal",
+  "external_review",
+  "overcharge",
+  "duplicate_charge",
+  "balance_billing",
+  "final_notice",
+];
+
+/** True when this letter type composes from member-selected grounds. */
+export function isMemberComposable(type: DisputeLetterType): boolean {
+  return MEMBER_COMPOSABLE_LETTER_TYPES.includes(type);
+}
+
+/**
+ * S326 (eleven-rules Rule 3) — the citations a member MAY adopt into a given
+ * letter type, as citation-registry keys. STATIC and identical for every
+ * member (the published neutral list, models doc §I.3 shape 2): the step
+ * offers each entry with the registry's own plain-English `label`; NOTHING is
+ * pre-checked; un-adopted authorities render in their fact form (the existing
+ * `fall_to_facts` degradation). Provider-directed letters carry EMPTY menus —
+ * their citations are STRIPPED under the flag (shape 1: a billing office
+ * doesn't need regulations to fix a duplicate; the facts and the ask carry
+ * the letter). Exhaustive Record: a new letter type does not compile until it
+ * declares its menu. Keys are asserted against CITATION_REGISTRY at module
+ * load (below) so an unregistered key is a boot failure, not a silent
+ * mis-render — and the citation fixture pins menu ⊆ registry in CI.
+ */
+export const LETTER_CITATION_MENU: Record<DisputeLetterType, readonly string[]> = {
+  insurance_appeal: [
+    "erisa_claims_reg_g",
+    "erisa_claims_reg_h2iii",
+    "erisa_spd_production",
+    "phsa_2719",
+  ],
+  external_review: ["phsa_2719", "external_review_reg"],
+  overcharge: [],
+  duplicate_charge: [],
+  balance_billing: [],
+  itemized_request: [],
+  final_notice: [],
+  negotiation: [],
+  debt_validation: [],
+};
+
+/**
+ * Load-time invariant (the detector-ordering pattern): every LETTER_CITATION_MENU
+ * key must be a verified CITATION_REGISTRY entry — an unregistered key is a boot
+ * failure, never a silently-empty adoption row.
+ */
+(function assertCitationMenuRegistered() {
+  for (const [letterType, keys] of Object.entries(LETTER_CITATION_MENU)) {
+    for (const key of keys) {
+      if (!CITATION_REGISTRY[key]) {
+        throw new Error(
+          `LETTER_CITATION_MENU["${letterType}"] references "${key}" which is not a CITATION_REGISTRY entry`,
+        );
+      }
+    }
+  }
+})();

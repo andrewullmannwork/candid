@@ -181,10 +181,49 @@ export async function loadPlanCostShareParams(
     // a plan ASSEMBLED from a card photo or hand entry. Per-service trust is
     // now decided by the numbers' own provenance (`costProvenance`), in
     // computeCostShareV2.
-    provenanceUnverified:
-      (d.source as string | null) === "insurance_card" ||
-      (d.source as string | null) === "manual",
+    //
+    // ⚠ S326 — DO NOT REVERT (Andrew ruling, third occurrence of this class):
+    // a `manual` plan WITH a canonical link is a SEARCH-PICKED LIBRARY PLAN —
+    // its terms are Candid's cite-grade extraction of that plan's own SBC (the
+    // admin/cold-start regeneration pipeline; Stage C min cite 1.00), i.e. the
+    // very same filing the member would have uploaded. It passes the honesty
+    // gate with the SAME confidence as an uploaded document. The S288 fallback
+    // in this function already treats link-only rows as first-class (fills
+    // their terms FROM canonical); this veto must not distrust what that
+    // machinery deliberately serves. History of the class: S291 keyed on
+    // verification_status + source (search picks degraded) → S294 removed
+    // verification_status but kept bare `source === "manual"` (search picks
+    // STILL degraded — one link short) → S326 keys the veto on the link.
+    // verification_status keeps its meaning ("this member's own document was
+    // parsed") and the upgrade path stays: an upload still corroborates and
+    // overrides. Locked by fixtures/claims/plan-provenance-gate.ts (CI) — a
+    // change here that re-degrades linked library plans fails the build.
+    provenanceUnverified: planProvenanceUnverified(
+      d.source as string | null,
+      canonicalId,
+    ),
   };
+}
+
+/**
+ * S326 — the plan-row provenance veto, extracted pure so the CI fixture can
+ * pin it (the missing lock that let this class recur three times). True =
+ * the honesty gate refuses confident verdicts built on this plan's terms.
+ *   insurance_card            → true  (S291: a card scan can invent values)
+ *   manual + NO canonical link → true  (unmatched hand entry; typed values
+ *                                       still ground per-service via `user`)
+ *   manual + canonical link   → FALSE (search-picked library plan — trusted
+ *                                       like the member's own document; the
+ *                                       S326 Andrew ruling)
+ *   anything else             → false (document-parsed / legacy fails open)
+ */
+export function planProvenanceUnverified(
+  source: string | null,
+  canonicalPlanId: string | null,
+): boolean {
+  if (source === "insurance_card") return true;
+  if (source === "manual") return canonicalPlanId == null;
+  return false;
 }
 
 // ── Accumulators (claim_accumulators) ──────────────────────────────────────

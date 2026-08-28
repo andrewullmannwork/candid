@@ -35,7 +35,7 @@ check("allowlist · rejects null", !isEscalationLetterType(null));
 
 // ── unsupported type → 400 ───────────────────────────────────────────────────
 {
-  const r = checkEscalateGate({ targetLetterType: "overcharge", isPro: true });
+  const r = checkEscalateGate({ litigationAttested: null, targetLetterType: "overcharge", isPro: true });
   check("unsupported · 400 unsupported_escalation_type", !r.ok && r.status === 400 && r.error === "unsupported_escalation_type");
 }
 
@@ -45,41 +45,41 @@ check("allowlist · rejects null", !isEscalationLetterType(null));
 // stays (these checks prove the flow-through); restoring the wall = re-adding
 // the types in letter-access.ts, at which point these expectations flip back.
 {
-  const r = checkEscalateGate({ targetLetterType: "final_notice", isPro: false });
+  const r = checkEscalateGate({ litigationAttested: null, targetLetterType: "final_notice", isPro: false });
   check("tier · final_notice free-user → ok (wall removed S299)", r.ok === true);
 }
 {
-  const r = checkEscalateGate({ targetLetterType: "external_review", isPro: false, appealExhausted: { attested: true } });
+  const r = checkEscalateGate({ litigationAttested: null, targetLetterType: "external_review", isPro: false, appealExhausted: { attested: true } });
   check("tier · external_review free-user + exhaustion → ok (wall removed S299)", r.ok === true);
 }
 {
-  const r = checkEscalateGate({ targetLetterType: "final_notice", isPro: true });
+  const r = checkEscalateGate({ litigationAttested: null, targetLetterType: "final_notice", isPro: true });
   check("tier · final_notice Pro → ok", r.ok === true);
 }
 
 // ── debt_validation is FREE (no Pro required) ────────────────────────────────
 {
-  const r = checkEscalateGate({ targetLetterType: "debt_validation", isPro: false });
+  const r = checkEscalateGate({ litigationAttested: null, targetLetterType: "debt_validation", isPro: false });
   check("free · debt_validation free-user → ok", r.ok === true);
 }
 
 // ── exhaustion gate: external_review needs an attested final denial ───────────
 {
-  const r = checkEscalateGate({ targetLetterType: "external_review", isPro: true, appealExhausted: null });
+  const r = checkEscalateGate({ litigationAttested: null, targetLetterType: "external_review", isPro: true, appealExhausted: null });
   check("exhaustion · no attestation → 400", !r.ok && r.status === 400 && r.error === "external_review_requires_exhaustion");
 }
 {
-  const r = checkEscalateGate({ targetLetterType: "external_review", isPro: true, appealExhausted: { attested: false } });
+  const r = checkEscalateGate({ litigationAttested: null, targetLetterType: "external_review", isPro: true, appealExhausted: { attested: false } });
   check("exhaustion · attested=false → 400", !r.ok && r.status === 400 && r.error === "external_review_requires_exhaustion");
 }
 {
-  const r = checkEscalateGate({ targetLetterType: "external_review", isPro: true, appealExhausted: { attested: true } });
+  const r = checkEscalateGate({ litigationAttested: null, targetLetterType: "external_review", isPro: true, appealExhausted: { attested: true } });
   check("exhaustion · attested=true + Pro → ok", r.ok === true && (r as { targetLetterType?: string }).targetLetterType === "external_review");
 }
 
 // ── ordering: Pro checked before exhaustion (a free user never leaks the gate) ─
 {
-  const r = checkEscalateGate({ targetLetterType: "external_review", isPro: false, appealExhausted: null });
+  const r = checkEscalateGate({ litigationAttested: null, targetLetterType: "external_review", isPro: false, appealExhausted: null });
   // S299: with the tier wall removed, a free unattested external_review now
   // fails on EXHAUSTION (400) — proving the exhaustion gate survives the
   // wall's removal (it must: ACA §2719 is law, not monetization).
@@ -90,15 +90,15 @@ check("allowlist · rejects null", !isEscalationLetterType(null));
 // S299 (Andrew): PRO_LETTER_TYPES emptied — every rung is free; requiresPro
 // false across the board. Machinery proven intact by the Pro→allowed check.
 {
-  const a = evaluateLetterAccess({ letterType: "final_notice", isPro: false, userState: null });
+  const a = evaluateLetterAccess({ litigationAttested: null, letterType: "final_notice", isPro: false, userState: null });
   check(
     "access · final_notice free → allowed (wall removed S299)",
     a.allowed && a.requiresPro === false,
   );
 }
-check("access · external_review free → allowed (wall removed S299)", evaluateLetterAccess({ letterType: "external_review", isPro: false, userState: null }).allowed);
-check("access · final_notice Pro → allowed", evaluateLetterAccess({ letterType: "final_notice", isPro: true, userState: null }).allowed);
-check("access · debt_validation free → allowed", evaluateLetterAccess({ letterType: "debt_validation", isPro: false, userState: null }).allowed);
+check("access · external_review free → allowed (wall removed S299)", evaluateLetterAccess({ litigationAttested: null, letterType: "external_review", isPro: false, userState: null }).allowed);
+check("access · final_notice Pro → allowed", evaluateLetterAccess({ litigationAttested: null, letterType: "final_notice", isPro: true, userState: null }).allowed);
+check("access · debt_validation free → allowed", evaluateLetterAccess({ litigationAttested: null, letterType: "debt_validation", isPro: false, userState: null }).allowed);
 check("access · letterRequiresPro(final_notice) === false (wall removed S299)", !letterRequiresPro("final_notice"));
 check("access · letterRequiresPro(debt_validation) === false", !letterRequiresPro("debt_validation"));
 check("access · letterRequiresPro(undefined) === false", !letterRequiresPro(undefined));
@@ -114,7 +114,7 @@ check("access · letterRequiresPro(undefined) === false", !letterRequiresPro(und
   const SOURCE = "src";
   const attested = { attested: true };
   const gate = (caseLetters: Array<{ disputeId: string; letterType: string; status: string | null }>) =>
-    checkEscalateGate({
+    checkEscalateGate({ litigationAttested: null,
       targetLetterType: "external_review",
       isPro: true,
       appealExhausted: attested,
@@ -144,7 +144,7 @@ check("access · letterRequiresPro(undefined) === false", !letterRequiresPro(und
   );
   check(
     "rung · the SOURCE dispute never blocks its own escalation",
-    checkEscalateGate({
+    checkEscalateGate({ litigationAttested: null,
       targetLetterType: "debt_validation",
       isPro: true,
       caseLetters: [{ disputeId: SOURCE, letterType: "debt_validation", status: "in_progress" }],
@@ -156,13 +156,13 @@ check("access · letterRequiresPro(undefined) === false", !letterRequiresPro(und
   // from a context that cannot see the claim.
   check(
     "rung · absent case context skips the check rather than inventing an answer",
-    checkEscalateGate({ targetLetterType: "external_review", isPro: true, appealExhausted: attested }).ok === true,
+    checkEscalateGate({ litigationAttested: null, targetLetterType: "external_review", isPro: true, appealExhausted: attested }).ok === true,
   );
   // Ordering: the cheaper allowlist/tier/exhaustion refusals still win, so an
   // unsupported type never reports itself as a duplicate rung.
   check(
     "rung · exhaustion still refuses first when unattested",
-    checkEscalateGate({
+    checkEscalateGate({ litigationAttested: null,
       targetLetterType: "external_review",
       isPro: true,
       appealExhausted: { attested: false },

@@ -185,6 +185,53 @@ jobs:
         # ground ambulance = .200, unknown→DMHC, self-funded exclusions, the
         # generic doors byte-exact for the flag-OFF path).
         run: npx tsx scripts/calibration/fixtures/legal/forum-router.ts
+      - name: Line gap — synthetic insurer entries require real adjudication (S326)
+        # ⚠ DO NOT REVERT: a line the insurer never adjudicated gets NO
+        # synthetic "insurer under-paid" entry (the Riverside self-pay bill
+        # grew an insurer-appeal offer + fake-EOB prose — the S304 class).
+        # Presence-based: explicit $0 is a statement; null is absence.
+        run: npx tsx scripts/calibration/fixtures/claims/line-gap.ts
+      - name: Plan provenance gate — library picks pass the honesty gate (S326)
+        # ⚠ DO NOT REVERT (Andrew ruling, third occurrence): a search-picked
+        # library plan (manual + canonical link) is trusted like an uploaded
+        # document — its terms are Candid's cite-grade SBC extraction. Card
+        # plans and unlinked hand entries stay distrusted (S291 preserved).
+        # Pins the pure veto AND its wiring into loadPlanCostShareParams.
+        run: npx tsx scripts/calibration/fixtures/claims/plan-provenance-gate.ts
+      - name: Member composition — the member selects, the engine only maps (S326)
+        # The eleven-rules Rule 2 core (member_composition_v1): the classifier
+        # is scope-complete over every selection subset (128 combos), the
+        # member-exclude belt drops unselected grounds' dollars even on a leaky
+        # line, the scoped letter carries the lead-in, the persisted selection
+        # round-trips (unknown keys dropped, malformed nulled), and the
+        # ground_selected/letter_adopted kinds exist (the DFY operator
+        # invariant's composition proof — handoff §5).
+        run: npx tsx scripts/calibration/fixtures/legal/member-composition.ts
+      - name: Citation party split — strip provider, member-adopt insurer (S326)
+        # Rule 3: scoped provider letters emit ZERO citation-shaped strings;
+        # scoped insurer letters cite only member-adopted authorities and fall
+        # to fact forms otherwise; the unscoped compositions still cite (the
+        # non-vacuous denominator); LETTER_CITATION_MENU ⊆ CITATION_REGISTRY.
+        run: npx tsx scripts/calibration/fixtures/legal/citation-party-split.ts
+      - name: Conspicuous statement — §81.101(c) on every letter, exactly once (S326)
+        # Rule 4's unflagged compliance armor across EVERY composer (all letter
+        # types + itemized + follow-ups + idempotent re-render), plus the
+        # unflagged original-creditor §1692g fix (no validation demand composed
+        # to a party the Rosenthal carve-out says owes none; third-party
+        # collectors keep it — the denominator).
+        run: npx tsx scripts/calibration/fixtures/legal/conspicuous-statement.ts
+      - name: Litigation hold — the Rule-8 kill-switch refuses every type (S326)
+        # An attested lawsuit refuses EVERY letter type ahead of geo and tier
+        # (unflagged legal gate); null/false leave prior behavior untouched;
+        # the escalate gate refuses on hold; the checklist step id is pinned.
+        run: npx tsx scripts/calibration/fixtures/legal/litigation-hold.ts
+      - name: Ground mapping sync — the published table and its machine half (S326)
+        # Rules 1+2: member copy present for every ground; deriveFindingToGround
+        # is exactly fromFindings inverted; every mapped finding type has a
+        # NEUTRAL fact template; the banned-verdict vocabulary appears nowhere
+        # in member-facing copy; groundMemberParty pins (incl. the
+        # empty-obligation provider fallback).
+        run: npx tsx scripts/calibration/fixtures/legal/ground-mapping-sync.ts
       - name: Letter tracks — which parties a claim has evidence against (S304/S305)
         # Written at S304 and never wired in; registered here now that the rung
         # offer reads it. Locks the SILENCE cases first: `overcharge` — the

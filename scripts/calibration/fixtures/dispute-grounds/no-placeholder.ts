@@ -153,6 +153,7 @@ function gatedOutLine(over: Partial<LineItemEvidence> = {}): LineItemEvidence {
 }
 function evidenceWith(lines: LineItemEvidence[]): DisputeEvidence {
   return {
+    compositionScope: null,
     claims: [
       {
         claimId: "claim-np",

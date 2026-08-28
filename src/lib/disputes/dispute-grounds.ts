@@ -587,6 +587,21 @@ export function resolveLetterRecovery(
     }
   }
 
+  // S326 (member_composition_v1) — the member-exclusion set: every ground NOT
+  // selected. The evidence lines are already scope-filtered at build (findings /
+  // attestation / peer masks), so this catches the residual class — grounds
+  // groundsForLine derives from UNMASKED line signals (the planBenefit-driven
+  // structural cost-share / coverage pushes; planBenefit itself stays on the
+  // line deliberately — it is citation data, not an argued ground). Null scope
+  // → empty set → byte-identical.
+  const memberExclude = new Set<DisputeGroundType>(
+    evidence.compositionScope == null
+      ? []
+      : (Object.keys(DISPUTE_GROUND_CATALOG) as DisputeGroundType[]).filter(
+          (g) => !evidence.compositionScope!.grounds.includes(g),
+        ),
+  );
+
   for (const claim of evidence.claims) {
     const pool = pools.get(claim.claimId);
     for (const rawLine of claim.lineItemEvidence) {
@@ -594,11 +609,18 @@ export function resolveLetterRecovery(
       // S309 F12 — the line tier computes on the effective-money view.
       const line = effLine(rawLine);
       const result = basis.get(line.lineItemId) ?? null;
+      // S326 — the set-tier excludes union the member exclusions (one filter
+      // mechanism, two legitimate sources; empty member set when unscoped).
+      const setExcludes = excludeTypesByLine.get(line.lineItemId);
+      const lineExcludes =
+        memberExclude.size === 0
+          ? setExcludes
+          : new Set<DisputeGroundType>([...(setExcludes ?? []), ...memberExclude]);
       const { grounds, notRendered, shouldOwe, capped, capBound } = computeLineRecovery(
         line,
         claim.claimId,
         result?.shouldOwe ?? null,
-        excludeTypesByLine.get(line.lineItemId),
+        lineExcludes,
       );
       if (grounds.length === 0) continue;
       if (capBound) capBoundLineIds.push(line.lineItemId);

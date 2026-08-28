@@ -47,8 +47,15 @@ export function checkEscalateGate(input: {
    */
   caseLetters?: CaseLetterRef[];
   sourceDisputeId?: string;
+  /**
+   * S326 (Rule 8) — the claim's litigation screening answer, loaded by the
+   * route (this gate stays pure). REQUIRED so no caller can compile without
+   * deciding its source: `loadClaimLitigationAttested` on the dispute's claim.
+   * true refuses every rung; null = legacy unanswered (inert).
+   */
+  litigationAttested: boolean | null;
 }): EscalateGateResult {
-  const { targetLetterType, isPro, appealExhausted, caseLetters, sourceDisputeId } = input;
+  const { targetLetterType, isPro, appealExhausted, caseLetters, sourceDisputeId, litigationAttested } = input;
 
   if (!isEscalationLetterType(targetLetterType)) {
     return { ok: false, status: 400, error: "unsupported_escalation_type" };
@@ -89,7 +96,12 @@ export function checkEscalateGate(input: {
   // userState: null is safe HERE ONLY because ESCALATION_LETTER_TYPES contains
   // no geo-gated type (S324) — the letter-geo-gate fixture asserts exactly that,
   // so adding a geo-gated type to the ladder fails CI until state is threaded.
-  const access = evaluateLetterAccess({ letterType: targetLetterType, isPro, userState: null });
+  const access = evaluateLetterAccess({
+    letterType: targetLetterType,
+    isPro,
+    userState: null,
+    litigationAttested,
+  });
   if (!access.allowed) {
     return { ok: false, status: 403, error: access.reason ?? "subscription_required" };
   }

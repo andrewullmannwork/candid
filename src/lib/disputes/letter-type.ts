@@ -635,7 +635,47 @@ export function isLiveDraftStatus(status: string | null | undefined): boolean {
 // gets the counsel-verified agency sentence in the letter closing (DMHC/CDI/
 // OIC complaint tracks; state-AG for provider letters). No classification →
 // byte-identical to the s324.1 neutral output. Stored drafts re-draft once.
-export const LETTER_COMPOSE_VERSION = "s325.1";
+//
+// s325.1 → s326.1 — the S326 eleven-rules PR-A output changes, one bump:
+// the §81.101(c) conspicuous statement on every letter (unflagged); the
+// original-creditor §1692g fix (unflagged — a validation demand is never
+// composed to a party the Rosenthal carve-out says owes none); and, under
+// member_composition_v1 ON, the selected-grounds lead-in + citation
+// strip (provider letters) / member-adopted citations (insurer letters).
+// Stored drafts re-draft once.
+export const LETTER_COMPOSE_VERSION = "s326.1";
+
+/**
+ * S326 (eleven-rules Rule 4) — the Tex. Gov't Code §81.101(c) conspicuous
+ * statement, on EVERY letter, globally. The statute's safe harbor covers
+ * self-help legal software "if the products clearly and conspicuously state
+ * that the products are not a substitute for the advice of an attorney" —
+ * this sentence is that statement in the statute's own operative words
+ * (verified 2026-08-27 against texas.public.law + FindLaw + onecle;
+ * statutes.capitol.texas.gov blocks automated retrieval — mirror-verified,
+ * the same pattern as the CA corpus). It is REQUIRED only by Texas, true and
+ * harmless everywhere else, and deliberately NOT flag-gated (compliance
+ * armor — the S324 rule that a legal gate must not be flaggable). It is not
+ * relied on as a UPL defense (*Telford*, *Villegas* — disclaimers don't cure
+ * conduct); it is compliance with the one statutory safe harbor that exists.
+ */
+export const CONSPICUOUS_STATEMENT =
+  "This product is not a substitute for the advice of an attorney.";
+
+/**
+ * Append the §81.101(c) statement as a set-off footer BELOW the signature
+ * block — the document-provenance position (conspicuous via separation, and
+ * it does not interrupt the member's own voice mid-letter; placement
+ * Andrew-approved S326). IDEMPOTENT: composers and re-composers (generate,
+ * rerender, follow-ups, the itemized request) all call this at their final
+ * step, and a body that already carries the statement is returned unchanged —
+ * so the conspicuous-statement fixture can assert EXACTLY ONE occurrence on
+ * every path without ordering constraints between the callers.
+ */
+export function withConspicuousStatement(body: string): string {
+  if (body.includes(CONSPICUOUS_STATEMENT)) return body;
+  return `${body}\n\n—\n${CONSPICUOUS_STATEMENT}`;
+}
 
 /**
  * S312 (T4, Andrew's ruling) — the ONE lifecycle word a letter surface may

@@ -1,3 +1,4 @@
+import { withConspicuousStatement } from "./letter-type";
 /**
  * Follow-up letter — dispute-letters v2 S4 (map §3.3).
  *
@@ -92,7 +93,7 @@ export function buildFollowupLetter(input: FollowupLetterInput): string {
     ? `This is a final follow-up on my ${parentLabel} sent on ${sent}, to which I have not yet received a written response.`
     : `I am following up on my ${parentLabel} sent on ${sent}, to which I have not yet received a written response.`;
 
-  return [
+  const body = [
     easternDate(input.now ?? new Date()),
     "",
     `Re: Follow-up — ${parentLabel} of ${sent}`,
@@ -110,4 +111,6 @@ export function buildFollowupLetter(input: FollowupLetterInput): string {
     "",
     FOLLOWUP_DISCLAIMER,
   ].join("\n");
+  // S326 — §81.101(c) on follow-up letters too (every composed letter).
+  return withConspicuousStatement(body);
 }

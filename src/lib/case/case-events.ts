@@ -97,6 +97,22 @@ export const CASE_EVENT_KINDS = [
   "bill_totals_adjudicated",
   "finding_dismissed",
   "audit_rerun",
+  // S326 (eleven-rules §3.4 / member_composition_v1) — the member's own hand on
+  // the composition: the *Reynoso* record ("who selected") and the DFY operator
+  // invariant's composition proof (s326-dfy-operator-build-handoff §5 — the
+  // operator route asserts these EXIST before executing; fail-soft here means a
+  // lost event blocks the OPERATOR, never the member's letter).
+  // `ground_selected` — one per ground the member checked at compose time.
+  // Payload refs + minimal facts only: { groundType, catalogVersion } (the
+  // compose version identifies which published mapping table they selected
+  // against). Emitter: /api/disputes/generate, same change. Count: 23 → 24.
+  "ground_selected",
+  // `letter_adopted` — the member's compose confirm: THIS letter, composed from
+  // THEIR selections, adopted as their own instrument. Payload: { letterType,
+  // groundCount, adoptedCitations: string[] (registry keys — public statute ids,
+  // not user data), composeVersion }. Emitter: /api/disputes/generate, same
+  // change. Count: 24 → 25.
+  "letter_adopted",
 ] as const;
 
 export type CaseEventKind = (typeof CASE_EVENT_KINDS)[number];

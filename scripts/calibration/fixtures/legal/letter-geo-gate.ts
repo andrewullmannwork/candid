@@ -51,7 +51,7 @@ function check(name: string, cond: boolean) {
 
 // 1 — CA refused
 {
-  const r = evaluateLetterAccess({ letterType: "negotiation", isPro: false, userState: "CA" });
+  const r = evaluateLetterAccess({ litigationAttested: null, letterType: "negotiation", isPro: false, userState: "CA" });
   check("negotiation + CA refused", !r.allowed);
   check("reason is geo_unavailable", r.reason === "geo_unavailable");
   check("geo refusal is not a Pro refusal", r.requiresPro === false);
@@ -59,34 +59,34 @@ function check(name: string, cond: boolean) {
 
 // 2 — normalization
 for (const s of ["ca", " Ca ", "CA "]) {
-  const r = evaluateLetterAccess({ letterType: "negotiation", isPro: false, userState: s });
+  const r = evaluateLetterAccess({ litigationAttested: null, letterType: "negotiation", isPro: false, userState: s });
   check(`negotiation + ${JSON.stringify(s)} refused (normalized)`, !r.allowed);
 }
 
 // 3 — unknown state fails closed
 {
-  const r = evaluateLetterAccess({ letterType: "negotiation", isPro: false, userState: null });
+  const r = evaluateLetterAccess({ litigationAttested: null, letterType: "negotiation", isPro: false, userState: null });
   check("negotiation + null state FAILS CLOSED", !r.allowed && r.reason === "geo_unavailable");
-  const r2 = evaluateLetterAccess({ letterType: "negotiation", isPro: false, userState: "" });
+  const r2 = evaluateLetterAccess({ litigationAttested: null, letterType: "negotiation", isPro: false, userState: "" });
   check("negotiation + empty-string state FAILS CLOSED", !r2.allowed);
 }
 
 // 4 — non-gated state allowed
 {
-  const r = evaluateLetterAccess({ letterType: "negotiation", isPro: false, userState: "TX" });
+  const r = evaluateLetterAccess({ litigationAttested: null, letterType: "negotiation", isPro: false, userState: "TX" });
   check("negotiation + TX allowed", r.allowed);
 }
 
 // 5 — Pro cannot buy past geo
 {
-  const r = evaluateLetterAccess({ letterType: "negotiation", isPro: true, userState: "CA" });
+  const r = evaluateLetterAccess({ litigationAttested: null, letterType: "negotiation", isPro: true, userState: "CA" });
   check("Pro does not bypass the geo gate", !r.allowed && r.reason === "geo_unavailable");
 }
 
 // 6 — non-gated types untouched, including for CA + unknown-state users
 for (const t of ["overcharge", "insurance_appeal", "debt_validation"] as DisputeLetterType[]) {
-  const ca = evaluateLetterAccess({ letterType: t, isPro: false, userState: "CA" });
-  const unk = evaluateLetterAccess({ letterType: t, isPro: false, userState: null });
+  const ca = evaluateLetterAccess({ litigationAttested: null, letterType: t, isPro: false, userState: "CA" });
+  const unk = evaluateLetterAccess({ litigationAttested: null, letterType: t, isPro: false, userState: null });
   check(`${t} + CA allowed`, ca.allowed);
   check(`${t} + unknown state allowed`, unk.allowed);
 }
@@ -94,7 +94,7 @@ for (const t of ["overcharge", "insurance_appeal", "debt_validation"] as Dispute
 // 7 — the tier rule still works beneath geo (structural: honors whatever
 // PRO_LETTER_TYPES holds; empty today per the S299 wall removal)
 for (const t of PRO_LETTER_TYPES) {
-  const r = evaluateLetterAccess({ letterType: t, isPro: false, userState: "TX" });
+  const r = evaluateLetterAccess({ litigationAttested: null, letterType: t, isPro: false, userState: "TX" });
   check(`PRO type ${t} refused without Pro`, !r.allowed && r.reason === "subscription_required");
 }
 check("PRO_LETTER_TYPES honored (vacuously green while empty)", true);

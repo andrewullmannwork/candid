@@ -18,6 +18,10 @@ import { BundleSuggestion } from "@/components/claims/BundleSuggestion";
 import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 import { useDisputeDraftOverlay } from "@/lib/loading/dispute-draft-overlay";
 import { DisputePlanChooser, type DisputePlanChooserPlan } from "@/components/disputes/DisputePlanChooser";
+import { CompositionStep, type MemberCompositionSelection, type CompositionEntryInput } from "@/components/disputes/CompositionStep";
+import { isMemberComposable } from "@/lib/disputes/dispute-ground-catalog";
+import { lineGapFindingKind, type LineGapClaimSignals } from "@/lib/claims/line-gap";
+import type { DisputeLetterType } from "@/lib/billing/types";
 import { readServicesConfirmedAt } from "@/lib/claims/effective-totals";
 import { CostShareBanner, hasAssumptionRows, pendingAssumptionFields, type BannerAssumption, type CostShareVerdict, type CostShareOverrideRequest } from "@/components/claims/CostShareBanner";
 import { AddPlanDetailsModal } from "@/components/claims/AddPlanDetailsModal";
@@ -25,7 +29,7 @@ import type { CostShareAssumption, CostShareOverrides } from "@/lib/claims/recov
 import { hasPendingAssumption } from "@/lib/claims/recovery-math";
 import { useFeatureFlag } from "@/lib/config/use-feature-flag";
 import type { DenialBasis, RegulatoryClassification } from "@/lib/disputes/forums";
-import { GuidedPhoneSteps, ShowFullStepButton, derivePhonePackState, samePhonePackState, type GuideStepState, type PhonePackState } from "@/components/claims/GuidedPhoneSteps";
+import { GuidedPhoneSteps, ShowFullStepButton, derivePhonePackState, samePhonePackState, lettersUnlockedByCalls, type GuideStepState, type PhonePackState } from "@/components/claims/GuidedPhoneSteps";
 import { CaseRail, CaseResolvedFold, RailStep } from "@/components/claims/CaseRail";
 import { CaseFileBlock } from "@/components/claims/CaseFileBlock";
 import { OutcomeReportingModal } from "@/components/disputes/OutcomeReportingModal";
@@ -2249,6 +2253,7 @@ export function ClaimDetail({
     primaryLineItems,
     visibleClaimLevelFindings,
     showDismissed,
+    claimGapSignals(claim),
   );
   const findingTypes = [
     ...disputeEntries.lineEntries.map((e) => e.finding.type),
@@ -2426,6 +2431,20 @@ export function ClaimDetail({
   // Also gated on there being something to contest: the draft action is
   // BulkDisputeButton, which returns null with nothing in the bundle, and an
   // offer with no way to accept it is worse than no offer.
+  // S326 — hoisted above the offer build (it reads the pack state). Pure
+  // derivation from already-loaded state; rendering below is unchanged.
+  const guidedPack = guidedPackLive ?? derivePhonePackState(guidedTrack, guideStepsMeta);
+  // S326 (Andrew ruling; supersedes S297 §3.6's visible-muted treatment) — the
+  // LETTER DOOR (rail offer rungs AND the 4b create step) exists only after
+  // the call step concludes unresolved ("no"/skip), or when a letter already
+  // exists, or in the unguided world where no phone step renders. ONE
+  // derivation for every door — the S305 offer rungs bypassing 4b's mute is
+  // exactly the regression this kills.
+  const lettersUnlocked = lettersUnlockedByCalls(guidedPack, {
+    guided: guidedCtx != null,
+    hasDraftedDispute,
+  });
+
   const railOffers: RailLetterOffer[] =
     // S319 (Andrew, /check drive) — anonymous sessions get NO letter offers:
     // the owed-letter band derives from FINDINGS (not existing letters), so it
@@ -2433,7 +2452,7 @@ export function ClaimDetail({
     // locked account ask — two step 4s, one of them a door the Tier-3 floor
     // would slam anyway. Same one-signal rule as the guided packs: the locked
     // step owns the whole recover slot until an account exists.
-    isFlagged && caseRailFlag.enabled && hasContestableCharges && anonymousDraftGate == null
+    isFlagged && caseRailFlag.enabled && hasContestableCharges && anonymousDraftGate == null && lettersUnlocked
       ? letterTracks
           .filter((t) => !partiesWithLetters.has(t.party))
           .map((t) => {
@@ -2545,7 +2564,6 @@ export function ClaimDetail({
   });
   // 4a/4b split — pack state for the rail chrome (done pill / resolved chip /
   // skipped) and 4b's activation. Live component state wins once it emits.
-  const guidedPack = guidedPackLive ?? derivePhonePackState(guidedTrack, guideStepsMeta);
   const guidedOutcomeDateLabel =
     guidedPack.outcomeAt != null ? fmtStampDateLocal(guidedPack.outcomeAt) : null;
 
@@ -4707,11 +4725,6 @@ export function ClaimDetail({
       )}
 
       {isFlagged && guidedCtx && (() => {
-        const muted4b = !(
-          guidedPack.outcome === "no" ||
-          guidedPack.outcome === "skip" ||
-          hasDraftedDispute
-        );
         const phoneBodyVisible = !guidedPack.concluded || phoneFullOpen;
         return (
           <>
@@ -4832,7 +4845,7 @@ export function ClaimDetail({
                 by its own rule, so this rendered a "Recover $X from this bill"
                 promise with no door behind it; the fix is the button's own rule
                 applied one level up, not a new one. */}
-            {!railExtends && hasContestableCharges && (
+            {!railExtends && hasContestableCharges && lettersUnlocked && (
               <RailStep
                 n="4b"
                 // KEPT, and inert by construction. `railExtends` is false only
@@ -4850,7 +4863,7 @@ export function ClaimDetail({
                 sub={guidedPack.outcome === "yes" ? GUIDE_4B.subResolved : GUIDE_4B.sub}
                 last
               >
-                {recoverBranchNode(muted4b)}
+                {recoverBranchNode(false)}
               </RailStep>
             )}
           </>
@@ -5538,20 +5551,6 @@ function buildPlanSays(planCoverage: LineItem["planCoverage"]): string {
 // disagree on the same page (S292 invariant extended to scripts).
 
 /** The gap-line synthesis gate from BulkDisputeButton, verbatim semantics. */
-function lineGapFindingKind(li: LineItem): "mystery" | "recovery" | null {
-  if (li.coverageStatus === "not_covered") return null;
-  const billed = li.billed_amount || 0;
-  const ins = li.insurance_paid || 0;
-  const owed = li.patient_owes || 0;
-  const refund = li.recovery?.refundComponent ?? 0;
-  const forgiveness = li.recovery?.forgivenessComponent ?? 0;
-  const onEngine = li.costShareVerdict != null;
-  const isMysteryGap = !onEngine && billed > 0 && ins === 0 && owed === 0;
-  const hasRecoveryStory = onEngine
-    ? li.costShareVerdict === "recovery"
-    : li.planCoverage != null && (refund >= 1 || forgiveness >= 1);
-  return isMysteryGap ? "mystery" : hasRecoveryStory ? "recovery" : null;
-}
 
 /** One contested charge in the bulk-dispute bundle, keyed to its line. */
 interface DisputeEntry {
@@ -5575,10 +5574,26 @@ interface DisputeEntry {
  * never fire. Keeping a redundant copy of a rule is how the two versions of it
  * eventually disagree.
  */
+/** S326 — the claim header's insurer-adjudication signals, built the same way
+ *  at BOTH collectDisputeEntries call sites (one derivation, no drift). Null =
+ *  the document never stated it; explicit 0 is a statement. */
+function claimGapSignals(claim: Record<string, unknown>): LineGapClaimSignals {
+  const num = (v: unknown): number | null => (typeof v === "number" ? v : null);
+  return {
+    totalInsurancePaid: num(claim.total_insurance_paid),
+    totalAllowed: num(claim.total_allowed),
+    totalInsuranceAdjusted: num(claim.total_insurance_adjusted),
+  };
+}
+
 function collectDisputeEntries(
   lineItems: LineItem[],
   claimFindings: ClaimLevelFindingMeta[],
   showDismissed: boolean,
+  // S326 — the claim header's stated insurer totals (S304: adjudication can be
+  // stated ONCE, at the header). The gap synthesis is gated on adjudication
+  // actually existing — see src/lib/claims/line-gap.ts.
+  claimSignals: LineGapClaimSignals,
 ): { lineEntries: DisputeEntry[]; claimActionable: ClaimLevelFindingMeta[]; gapEntries: DisputeEntry[] } {
   const lineEntries: DisputeEntry[] = [];
   for (const li of lineItems) {
@@ -5611,7 +5626,21 @@ function collectDisputeEntries(
   const gapEntries: DisputeEntry[] = [];
   for (const li of lineItems) {
     if (linesWithRealFindings.has(li.id)) continue;
-    const gapKind = lineGapFindingKind(li);
+    const gapKind = lineGapFindingKind(
+      {
+        billedAmount: li.billed_amount,
+        allowedAmount: li.allowed_amount,
+        insurancePaid: li.insurance_paid,
+        insuranceAdjusted: li.insurance_adjusted_amount ?? null,
+        patientOwes: li.patient_owes,
+        coverageStatus: li.coverageStatus,
+        costShareVerdict: li.costShareVerdict ?? null,
+        refundComponent: li.recovery?.refundComponent ?? 0,
+        forgivenessComponent: li.recovery?.forgivenessComponent ?? 0,
+        hasPlanCoverage: li.planCoverage != null,
+      },
+      claimSignals,
+    );
     if (gapKind == null) continue;
     const billed = li.billed_amount || 0;
     const ins = li.insurance_paid || 0;
@@ -6308,6 +6337,16 @@ function BulkDisputeButton({
   const [chooserDefaultId, setChooserDefaultId] = useState<string | null>(null);
   const pinningFlagRef = useRef<boolean | null>(null);
   const preparingRef = useRef(false);
+  // S326 (member_composition_v1) — the composition step. Lazy flag read on
+  // first click (this component's pinning-flag idiom); the member's selection
+  // is held for THIS draft attempt only and cleared on success. The SERVER
+  // independently requires it (fail-closed) — this UI is choreography, never
+  // the gate.
+  const memberFlagRef = useRef<boolean | null>(null);
+  const [compositionOpen, setCompositionOpen] = useState(false);
+  const compositionSelectionRef = useRef<MemberCompositionSelection | null>(null);
+  // S326 v4 round 1 — the pin resolved BEFORE the step opened (plan first).
+  const compositionPinRef = useRef<string | undefined>(undefined);
 
   // S305 — the three buckets come from the SHARED builder, which the letter-type
   // fallback and the rung derivation read too. Two walks of the same data is how
@@ -6316,6 +6355,7 @@ function BulkDisputeButton({
     primaryLineItems,
     claimLevelFindings,
     showDismissed,
+    claimGapSignals(claim),
   );
   const aggregated = [...lineEntries, ...gapEntries];
   const totalContested = aggregated.length + claimActionable.length;
@@ -6419,6 +6459,14 @@ function BulkDisputeButton({
           claimId,
           claimLineItemIds: distinctLineItemIds,
           insurancePlanId: pinnedPlanId,
+          // S326 — the member's composition (flag ON captures it in the step;
+          // absent otherwise; the server validates independently).
+          ...(compositionSelectionRef.current
+            ? {
+                selectedGrounds: compositionSelectionRef.current.grounds,
+                adoptedCitations: compositionSelectionRef.current.adoptedCitations,
+              }
+            : {}),
         }),
       });
       if (!res.ok) {
@@ -6501,7 +6549,35 @@ function BulkDisputeButton({
       preparingRef.current = false;
     }
 
-    void submitDispute(defaultPinId);
+    void proceedWithPin(defaultPinId);
+  }
+
+  /**
+   * S326 (Andrew, v4 round 1) — the PLAN comes before the FACTS: the pin
+   * governs which plan the letter cites (and what "accurate" means), so the
+   * chooser resolves FIRST, then the composition step opens, then submit.
+   * Both the chooser's onConfirm and the no-chooser path land here.
+   */
+  async function proceedWithPin(pinnedPlanId?: string) {
+    compositionPinRef.current = pinnedPlanId;
+    if (memberFlagRef.current === null) {
+      try {
+        const r = await fetch("/api/feature-flags/member_composition_v1");
+        const j = (await r.json()) as { enabled?: boolean };
+        memberFlagRef.current = j?.enabled === true;
+      } catch {
+        memberFlagRef.current = false;
+      }
+    }
+    if (
+      memberFlagRef.current &&
+      isMemberComposable(letterType as DisputeLetterType) &&
+      !compositionSelectionRef.current
+    ) {
+      setCompositionOpen(true);
+      return;
+    }
+    void submitDispute(pinnedPlanId);
   }
 
   // Session 86 round 6 — button shows ACTION only, no specific dollar
@@ -6573,9 +6649,73 @@ function BulkDisputeButton({
         submitting={loading}
         onConfirm={(id) => {
           setChooserOpen(false);
-          void submitDispute(id);
+          void proceedWithPin(id);
+        }}
+      />
+      <CompositionStep
+        open={compositionOpen}
+        onClose={() => setCompositionOpen(false)}
+        letterType={letterType}
+        claimId={claimId}
+        entries={buildCompositionEntries(aggregated, claimActionable, primaryLineItems, claim)}
+        litigationPreAnswer={litigationPreAnswerFromClaim(claim)}
+        getAuthToken={getAuthToken}
+        submitting={loading}
+        onCompose={(selection) => {
+          compositionSelectionRef.current = selection;
+          setCompositionOpen(false);
+          // The pin was resolved BEFORE the step opened (plan first — Andrew's
+          // v4 round-1 ruling); compose with it directly.
+          void submitDispute(compositionPinRef.current);
         }}
       />
     </>
   );
+}
+
+/** S326 v4 — the composition step's raw entries, built from the rows this
+ *  component already holds (the same parsed data that becomes the letter's
+ *  audit-report input; no new fetch). The step groups them into checkable
+ *  fact cards (buildFindingCards) — one card per finding, bill order. */
+function buildCompositionEntries(
+  aggregated: Array<{ lineNumber: number; lineItemId: string; billedAmount: number; finding: { id?: string; type: string; benchmarkAmount?: number | null } }>,
+  claimActionable: Array<{ id?: string; type: string }>,
+  primaryLineItems: LineItem[],
+  claim: Record<string, unknown>,
+): CompositionEntryInput[] {
+  const byLineNumber = new Map(primaryLineItems.map((li) => [li.line_number, li]));
+  const serviceDate = (claim.date_of_service as string | null) ?? null;
+  return [
+    ...aggregated.map((e) => {
+      const li = byLineNumber.get(e.lineNumber);
+      return {
+        findingId: e.finding.id ?? `${e.finding.type}:${e.lineNumber}`,
+        findingType: e.finding.type,
+        lineNumber: e.lineNumber,
+        serviceName: li?.description ?? null,
+        code: li?.billing_code ?? null,
+        billedAmount: e.billedAmount || (li?.billed_amount ?? null),
+        benchmarkAmount: e.finding.benchmarkAmount ?? null,
+        serviceDate,
+      };
+    }),
+    ...claimActionable.map((f) => ({
+      findingId: f.id ?? `${f.type}:claim`,
+      findingType: f.type,
+      lineNumber: null,
+      serviceName: null,
+      code: null,
+      billedAmount: null,
+      benchmarkAmount: null,
+      serviceDate,
+    })),
+  ];
+}
+
+/** S326 — the claim's stored litigation screening answer (guide-step note). */
+function litigationPreAnswerFromClaim(claim: Record<string, unknown>): "yes" | "no" | null {
+  const meta = (claim.metadata as Record<string, unknown> | null) ?? null;
+  const steps = (meta?.guideSteps as Record<string, { note?: unknown }> | undefined) ?? {};
+  const note = steps["screening:litigation"]?.note;
+  return note === "yes" || note === "no" ? note : null;
 }

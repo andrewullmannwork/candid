@@ -187,44 +187,89 @@ type ClassifyInput = Pick<
 >;
 
 /**
+ * S326 (member_composition_v1) — the member's composition scope: the set of
+ * ground types they selected, or null/undefined for the unscoped (legacy /
+ * flag-OFF / composition-step preview) derivation. Type-only import — no
+ * runtime cycle (dispute-grounds imports this module's values; we import only
+ * its key union).
+ */
+export type CompositionScopeSet = ReadonlySet<import("./dispute-grounds").DisputeGroundType> | null;
+
+/** True when `ground` may drive classification/derivation under `scope`.
+ *  No scope (null/undefined) = everything allowed (today's behavior). */
+export function scopeAllows(
+  scope: CompositionScopeSet | undefined,
+  ground: import("./dispute-grounds").DisputeGroundType,
+): boolean {
+  return scope == null || scope.has(ground);
+}
+
+/**
  * Map a line's evidence signals → §1e dispute-type spine. Per-line audit-finding
  * types take priority (most specific); structural signals break ties; 'other'
  * for lines with no §1e-mapped signal. `service_not_rendered` is reserved for
  * the attestation signal (Block C) and does not fire in Block A.
+ *
+ * S326 — `scope` (optional): under member composition, a branch may classify
+ * only when the member selected its ground. The evidence resolver ALSO filters
+ * the line's findings by scope upstream, so the finding-branch guards here are
+ * belt-and-suspenders (the classifier is scope-complete regardless of caller
+ * filtering — pinned under every selection subset by classifier-parity).
+ * `coverage_corroboration` is a CLASS with no selectable ground → it fires
+ * only unscoped. No scope → byte-identical to the pre-S326 classifier.
  */
-export function classifyDisputeType(li: ClassifyInput): DisputeTypeClass {
+export function classifyDisputeType(
+  li: ClassifyInput,
+  scope?: CompositionScopeSet,
+): DisputeTypeClass {
   const findingTypes = new Set((li.auditFindings ?? []).map((f) => f.type));
 
   // Documentary / legal spines first.
-  if (findingTypes.has("balance_billing")) return "balance_billing";
+  if (findingTypes.has("balance_billing") && scopeAllows(scope, "balance_billing")) {
+    return "balance_billing";
+  }
   if (
-    findingTypes.has("insurance_underpayment") ||
-    findingTypes.has("missing_adjustment")
+    (findingTypes.has("insurance_underpayment") ||
+      findingTypes.has("missing_adjustment")) &&
+    scopeAllows(scope, "coverage_contradiction")
   ) {
     return "coverage_contradiction";
   }
-  if (findingTypes.has("zero_cost_share_overcharge")) {
+  if (
+    findingTypes.has("zero_cost_share_overcharge") &&
+    scopeAllows(scope, "cost_share_misapplication")
+  ) {
     return "cost_share_misapplication";
   }
 
-  // Benchmark-class findings (statistical).
+  // Benchmark-class findings (statistical). Three grounds share the class —
+  // each finding gates on ITS ground; `upcoding` maps to no ground and so
+  // cannot enter a scoped (member-composed) classification.
   if (
-    findingTypes.has("overcharge") ||
-    findingTypes.has("upcoding") ||
-    findingTypes.has("unbundling") ||
-    findingTypes.has("chargemaster")
+    (findingTypes.has("overcharge") && scopeAllows(scope, "benchmark")) ||
+    (findingTypes.has("upcoding") && scope == null) ||
+    (findingTypes.has("unbundling") && scopeAllows(scope, "unbundling")) ||
+    (findingTypes.has("chargemaster") && scopeAllows(scope, "chargemaster"))
   ) {
     return "benchmark";
   }
 
   // Structural signals when no finding type pinned it.
-  if (li.planBenefit && (li.discrepancyAmount ?? 0) > 0) {
+  if (
+    li.planBenefit &&
+    (li.discrepancyAmount ?? 0) > 0 &&
+    scopeAllows(scope, "cost_share_misapplication")
+  ) {
     return "cost_share_misapplication";
   }
-  if (li.planBenefit) return "coverage_contradiction";
-  if (li.peerCodes && li.peerCodes.length >= 2) return "coding_peer";
-  if (li.communityOutcome) return "coverage_corroboration";
-  if (li.pricingBenchmark) return "benchmark";
+  if (li.planBenefit && scopeAllows(scope, "coverage_contradiction")) {
+    return "coverage_contradiction";
+  }
+  if (li.peerCodes && li.peerCodes.length >= 2 && scopeAllows(scope, "coding_peer")) {
+    return "coding_peer";
+  }
+  if (li.communityOutcome && scope == null) return "coverage_corroboration";
+  if (li.pricingBenchmark && scopeAllows(scope, "benchmark")) return "benchmark";
 
   return "other";
 }
@@ -253,8 +298,14 @@ type StakeInput = Pick<LineItemEvidence, "discrepancyAmount" | "auditFindings">;
  * recovery/forgiveness split (split-fix.ts) lands in Block C and can refine
  * this. Always ≥ 0.
  */
-export function deriveDollarAtStake(li: StakeInput): number {
-  const discrepancy = Math.max(0, li.discrepancyAmount ?? 0);
+export function deriveDollarAtStake(li: StakeInput, scope?: CompositionScopeSet): number {
+  // S326 — under member composition the structural discrepancy contributes only
+  // when a ground that argues it (cost-share / coverage) is selected; the
+  // findings term self-scopes because the resolver filters findings upstream.
+  const discrepancyAllowed =
+    scopeAllows(scope, "cost_share_misapplication") ||
+    scopeAllows(scope, "coverage_contradiction");
+  const discrepancy = discrepancyAllowed ? Math.max(0, li.discrepancyAmount ?? 0) : 0;
   const overcharge = (li.auditFindings ?? []).reduce(
     (sum, f) => sum + Math.max(0, f.estimatedOvercharge ?? 0),
     0,

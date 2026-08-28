@@ -42,6 +42,7 @@ export const EXPOSED_FLAGS = [
   "savings_math_derivation_v1", // S307 — priced-answer plan card + "Where these numbers come from" strip
   "anonymous_bill_check_v1", // S315 — no-account bill check (/check) + landing/signup escape links
   "forum_menu_v1", // S325 PR-B — verified forum menu: rail screening + routed door tiles (mig 233)
+  "member_composition_v1", // S326 eleven-rules PR-A — the member composition step (facts → catalog checkboxes → compose; mig 234)
 ] as const;
 
 /**

@@ -38,7 +38,7 @@ import {
   type PlanContext,
   type InsurerAddressOverride,
 } from "@/lib/disputes/plan-context";
-import { resolveEvidence, type DisputeEvidence } from "@/lib/disputes/evidence-resolver";
+import { resolveEvidence, type DisputeEvidence, memberSelectionFromMeta } from "@/lib/disputes/evidence-resolver";
 import {
   computeDisputeStrength,
   loadStrengthConfig,
@@ -207,6 +207,9 @@ export async function resolveDisputeReadiness(
         claimIds: [dispute.claim_id],
         lineItemIds: lineItemIds.length > 0 ? lineItemIds : undefined,
         planContext,
+        // S326 — a stored letter re-composes under its OWN persisted scope
+        // (null on legacy rows → unscoped, byte-identical).
+        memberSelection: memberSelectionFromMeta(meta),
         // ⚠ The RESOLVED type, never the raw dispute_type vocab. resolveEvidence
         // gates the provider/insurer address gaps AND resolveLegalBasis on
         // `letterType === "insurance_appeal"`, so raw "internal_appeal" makes an

@@ -197,6 +197,7 @@ function makeEvidence(findings: AuditFinding[]): DisputeEvidence {
     dataTrust: { headerReconciliationFailed: false, signViolation: false },
   } satisfies ClaimEvidence;
   return {
+    compositionScope: null,
     claims: [claim],
     totals: { claimCount: 1, lineItemCount: findings.length, totalBilled: 500, totalDiscrepancy: 0 },
     planEvidence: null,
@@ -345,6 +346,7 @@ for (const { type, findings } of ZERO_BUG_TYPES) {
     ],
   };
   const ev: DisputeEvidence = {
+    compositionScope: null,
     claims: [{
       claimId: "claim-dz", dateOfService: SERVICE_DATE, providerName: "Sample Medical Center",
       totalBilled: 500, planYear: 2024, lineItemEvidence: [dismissLine],
@@ -377,6 +379,7 @@ for (const { type, findings } of ZERO_BUG_TYPES) {
 //    new behavior is PROVEN, not assumed. ─────────────────────────────────────────────────────
 {
   const evFrom = (lines: LineItemEvidence[]): DisputeEvidence => ({
+    compositionScope: null,
     claims: [{
       claimId: "claim-a", dateOfService: SERVICE_DATE, providerName: "Sample Medical Center",
       totalBilled: 500, planYear: 2024, lineItemEvidence: lines,
@@ -553,6 +556,7 @@ for (const { type, findings } of ZERO_BUG_TYPES) {
 //    by construction). Partial data (one field) is unaffected. ─────────────────────
 {
   const eobEvidence = (over: Partial<LineItemEvidence>): DisputeEvidence => ({
+    compositionScope: null,
     claims: [{
       claimId: "claim-eob", dateOfService: SERVICE_DATE, providerName: "Sample Medical Center",
       totalBilled: 500, planYear: 2024,

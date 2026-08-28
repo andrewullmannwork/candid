@@ -134,6 +134,7 @@ function makeEvidence(
     dataTrust,
   };
   return {
+    compositionScope: null,
     claims: [claim],
     totals: {
       claimCount: 1,

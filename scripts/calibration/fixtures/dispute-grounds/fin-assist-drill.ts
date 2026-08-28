@@ -81,6 +81,7 @@ function makeEvidence(lines: LineItemEvidence[]): DisputeEvidence {
     claimFindings: [],
   } satisfies ClaimEvidence;
   return {
+    compositionScope: null,
     claims: [claim],
     totals: { claimCount: 1, lineItemCount: lines.length, totalBilled: 500, totalDiscrepancy: 0 },
     planEvidence: null,
