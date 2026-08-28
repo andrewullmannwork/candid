@@ -185,6 +185,13 @@ jobs:
         # ground ambulance = .200, unknown→DMHC, self-funded exclusions, the
         # generic doors byte-exact for the flag-OFF path).
         run: npx tsx scripts/calibration/fixtures/legal/forum-router.ts
+      - name: Plan provenance gate — library picks pass the honesty gate (S326)
+        # ⚠ DO NOT REVERT (Andrew ruling, third occurrence): a search-picked
+        # library plan (manual + canonical link) is trusted like an uploaded
+        # document — its terms are Candid's cite-grade SBC extraction. Card
+        # plans and unlinked hand entries stay distrusted (S291 preserved).
+        # Pins the pure veto AND its wiring into loadPlanCostShareParams.
+        run: npx tsx scripts/calibration/fixtures/claims/plan-provenance-gate.ts
       - name: Member composition — the member selects, the engine only maps (S326)
         # The eleven-rules Rule 2 core (member_composition_v1): the classifier
         # is scope-complete over every selection subset (128 combos), the
