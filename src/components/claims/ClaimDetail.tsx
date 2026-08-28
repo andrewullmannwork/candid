@@ -6345,6 +6345,8 @@ function BulkDisputeButton({
   const memberFlagRef = useRef<boolean | null>(null);
   const [compositionOpen, setCompositionOpen] = useState(false);
   const compositionSelectionRef = useRef<MemberCompositionSelection | null>(null);
+  // S326 v4 round 1 — the pin resolved BEFORE the step opened (plan first).
+  const compositionPinRef = useRef<string | undefined>(undefined);
 
   // S305 — the three buckets come from the SHARED builder, which the letter-type
   // fallback and the rung derivation read too. Two walks of the same data is how
@@ -6497,28 +6499,6 @@ function BulkDisputeButton({
       setGateOpen((open) => !open);
       return;
     }
-    // S326 — the composition step intercepts the draft for ground-arguing
-    // letter types when member_composition_v1 is ON: the member selects the
-    // grounds BEFORE any compose. Once a selection is captured for this
-    // attempt, the click proceeds through the existing choreography (pinning
-    // chooser → submit) unchanged.
-    if (memberFlagRef.current === null) {
-      try {
-        const r = await fetch("/api/feature-flags/member_composition_v1");
-        const j = (await r.json()) as { enabled?: boolean };
-        memberFlagRef.current = j?.enabled === true;
-      } catch {
-        memberFlagRef.current = false;
-      }
-    }
-    if (
-      memberFlagRef.current &&
-      isMemberComposable(letterType as DisputeLetterType) &&
-      !compositionSelectionRef.current
-    ) {
-      setCompositionOpen(true);
-      return;
-    }
     const claimMeta = claim;
     const defaultPinId = (claimMeta.insurance_plan_id as string) || undefined;
 
@@ -6569,7 +6549,35 @@ function BulkDisputeButton({
       preparingRef.current = false;
     }
 
-    void submitDispute(defaultPinId);
+    void proceedWithPin(defaultPinId);
+  }
+
+  /**
+   * S326 (Andrew, v4 round 1) — the PLAN comes before the FACTS: the pin
+   * governs which plan the letter cites (and what "accurate" means), so the
+   * chooser resolves FIRST, then the composition step opens, then submit.
+   * Both the chooser's onConfirm and the no-chooser path land here.
+   */
+  async function proceedWithPin(pinnedPlanId?: string) {
+    compositionPinRef.current = pinnedPlanId;
+    if (memberFlagRef.current === null) {
+      try {
+        const r = await fetch("/api/feature-flags/member_composition_v1");
+        const j = (await r.json()) as { enabled?: boolean };
+        memberFlagRef.current = j?.enabled === true;
+      } catch {
+        memberFlagRef.current = false;
+      }
+    }
+    if (
+      memberFlagRef.current &&
+      isMemberComposable(letterType as DisputeLetterType) &&
+      !compositionSelectionRef.current
+    ) {
+      setCompositionOpen(true);
+      return;
+    }
+    void submitDispute(pinnedPlanId);
   }
 
   // Session 86 round 6 — button shows ACTION only, no specific dollar
@@ -6641,7 +6649,7 @@ function BulkDisputeButton({
         submitting={loading}
         onConfirm={(id) => {
           setChooserOpen(false);
-          void submitDispute(id);
+          void proceedWithPin(id);
         }}
       />
       <CompositionStep
@@ -6656,9 +6664,9 @@ function BulkDisputeButton({
         onCompose={(selection) => {
           compositionSelectionRef.current = selection;
           setCompositionOpen(false);
-          // Re-enter the click flow: the selection is captured, so it proceeds
-          // to the pinning chooser / submit exactly as before.
-          void handleClick();
+          // The pin was resolved BEFORE the step opened (plan first — Andrew's
+          // v4 round-1 ruling); compose with it directly.
+          void submitDispute(compositionPinRef.current);
         }}
       />
     </>

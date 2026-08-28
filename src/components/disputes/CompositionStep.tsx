@@ -218,7 +218,6 @@ export function CompositionStep({
             >
               {c.groundLabel}
             </span>
-            → {c.party === 'insurer' ? 'insurer' : 'provider'} letter
           </span>
         </span>
       </label>
@@ -304,8 +303,8 @@ export function CompositionStep({
                         onChange={() => toggleGround(g)}
                       />
                     ) : (
-                      <span className="mt-0.5 whitespace-nowrap rounded-full border border-gray-200 bg-white px-2 py-px text-[10.5px] font-semibold text-gray-600">
-                        → <span className="text-blue-600">{party === 'insurer' ? 'insurer' : 'provider'} letter</span>
+                      <span className="mt-0.5 whitespace-nowrap rounded-md bg-gray-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-gray-500">
+                        {party === 'insurer' ? 'Insurer letter' : 'Provider letter'}
                       </span>
                     )}
                     <span className="min-w-0">
