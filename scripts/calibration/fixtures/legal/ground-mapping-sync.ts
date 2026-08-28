@@ -22,8 +22,10 @@ import {
 } from "../../../../src/lib/disputes/dispute-ground-catalog";
 import type { DisputeGroundType } from "../../../../src/lib/disputes/dispute-grounds";
 import {
-  COMPOSITION_FACT_TEMPLATES,
-  factStatement,
+  FINDING_CARD_COPY,
+  buildFindingCards,
+  lineRefLabel,
+  type CompositionEntryInput,
 } from "../../../../src/components/disputes/composition-copy";
 
 let pass = 0;
@@ -58,10 +60,10 @@ for (const g of ALL_DISPUTE_GROUND_TYPES) {
   check("mapping denominator sane (>=7 finding types)", entries >= 7);
 }
 
-// 3 — every finding-backed ground's finding types have a neutral fact template.
+// 3 — every finding-backed ground's finding types have card copy (v4).
 for (const g of ALL_DISPUTE_GROUND_TYPES) {
   for (const f of DISPUTE_GROUND_CATALOG[g].fromFindings) {
-    check(`fact template exists for ${f}`, typeof COMPOSITION_FACT_TEMPLATES[f] === "function");
+    check(`card copy exists for ${f}`, FINDING_CARD_COPY[f] != null);
   }
 }
 
@@ -89,16 +91,68 @@ for (const g of ALL_DISPUTE_GROUND_TYPES) {
   const spec = DISPUTE_GROUND_CATALOG[g];
   scan(`${g} copy`, `${spec.memberLabel} ${spec.memberDescription} ${spec.mappingPlainLanguage}`);
 }
-for (const [t, tpl] of Object.entries(COMPOSITION_FACT_TEMPLATES)) {
-  scan(
-    `fact template ${t}`,
-    tpl({ lineNumber: 1, description: "Office visit", code: "99213", billedAmount: 240, findingType: t, benchmarkAmount: 130 }),
-  );
+for (const [t, copyDef] of Object.entries(FINDING_CARD_COPY)) {
+  const rendered = [
+    copyDef.fact({ count: 2 }),
+    copyDef.math({ billed: 240, benchmark: 130, date: "June 9, 2025", count: 2 }) ?? "",
+    copyDef.helper ? copyDef.helper({ count: 2 }) : "",
+  ].join(" ");
+  scan(`card copy ${t}`, rendered);
 }
-scan(
-  "factStatement composed line",
-  factStatement({ lineNumber: 3, description: "Lab panel", code: "80053", billedAmount: 88, findingType: "duplicate" }),
-);
+
+// ---------------------------------------------------------------------------
+// 4b — the v4 card builder pins (Andrew-approved mock): BILL ORDER (never
+// dollars/severity), one card per finding (the duplicate pair is ONE
+// decision), unmapped facts render no card, the other-recipient split, and
+// Andrew's helper wording pattern verbatim.
+// ---------------------------------------------------------------------------
+{
+  const e = (over: Partial<CompositionEntryInput>): CompositionEntryInput => ({
+    findingId: "f1",
+    findingType: "overcharge",
+    lineNumber: 1,
+    serviceName: "Office visit",
+    code: "99213",
+    billedAmount: 450,
+    benchmarkAmount: 92.47,
+    serviceDate: "June 9, 2025",
+    ...over,
+  });
+  const { cards, otherTrack } = buildFindingCards(
+    [
+      // deliberately out of order + a big-dollar late line to prove no dollar sort
+      e({ findingId: "d1", findingType: "duplicate", lineNumber: 2 }),
+      e({ findingId: "ov3", findingType: "overcharge", lineNumber: 3, billedAmount: 9000 }),
+      e({ findingId: "d1", findingType: "duplicate", lineNumber: 1 }),
+      e({ findingId: "cs4", findingType: "zero_cost_share_overcharge", lineNumber: 4 }),
+      e({ findingId: "un5", findingType: "uncategorized_service", lineNumber: 5 }),
+    ],
+    "provider",
+  );
+  check("duplicate pair groups into ONE card", cards.filter((c) => c.findingType === "duplicate").length === 1);
+  check(
+    "grouped card carries both lines ascending",
+    JSON.stringify(cards.find((c) => c.findingType === "duplicate")?.lineNumbers) === "[1,2]",
+  );
+  check(
+    "cards sort by BILL ORDER, never dollars",
+    JSON.stringify(cards.map((c) => c.lineNumbers[0])) === JSON.stringify([...cards.map((c) => c.lineNumbers[0])].sort((a, b) => a - b)),
+  );
+  check("unmapped finding types render NO card", !cards.some((c) => c.findingType === "uncategorized_service") && !otherTrack.some((c) => c.findingType === "uncategorized_service"));
+  check(
+    "insurer-ground finding routes to otherTrack on a provider letter",
+    otherTrack.some((c) => c.findingType === "zero_cost_share_overcharge") &&
+      !cards.some((c) => c.findingType === "zero_cost_share_overcharge"),
+  );
+  check(
+    "Andrew's helper wording pattern verbatim (duplicate)",
+    cards.find((c) => c.findingType === "duplicate")?.helperLine ===
+      "If you received this service once that day, not twice, this could be an error.",
+  );
+  check("line ref label singular", lineRefLabel([3]) === "bill line 3");
+  check("line ref label pair", lineRefLabel([1, 2]) === "bill lines 1 & 2");
+  check("claim-level = no ref", lineRefLabel([]) === null);
+}
 
 // 5 — party pins (incl. the empty-obligation provider fallback).
 const EXPECTED_PARTY: Record<DisputeGroundType, "insurer" | "provider" | "both"> = {

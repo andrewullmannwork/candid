@@ -698,6 +698,17 @@ export interface DisputeEvidence {
 export interface MemberSelection {
   readonly grounds: readonly DisputeGroundType[];
   readonly adoptedCitations: readonly string[];
+  /**
+   * S326 v4 — the finding-grain record: which CONCRETE facts the member
+   * checked (ground + finding type + bill lines). Evidence scope reads only
+   * `grounds`; this rides along as the richer *Reynoso* record (persisted
+   * verbatim; ground_selected event payloads carry the lines).
+   */
+  readonly selectedFacts?: ReadonlyArray<{
+    readonly groundType: DisputeGroundType;
+    readonly findingType: string;
+    readonly lines: readonly number[];
+  }>;
 }
 
 /**
@@ -723,7 +734,23 @@ export function memberSelectionFromMeta(
   const adoptedCitations = Array.isArray(raw.adoptedCitations)
     ? raw.adoptedCitations.filter((c): c is string => typeof c === "string")
     : [];
-  return { grounds, adoptedCitations };
+  // The finding-grain record passes through when well-shaped (evidence scope
+  // never reads it; rerender re-persists it verbatim).
+  const rawFacts = (raw as { selectedFacts?: unknown }).selectedFacts;
+  const selectedFacts = Array.isArray(rawFacts)
+    ? rawFacts.filter(
+        (f): f is { groundType: DisputeGroundType; findingType: string; lines: number[] } =>
+          !!f &&
+          typeof f === "object" &&
+          typeof (f as { groundType?: unknown }).groundType === "string" &&
+          validGrounds.has((f as { groundType: string }).groundType) &&
+          typeof (f as { findingType?: unknown }).findingType === "string" &&
+          Array.isArray((f as { lines?: unknown }).lines),
+      )
+    : undefined;
+  return selectedFacts && selectedFacts.length > 0
+    ? { grounds, adoptedCitations, selectedFacts }
+    : { grounds, adoptedCitations };
 }
 
 export async function resolveEvidence(

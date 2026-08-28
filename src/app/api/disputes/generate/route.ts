@@ -208,7 +208,26 @@ export async function POST(req: NextRequest) {
           const adoptedCitations = rawAdopted.filter(
             (c): c is string => typeof c === "string" && menu.includes(c),
           );
-          memberSelection = { grounds, adoptedCitations };
+          // S326 v4 — the finding-grain record (which concrete facts were
+          // checked). Validated to the selected grounds; malformed rows drop.
+          const rawFacts = Array.isArray(body.selectedFacts) ? (body.selectedFacts as unknown[]) : [];
+          const groundSet = new Set(grounds);
+          const selectedFacts = rawFacts
+            .filter(
+              (f): f is { groundType: DisputeGroundType; findingType: string; lines: number[] } =>
+                !!f &&
+                typeof f === "object" &&
+                typeof (f as { groundType?: unknown }).groundType === "string" &&
+                groundSet.has((f as { groundType: string }).groundType as DisputeGroundType) &&
+                typeof (f as { findingType?: unknown }).findingType === "string" &&
+                Array.isArray((f as { lines?: unknown }).lines) &&
+                ((f as { lines: unknown[] }).lines).every((n) => typeof n === "number"),
+            )
+            .slice(0, 50);
+          memberSelection =
+            selectedFacts.length > 0
+              ? { grounds, adoptedCitations, selectedFacts }
+              : { grounds, adoptedCitations };
         }
       }
 
@@ -672,7 +691,18 @@ export async function POST(req: NextRequest) {
             claimId: claimIdStr,
             disputeId: disputeId as string,
             kind: "ground_selected" as const,
-            payload: { groundType, catalogVersion: LETTER_COMPOSE_VERSION },
+            // S326 v4 — the lines the member's concrete check drew on (the
+            // finding-grain record), when the ground came from a checked fact.
+            payload: {
+              groundType,
+              catalogVersion: LETTER_COMPOSE_VERSION,
+              ...(() => {
+                const lines = (memberSelection?.selectedFacts ?? [])
+                  .filter((f) => f.groundType === groundType)
+                  .flatMap((f) => f.lines);
+                return lines.length > 0 ? { lines: Array.from(new Set(lines)).sort((a, b) => a - b) } : {};
+              })(),
+            },
           })),
           {
             claimId: claimIdStr,

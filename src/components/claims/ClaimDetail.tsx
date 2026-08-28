@@ -18,7 +18,7 @@ import { BundleSuggestion } from "@/components/claims/BundleSuggestion";
 import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 import { useDisputeDraftOverlay } from "@/lib/loading/dispute-draft-overlay";
 import { DisputePlanChooser, type DisputePlanChooserPlan } from "@/components/disputes/DisputePlanChooser";
-import { CompositionStep, type MemberCompositionSelection, type CompositionFact } from "@/components/disputes/CompositionStep";
+import { CompositionStep, type MemberCompositionSelection, type CompositionEntryInput } from "@/components/disputes/CompositionStep";
 import { isMemberComposable } from "@/lib/disputes/dispute-ground-catalog";
 import { lineGapFindingKind, type LineGapClaimSignals } from "@/lib/claims/line-gap";
 import type { DisputeLetterType } from "@/lib/billing/types";
@@ -6649,7 +6649,7 @@ function BulkDisputeButton({
         onClose={() => setCompositionOpen(false)}
         letterType={letterType}
         claimId={claimId}
-        facts={buildCompositionFacts(aggregated, claimActionable, primaryLineItems)}
+        entries={buildCompositionEntries(aggregated, claimActionable, primaryLineItems, claim)}
         litigationPreAnswer={litigationPreAnswerFromClaim(claim)}
         getAuthToken={getAuthToken}
         submitting={loading}
@@ -6665,28 +6665,42 @@ function BulkDisputeButton({
   );
 }
 
-/** S326 — the composition step's neutral facts, built from the rows this
+/** S326 v4 — the composition step's raw entries, built from the rows this
  *  component already holds (the same parsed data that becomes the letter's
- *  audit-report input; no new fetch). */
-function buildCompositionFacts(
-  aggregated: Array<{ lineNumber: number; lineItemId: string; billedAmount: number; finding: { type: string; benchmarkAmount?: number | null } }>,
-  claimActionable: Array<{ type: string }>,
+ *  audit-report input; no new fetch). The step groups them into checkable
+ *  fact cards (buildFindingCards) — one card per finding, bill order. */
+function buildCompositionEntries(
+  aggregated: Array<{ lineNumber: number; lineItemId: string; billedAmount: number; finding: { id?: string; type: string; benchmarkAmount?: number | null } }>,
+  claimActionable: Array<{ id?: string; type: string }>,
   primaryLineItems: LineItem[],
-): CompositionFact[] {
+  claim: Record<string, unknown>,
+): CompositionEntryInput[] {
   const byLineNumber = new Map(primaryLineItems.map((li) => [li.line_number, li]));
+  const serviceDate = (claim.date_of_service as string | null) ?? null;
   return [
     ...aggregated.map((e) => {
       const li = byLineNumber.get(e.lineNumber);
       return {
+        findingId: e.finding.id ?? `${e.finding.type}:${e.lineNumber}`,
+        findingType: e.finding.type,
         lineNumber: e.lineNumber,
-        description: li?.description ?? null,
+        serviceName: li?.description ?? null,
         code: li?.billing_code ?? null,
         billedAmount: e.billedAmount || (li?.billed_amount ?? null),
-        findingType: e.finding.type,
         benchmarkAmount: e.finding.benchmarkAmount ?? null,
+        serviceDate,
       };
     }),
-    ...claimActionable.map((f) => ({ findingType: f.type })),
+    ...claimActionable.map((f) => ({
+      findingId: f.id ?? `${f.type}:claim`,
+      findingType: f.type,
+      lineNumber: null,
+      serviceName: null,
+      code: null,
+      billedAmount: null,
+      benchmarkAmount: null,
+      serviceDate,
+    })),
   ];
 }
 

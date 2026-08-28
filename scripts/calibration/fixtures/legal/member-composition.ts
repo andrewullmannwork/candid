@@ -200,6 +200,22 @@ check(
     memberSelectionFromMeta({ member_selection: { grounds: [...ALL_DISPUTE_GROUND_TYPES] } })?.grounds.length ===
       ALL_DISPUTE_GROUND_TYPES.length,
   );
+  // v4 — the finding-grain record round-trips; malformed rows drop.
+  const withFacts = memberSelectionFromMeta({
+    member_selection: {
+      grounds: ["duplicate"],
+      adoptedCitations: [],
+      selectedFacts: [
+        { groundType: "duplicate", findingType: "duplicate", lines: [1, 2] },
+        { groundType: "nope", findingType: "x", lines: [9] },
+        { groundType: "duplicate", findingType: 5, lines: [3] },
+      ],
+    },
+  });
+  check(
+    "selectedFacts round-trips valid rows, drops malformed",
+    withFacts?.selectedFacts?.length === 1 && JSON.stringify(withFacts.selectedFacts[0].lines) === "[1,2]",
+  );
 }
 
 // ---------------------------------------------------------------------------
