@@ -20,6 +20,7 @@ import { useDisputeDraftOverlay } from "@/lib/loading/dispute-draft-overlay";
 import { DisputePlanChooser, type DisputePlanChooserPlan } from "@/components/disputes/DisputePlanChooser";
 import { CompositionStep, type MemberCompositionSelection, type CompositionFact } from "@/components/disputes/CompositionStep";
 import { isMemberComposable } from "@/lib/disputes/dispute-ground-catalog";
+import { lineGapFindingKind, type LineGapClaimSignals } from "@/lib/claims/line-gap";
 import type { DisputeLetterType } from "@/lib/billing/types";
 import { readServicesConfirmedAt } from "@/lib/claims/effective-totals";
 import { CostShareBanner, hasAssumptionRows, pendingAssumptionFields, type BannerAssumption, type CostShareVerdict, type CostShareOverrideRequest } from "@/components/claims/CostShareBanner";
@@ -2252,6 +2253,7 @@ export function ClaimDetail({
     primaryLineItems,
     visibleClaimLevelFindings,
     showDismissed,
+    claimGapSignals(claim),
   );
   const findingTypes = [
     ...disputeEntries.lineEntries.map((e) => e.finding.type),
@@ -5549,20 +5551,6 @@ function buildPlanSays(planCoverage: LineItem["planCoverage"]): string {
 // disagree on the same page (S292 invariant extended to scripts).
 
 /** The gap-line synthesis gate from BulkDisputeButton, verbatim semantics. */
-function lineGapFindingKind(li: LineItem): "mystery" | "recovery" | null {
-  if (li.coverageStatus === "not_covered") return null;
-  const billed = li.billed_amount || 0;
-  const ins = li.insurance_paid || 0;
-  const owed = li.patient_owes || 0;
-  const refund = li.recovery?.refundComponent ?? 0;
-  const forgiveness = li.recovery?.forgivenessComponent ?? 0;
-  const onEngine = li.costShareVerdict != null;
-  const isMysteryGap = !onEngine && billed > 0 && ins === 0 && owed === 0;
-  const hasRecoveryStory = onEngine
-    ? li.costShareVerdict === "recovery"
-    : li.planCoverage != null && (refund >= 1 || forgiveness >= 1);
-  return isMysteryGap ? "mystery" : hasRecoveryStory ? "recovery" : null;
-}
 
 /** One contested charge in the bulk-dispute bundle, keyed to its line. */
 interface DisputeEntry {
@@ -5586,10 +5574,26 @@ interface DisputeEntry {
  * never fire. Keeping a redundant copy of a rule is how the two versions of it
  * eventually disagree.
  */
+/** S326 — the claim header's insurer-adjudication signals, built the same way
+ *  at BOTH collectDisputeEntries call sites (one derivation, no drift). Null =
+ *  the document never stated it; explicit 0 is a statement. */
+function claimGapSignals(claim: Record<string, unknown>): LineGapClaimSignals {
+  const num = (v: unknown): number | null => (typeof v === "number" ? v : null);
+  return {
+    totalInsurancePaid: num(claim.total_insurance_paid),
+    totalAllowed: num(claim.total_allowed),
+    totalInsuranceAdjusted: num(claim.total_insurance_adjusted),
+  };
+}
+
 function collectDisputeEntries(
   lineItems: LineItem[],
   claimFindings: ClaimLevelFindingMeta[],
   showDismissed: boolean,
+  // S326 — the claim header's stated insurer totals (S304: adjudication can be
+  // stated ONCE, at the header). The gap synthesis is gated on adjudication
+  // actually existing — see src/lib/claims/line-gap.ts.
+  claimSignals: LineGapClaimSignals,
 ): { lineEntries: DisputeEntry[]; claimActionable: ClaimLevelFindingMeta[]; gapEntries: DisputeEntry[] } {
   const lineEntries: DisputeEntry[] = [];
   for (const li of lineItems) {
@@ -5622,7 +5626,21 @@ function collectDisputeEntries(
   const gapEntries: DisputeEntry[] = [];
   for (const li of lineItems) {
     if (linesWithRealFindings.has(li.id)) continue;
-    const gapKind = lineGapFindingKind(li);
+    const gapKind = lineGapFindingKind(
+      {
+        billedAmount: li.billed_amount,
+        allowedAmount: li.allowed_amount,
+        insurancePaid: li.insurance_paid,
+        insuranceAdjusted: li.insurance_adjusted_amount ?? null,
+        patientOwes: li.patient_owes,
+        coverageStatus: li.coverageStatus,
+        costShareVerdict: li.costShareVerdict ?? null,
+        refundComponent: li.recovery?.refundComponent ?? 0,
+        forgivenessComponent: li.recovery?.forgivenessComponent ?? 0,
+        hasPlanCoverage: li.planCoverage != null,
+      },
+      claimSignals,
+    );
     if (gapKind == null) continue;
     const billed = li.billed_amount || 0;
     const ins = li.insurance_paid || 0;
@@ -6335,6 +6353,7 @@ function BulkDisputeButton({
     primaryLineItems,
     claimLevelFindings,
     showDismissed,
+    claimGapSignals(claim),
   );
   const aggregated = [...lineEntries, ...gapEntries];
   const totalContested = aggregated.length + claimActionable.length;

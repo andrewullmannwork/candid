@@ -185,6 +185,12 @@ jobs:
         # ground ambulance = .200, unknown→DMHC, self-funded exclusions, the
         # generic doors byte-exact for the flag-OFF path).
         run: npx tsx scripts/calibration/fixtures/legal/forum-router.ts
+      - name: Line gap — synthetic insurer entries require real adjudication (S326)
+        # ⚠ DO NOT REVERT: a line the insurer never adjudicated gets NO
+        # synthetic "insurer under-paid" entry (the Riverside self-pay bill
+        # grew an insurer-appeal offer + fake-EOB prose — the S304 class).
+        # Presence-based: explicit $0 is a statement; null is absence.
+        run: npx tsx scripts/calibration/fixtures/claims/line-gap.ts
       - name: Plan provenance gate — library picks pass the honesty gate (S326)
         # ⚠ DO NOT REVERT (Andrew ruling, third occurrence): a search-picked
         # library plan (manual + canonical link) is trusted like an uploaded
