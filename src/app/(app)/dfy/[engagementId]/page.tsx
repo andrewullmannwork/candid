@@ -47,13 +47,13 @@ function PayStep({ engagementId, token, onPaid }: { engagementId: string; token:
       const res = await fetch(`/api/dfy/engagements/${engagementId}/pay`, { method: "POST", headers: { Authorization: `Bearer ${t}` } });
       const json = (await res.json().catch(() => ({}))) as { clientSecret?: string; error?: string };
       if (cancelled) return;
-      if (!res.ok || !json.clientSecret) setErr(json.error || "Could not start the payment");
+      if (!res.ok || !json.clientSecret) setErr(json.error || "Couldn't start payment. Try again.");
       else setClientSecret(json.clientSecret);
     })();
     return () => { cancelled = true; };
   }, [engagementId, token]);
   if (err) return <p className="text-sm text-red-600">{err}</p>;
-  if (!clientSecret) return <p className="text-sm text-gray-500">Preparing the payment…</p>;
+  if (!clientSecret) return <p className="text-sm text-gray-500">Preparing payment…</p>;
   return (
     <Elements stripe={getStripeBrowser()} options={{ clientSecret, appearance: { theme: "stripe" } }}>
       <PayForm onPaid={onPaid} />
@@ -73,7 +73,7 @@ function PayForm({ onPaid }: { onPaid: () => void }) {
         setBusy(true); setErr(null);
         const { error } = await stripe.confirmPayment({ elements, redirect: "if_required" });
         setBusy(false);
-        if (error) setErr(error.message ?? "Payment failed");
+        if (error) setErr(error.message ?? "Payment failed. Try again.");
         else onPaid();
       }}
       className="space-y-3"
@@ -107,7 +107,7 @@ export default function DfySigningPage({ params }: { params: Promise<{ engagemen
       const res = await fetch(`/api/dfy/engagements/${id}`, { headers: { Authorization: `Bearer ${t}` } });
       if (cancelled) return;
       setEngagementId(id);
-      if (!res.ok) { setError(res.status === 404 ? "This page isn't available." : "Could not load your engagement."); return; }
+      if (!res.ok) { setError(res.status === 404 ? "This page isn't available." : "Couldn't load this page. Try again."); return; }
       const json = (await res.json()) as Payload;
       if (cancelled) return;
       setError(null);
@@ -120,13 +120,13 @@ export default function DfySigningPage({ params }: { params: Promise<{ engagemen
 
   async function cancel() {
     if (!engagementId || !user) return;
-    if (!window.confirm("End this engagement? Within three business days of signing, any fee you paid is refunded in full.")) return;
+    if (!window.confirm("End this engagement? Within three business days of signing, any fee is refunded in full.")) return;
     setBusy(true); setError(null);
     const t = await token();
     const res = await fetch(`/api/dfy/engagements/${engagementId}/cancel`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` }, body: JSON.stringify({}) });
     const json = (await res.json().catch(() => ({}))) as { error?: string };
     setBusy(false);
-    if (!res.ok) { setError(json.error || "Could not cancel"); return; }
+    if (!res.ok) { setError(json.error || "Couldn't cancel. Try again."); return; }
     refresh();
   }
 
@@ -141,7 +141,7 @@ export default function DfySigningPage({ params }: { params: Promise<{ engagemen
     });
     const json = (await res.json().catch(() => ({}))) as { error?: string };
     setBusy(false);
-    if (!res.ok) { setError(json.error || "Could not sign"); return; }
+    if (!res.ok) { setError(json.error || "Couldn't sign. Try again."); return; }
     setChecked(false);
     setOpenType(null);
     refresh();
@@ -158,39 +158,39 @@ export default function DfySigningPage({ params }: { params: Promise<{ engagemen
   return (
     <div className="mx-auto max-w-3xl space-y-6 p-6">
       <div>
-        <div className="text-[11px] font-semibold uppercase tracking-wider text-blue-600">Candid · done-for-you appeal execution</div>
-        <h1 className="mt-1 text-2xl font-bold text-gray-900">Let Candid handle the paperwork for your appeal</h1>
+        <div className="text-[11px] font-semibold uppercase tracking-wider text-blue-600">Done for you</div>
+        <h1 className="mt-1 text-2xl font-bold text-gray-900">Your appeal, handled.</h1>
         <p className="mt-2 text-sm text-gray-600">
-          You composed this appeal yourself. If you want Candid to submit it, chase it and track its deadlines as your authorized representative, read and sign the {total} documents below — each one separately. Nothing happens until you do. The appeal itself is a free process you can always pursue on your own, and every free Candid tool stays available either way.
+          You built this appeal. To have us submit it, follow up, and track its deadlines as your authorized representative, read and sign the {total} documents below, each one separately. Nothing happens until you do. You can always file on your own at no cost, and every free Candid tool stays yours.
         </p>
-        <p className="mt-2 text-xs text-gray-500"><Link href={`/claim?claim=${e.claimId}`} className="text-blue-700 hover:underline">← back to your claim</Link></p>
+        <p className="mt-2 text-xs text-gray-500"><Link href={`/claim?claim=${e.claimId}`} className="text-blue-700 hover:underline">← Back to your claim</Link></p>
       </div>
 
       {error && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>}
 
       {data.screened && !data.screened.eligible && (
         <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-          <b>This matter isn&apos;t one Candid can take on right now.</b> {data.screened.declineReason ? `Reason: ${data.screened.declineReason}.` : ""} Everything in the free tool stays yours, including this appeal.
+          <b>We can&apos;t take this one on.</b> {data.screened.declineReason ?? ""} Your appeal and every free tool stay yours.
         </div>
       )}
       {e.status === "eligibility_pending" && !data.screened && (
-        <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700">Candid is checking whether this matter is one it can take on. You&apos;ll be able to sign once that check clears.</div>
+        <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700">We&apos;re confirming we can take this one on. Signing opens once that clears.</div>
       )}
 
       {(e.status === "signed" || e.status === "active" || done > 0) && (
         <div className="rounded-xl border border-gray-200 bg-white p-4 text-sm">
-          <div className="font-semibold text-gray-900">{done} of {total} documents signed{e.status === "active" ? " · Candid is handling your appeal" : e.status === "signed" ? " · signed" : ""}</div>
-          {e.status === "signed" && !composed && <p className="mt-1 text-gray-600">Candid starts as soon as your appeal is composed and adopted in the free tool — that part is yours.</p>}
-          {e.status === "signed" && composed && data.payment.required && <p className="mt-1 text-gray-600">One step left: the ${(data.payment.feeCents / 100).toFixed(2)} matter fee.</p>}
-          {e.status === "active" && <p className="mt-1 text-gray-600">Every step Candid takes shows on your claim&apos;s timeline as &quot;Done by Candid&quot;. Anything that needs a decision stays yours. {data.phase && <span className="text-gray-500">Current phase: {data.phase}.</span>}</p>}
-          {(e.status === "terminated" || e.status === "converted" || e.status === "completed") && <p className="mt-1 text-gray-600">This engagement is {e.status}.</p>}
+          <div className="font-semibold text-gray-900">{done} of {total} documents signed{e.status === "active" ? " · we're on it" : e.status === "signed" ? " · signed" : ""}</div>
+          {e.status === "signed" && !composed && <p className="mt-1 text-gray-600">We start as soon as you&apos;ve built and adopted your appeal in the free tool. That part is yours.</p>}
+          {e.status === "signed" && composed && data.payment.required && <p className="mt-1 text-gray-600">One step left: the ${(data.payment.feeCents / 100).toFixed(2)} fee.</p>}
+          {e.status === "active" && <p className="mt-1 text-gray-600">Every step we take shows on your claim timeline as &quot;Done by Candid&quot;. Any decision stays yours. {data.phase && <span className="text-gray-500">Current phase: {data.phase}.</span>}</p>}
+          {(e.status === "terminated" || e.status === "converted" || e.status === "completed") && <p className="mt-1 text-gray-600">{e.status === "completed" ? "This engagement is complete." : "This engagement has ended."}</p>}
         </div>
       )}
 
       {data.payment.required && engagementId && (
         <section className="rounded-2xl border border-gray-200 bg-white p-5">
-          <h2 className="text-base font-semibold text-gray-900">The matter fee</h2>
-          <p className="mt-1 text-sm text-gray-600">${(data.payment.feeCents / 100).toFixed(2)}, once, for this matter only — as the fee agreement you signed says. The appeal itself is free; this pays for the preparation and submission work.</p>
+          <h2 className="text-base font-semibold text-gray-900">The fee</h2>
+          <p className="mt-1 text-sm text-gray-600">${(data.payment.feeCents / 100).toFixed(2)}, once, for this appeal only, as your fee agreement says. The appeal itself is free. This pays for our preparation and submission work.</p>
           <div className="mt-3"><PayStep engagementId={engagementId} token={token} onPaid={() => setTimeout(refresh, 1500)} /></div>
         </section>
       )}
@@ -212,7 +212,7 @@ export default function DfySigningPage({ params }: { params: Promise<{ engagemen
                   ) : (
                     <span className="text-gray-400">not yet signed</span>
                   )}
-                  {inst.pdfUrl && <div><a href={inst.pdfUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-700 hover:underline">view signed PDF</a></div>}
+                  {inst.pdfUrl && <div><a href={inst.pdfUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-700 hover:underline">Signed PDF</a></div>}
                 </div>
               </button>
               {open && (
@@ -225,17 +225,16 @@ export default function DfySigningPage({ params }: { params: Promise<{ engagemen
                       </label>
                       <label className="flex cursor-pointer items-start gap-3 text-sm text-gray-700">
                         <input type="checkbox" checked={checked} onChange={(ev) => setChecked(ev.target.checked)} className="mt-1 h-4 w-4 rounded border-gray-300" />
-                        <span>I have read this {inst.title} in full and I sign it electronically. I understand it is a separate document from the others on this page.</span>
+                        <span>I&apos;ve read this {inst.title} in full and sign it electronically. I understand it is separate from the other documents on this page.</span>
                       </label>
                       <button disabled={!checked || name.trim().length < 2 || busy} onClick={() => void sign(inst.type)} className="rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50">{busy ? "Signing…" : `Sign ${inst.title}`}</button>
                     </div>
                   )}
-                  {!inst.signed && !data.canSign && <p className="mt-4 text-sm text-gray-500">Signing opens once Candid confirms it can take this matter on.</p>}
+                  {!inst.signed && !data.canSign && <p className="mt-4 text-sm text-gray-500">Signing opens once we confirm we can take this on.</p>}
                   {inst.type !== "health_data_upload" && engagementId && (
                     <p className="mt-3 text-xs text-gray-500">
-                      If your plan requires a handwritten signature on this document,{" "}
-                      <a href={`/api/dfy/engagements/${engagementId}/instrument?type=${inst.type}`} target="_blank" rel="noopener noreferrer" className="text-blue-700 hover:underline">print the form to sign by hand</a>
-                      {" "}and upload the signed pages through <Link href="/upload" className="text-blue-700 hover:underline">Upload</Link>. Your typed signature here stays on file either way.
+                      Plan wants a handwritten signature?{" "}
+                      <a href={`/api/dfy/engagements/${engagementId}/instrument?type=${inst.type}`} target="_blank" rel="noopener noreferrer" className="text-blue-700 hover:underline">Print this form</a>, sign it, and add the pages in <Link href="/upload" className="text-blue-700 hover:underline">Upload</Link>. Your signature here stays on file either way.
                     </p>
                   )}
                 </div>
@@ -247,7 +246,7 @@ export default function DfySigningPage({ params }: { params: Promise<{ engagemen
       {["eligibility_pending", "signed", "active"].includes(e.status) && (
         <div className="rounded-xl border border-gray-200 bg-white p-4 text-sm">
           <div className="font-semibold text-gray-900">Changed your mind?</div>
-          <p className="mt-1 text-gray-600">You can end this engagement at any time. Within three business days of signing, any fee you paid is refunded in full; after that, the refund terms in your fee agreement apply. Every free Candid tool stays yours.</p>
+          <p className="mt-1 text-gray-600">End this engagement any time. Cancel within three business days of signing and any fee is refunded in full. After that, your fee agreement&apos;s refund terms apply. Every free Candid tool stays yours.</p>
           <button disabled={busy} onClick={() => void cancel()} className="mt-2 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-semibold text-gray-700 disabled:opacity-50">End this engagement</button>
         </div>
       )}

@@ -44,17 +44,17 @@ export async function POST(req: NextRequest) {
   if (!c) return NextResponse.json({ error: "Claim not found" }, { status: 404 });
   const memberState = (profile as { state?: string | null } | null)?.state ?? null;
   if (!dfyLaneOpen(memberState)) {
-    return NextResponse.json({ error: "This service is open in California only right now", code: "lane_closed" }, { status: 409 });
+    return NextResponse.json({ error: "Right now this service is open in California only.", code: "lane_closed" }, { status: 409 });
   }
   const proof = await loadCompositionProof(supabase, user.id, c.id);
   if (!compositionComplete(proof)) {
-    return NextResponse.json({ error: "Compose and adopt your appeal in the free tool first — Candid executes what you composed", code: "composition_missing" }, { status: 409 });
+    return NextResponse.json({ error: "Build and adopt your appeal in the free tool first. We submit what you built.", code: "composition_missing" }, { status: 409 });
   }
   let sponsorId: string | null = null;
   if (sponsorCode) {
     const sponsor = await loadSponsorByCode(supabase, sponsorCode);
     const usable = sponsorCodeUsable(sponsor);
-    if (!usable.ok) return NextResponse.json({ error: `That sponsor code cannot be used: ${usable.reason}`, code: "sponsor_code_unusable" }, { status: 409 });
+    if (!usable.ok) return NextResponse.json({ error: `That employer code can't be used: ${usable.reason}`, code: "sponsor_code_unusable" }, { status: 409 });
     sponsorId = sponsor!.id;
   }
   const plan = c.insurance_plan_id ? await scoped.table("insurance_plans").select("metadata").eq("id", c.insurance_plan_id).maybeSingle() : { data: null };
@@ -70,8 +70,8 @@ export async function POST(req: NextRequest) {
     plan_classification: classification,
     metadata: { appliedBy: { actor: "user", userId: user.id }, appliedAt: new Date().toISOString() },
   });
-  if (conflict) return NextResponse.json({ error: "This claim already has a live engagement", code: "engagement_exists" }, { status: 409 });
-  if (!engagement) return NextResponse.json({ error: "Could not open the engagement", code: "create_failed" }, { status: 500 });
+  if (conflict) return NextResponse.json({ error: "We're already handling this claim.", code: "engagement_exists" }, { status: 409 });
+  if (!engagement) return NextResponse.json({ error: "Something went wrong. Try again.", code: "create_failed" }, { status: 500 });
   await emitCaseEvents(supabase, user.id, [{ claimId: c.id, kind: "dfy_engagement_created", actor: "user", payload: { engagementId: engagement.id, appliedBy: "member", payer: engagement.payer } }]);
   void postOpsMessage(`🆕 DFY application — matter ${engagement.id.slice(0, 8)} awaits screening: ${process.env.NEXT_PUBLIC_APP_URL || "https://www.candidclaim.com"}/admin/dfy`);
   return NextResponse.json({ ok: true, engagementId: engagement.id }, { status: 201 });

@@ -17,6 +17,7 @@ import { getConsentDocument } from "@/lib/consent/consent-documents";
 import { buildInstrumentContext, maybeActivateEngagement, memberIsEligibleToSign } from "@/lib/dfy/sign";
 import { derivePhase } from "@/lib/dfy/matter";
 import { loadCompositionProof } from "@/lib/dfy/operator-action";
+import { memberDeclineCopy, type GateId } from "@/lib/dfy/intake-gates";
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ engagementId: string }> }) {
   const user = await requireAuthenticatedUser(req);
@@ -67,11 +68,11 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ enga
   }
 
   const proof = await loadCompositionProof(supabase, user.id, e.claim_id);
-  const decision = (e.intake as { decision?: { eligible?: boolean; declineReason?: string | null } }).decision ?? null;
+  const decision = (e.intake as { decision?: { eligible?: boolean; gates?: Array<{ id: GateId; pass: boolean }> } }).decision ?? null;
   return NextResponse.json({
     engagement: { id: e.id, claimId: e.claim_id, status: e.status, payer: e.payer, sponsorRef: e.sponsor_ref, signedAt: e.signed_at, activatedAt: e.activated_at, closedAt: e.closed_at },
     phase: derivePhase(e, proof, null),
-    screened: decision ? { eligible: decision.eligible === true, declineReason: decision.declineReason ?? null } : null,
+    screened: decision ? { eligible: decision.eligible === true, declineReason: memberDeclineCopy(decision) } : null,
     composition: proof,
     canSign,
     instruments,

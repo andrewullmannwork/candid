@@ -35,7 +35,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ eng
   const e = parseEngagementRow(data);
   if (!e) return NextResponse.json({ error: "Not found" }, { status: 404 });
   if (!["eligibility_pending", "signed", "active"].includes(e.status)) {
-    return NextResponse.json({ error: "This engagement is already closed", code: "not_live" }, { status: 409 });
+    return NextResponse.json({ error: "This engagement is already closed.", code: "not_live" }, { status: 409 });
   }
   assertTransition(e.status, "terminated");
   const now = new Date();
@@ -58,7 +58,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ eng
     closed_at: now.toISOString(),
     metadata: { ...e.metadata, ...refundNote, closedReason: reason ? `member cancelled — ${reason}` : "member cancelled", closedBy: { actor: "user", userId: user.id } },
   });
-  if (!updated) return NextResponse.json({ error: "The engagement changed — reload", code: "cancel_race" }, { status: 409 });
+  if (!updated) return NextResponse.json({ error: "This page changed. Reload and try again.", code: "cancel_race" }, { status: 409 });
   await emitCaseEvents(supabase, user.id, [
     { claimId: e.claim_id, kind: "dfy_engagement_closed", actor: "user", payload: { engagementId: e.id, status: "terminated", by: "member", ...(refundNote.payment ? { refunded: true } : {}) } },
   ]);

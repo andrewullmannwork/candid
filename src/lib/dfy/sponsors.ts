@@ -52,9 +52,9 @@ export function parseSponsor(raw: unknown): DfySponsor | null {
 
 /** Pure: may this sponsor's code be used at intake right now? */
 export function sponsorCodeUsable(s: DfySponsor | null): { ok: boolean; reason: string | null } {
-  if (!s) return { ok: false, reason: "no sponsor carries this code" };
-  if (!s.active) return { ok: false, reason: "this sponsor is inactive" };
-  if (!s.agreement_signed_at) return { ok: false, reason: "no signed sponsor agreement on file — paper before code" };
+  if (!s) return { ok: false, reason: "we don't recognize this code" };
+  if (!s.active) return { ok: false, reason: "this employer's program is inactive" };
+  if (!s.agreement_signed_at) return { ok: false, reason: "this employer's agreement isn't signed yet" };
   return { ok: true, reason: null };
 }
 

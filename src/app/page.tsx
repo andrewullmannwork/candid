@@ -266,7 +266,7 @@ function Hero({ loggedIn }: { loggedIn: boolean }) {
               // S330 — the done-for-you entry point (S324 §3.5): process, never
               // outcomes. Dark until config `entry_point_enabled`; the /check
               // entry keeps the slot until then.
-              <Link href="/appeal-service" className="btn btn-ghost btn-xl">We handle your appeal</Link>
+              <Link href="/appeal-service" className="btn btn-ghost btn-xl">We&apos;ll handle your appeal</Link>
             ) : anonCheck && !loggedIn ? (
               <Link href="/check" className="btn btn-ghost btn-xl">Try a bill first</Link>
             ) : (

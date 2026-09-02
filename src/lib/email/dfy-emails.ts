@@ -38,13 +38,14 @@ export async function sendDfyInvitationEmail(params: {
     await resend.emails.send({
       from: FROM,
       to: params.to,
-      subject: "Candid can handle the paperwork for your appeal",
+      subject: "We can take your appeal from here",
       html: `<p>Hi ${name},</p>
-<p>You composed an appeal in Candid. If you would like Candid to handle the paperwork, submission and follow-up for it as your authorized representative, the next step is yours: read and sign five short documents, each one separately.</p>
-<p><a href="${url}">Review and sign the documents</a></p>
-<p>Nothing happens until you sign. The appeal itself is a free process you can always pursue on your own, and every free Candid tool stays available to you either way.</p>
+<p>You built an appeal in Candid. Want us to handle the rest? We'll prepare it, submit it to your plan as your authorized representative, and follow up until you have an answer.</p>
+<p>To start, read and sign five short documents.</p>
+<p><a href="${url}">Review and sign</a></p>
+<p>Nothing happens until you sign. You can always file on your own at no cost, and every free Candid tool stays yours.</p>
 <p>— Candid</p>`,
-      text: `Hi ${name},\n\nYou composed an appeal in Candid. If you would like Candid to handle the paperwork, submission and follow-up for it as your authorized representative, the next step is yours: read and sign five short documents, each one separately.\n\n${url}\n\nNothing happens until you sign. The appeal itself is a free process you can always pursue on your own, and every free Candid tool stays available to you either way.\n\n— Candid`,
+      text: `Hi ${name},\n\nYou built an appeal in Candid. Want us to handle the rest? We'll prepare it, submit it to your plan as your authorized representative, and follow up until you have an answer.\n\nTo start, read and sign five short documents:\n${url}\n\nNothing happens until you sign. You can always file on your own at no cost, and every free Candid tool stays yours.\n\n— Candid`,
     });
   } catch (err) {
     console.error("[dfy-emails] invitation send failed (fail-soft):", err);
@@ -71,10 +72,10 @@ export async function sendDfyMatterUpdateEmail(params: {
       to: params.to,
       subject: "An update on your appeal",
       html: `<p>Hi ${name},</p>
-<p>Candid ${esc(params.what)}. It is on your claim's timeline now, and anything that needs a decision is yours to make.</p>
+<p>We ${esc(params.what)}. It's on your claim timeline. Any decision is yours to make.</p>
 <p><a href="${url}">Open your claim</a></p>
 <p>— Candid</p>`,
-      text: `Hi ${name},\n\nCandid ${params.what}. It is on your claim's timeline now, and anything that needs a decision is yours to make.\n\n${url}\n\n— Candid`,
+      text: `Hi ${name},\n\nWe ${params.what}. It's on your claim timeline. Any decision is yours to make.\n\n${url}\n\n— Candid`,
     });
   } catch (err) {
     console.error("[dfy-emails] matter-update send failed (fail-soft):", err);

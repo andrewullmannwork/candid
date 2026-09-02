@@ -89,6 +89,30 @@ export const GATE_LABELS: Readonly<Record<GateId, string>> = {
   runway: "deadline runway",
 };
 
+/**
+ * What the MEMBER reads when a gate declines the matter. The gate's own
+ * `reason` is the operator's audit record (states, exclusions, config facts)
+ * and never reaches the member; this is the plain sentence per gate.
+ */
+export const MEMBER_DECLINE_COPY: Readonly<Record<GateId, string>> = {
+  lane: "Right now this service is open in California only.",
+  "0": "You asked us what to argue. We only submit the appeal you built, so this isn't one we can take.",
+  "1": "Your plan documents don't show which regulator covers this plan.",
+  "2": "This type of plan isn't one we can handle yet.",
+  "3": "This appeal falls outside what we can handle.",
+  "4": "This appeal falls outside what we can handle.",
+  "5": "There's no denial on record yet. Once your plan denies, we can take it from there.",
+  "6": "We're not taking new matters right now.",
+  runway: "The deadline is too close for us to take this on safely. You can still file it yourself right away.",
+};
+
+/** The member's sentence for a decision: the FIRST failing gate's copy; null when eligible. */
+export function memberDeclineCopy(decision: { eligible?: boolean; gates?: Array<{ id: GateId; pass: boolean }> } | null): string | null {
+  if (!decision || decision.eligible === true) return null;
+  const first = (decision.gates ?? []).find((g) => !g.pass);
+  return first ? MEMBER_DECLINE_COPY[first.id] : "This isn't one we can take on right now.";
+}
+
 function gate(id: GateId, pass: boolean, reason: string | null): GateResult {
   return { id, label: GATE_LABELS[id], pass, reason: pass ? null : reason };
 }

@@ -10,7 +10,7 @@
  *
  * Run: npx tsx scripts/calibration/fixtures/legal/dfy-intake-gates.ts
  */
-import { evaluateIntake, type IntakeFacts } from "../../../../src/lib/dfy/intake-gates";
+import { evaluateIntake, type IntakeFacts, MEMBER_DECLINE_COPY, memberDeclineCopy, GATE_LABELS } from "../../../../src/lib/dfy/intake-gates";
 import { businessDaysUntil, parseDateOnly } from "../../../../src/lib/dfy/business-days";
 import {
   assertTransition,
@@ -145,6 +145,15 @@ failsAt({ ...eligible, runwayBusinessDays: null }, "runway", "runway unknown (fa
   check("enforced only on boolean true", c.ipAllowlistEnforced === false);
   check("verified-on requires YYYY-MM-DD", c.marketingGateVerifiedOn === null);
   check("null config → defaults", JSON.stringify(parseDfyConfig(null)) === JSON.stringify(DFY_CONFIG_DEFAULTS));
+}
+
+// ── member-facing decline copy (S330 copy round): every gate has a plain sentence; the audit reason never reaches the member ──
+{
+  const ids = Object.keys(GATE_LABELS) as Array<keyof typeof GATE_LABELS>;
+  check("every gate has member decline copy", ids.every((id) => typeof MEMBER_DECLINE_COPY[id] === "string" && MEMBER_DECLINE_COPY[id].length > 0));
+  check("member copy never leaks operator vocabulary", ids.every((id) => !/marketing|sweep|regulator lane|config|gate/i.test(MEMBER_DECLINE_COPY[id])));
+  check("eligible decision → no member copy", memberDeclineCopy({ eligible: true, gates: [] }) === null);
+  check("first failing gate names the member copy", memberDeclineCopy({ eligible: false, gates: [{ id: "lane", pass: true }, { id: "6", pass: false }, { id: "runway", pass: false }] }) === MEMBER_DECLINE_COPY["6"]);
 }
 
 console.log(`dfy-intake-gates: ${pass}/${pass + fail} checks passed`);
