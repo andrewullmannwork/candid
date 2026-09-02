@@ -305,7 +305,7 @@ interface ClaimData {
     insurerNameByDispute: Record<string, string>;
   };
   // S330 — the member's own DFY engagement on this claim (additive; absent when none).
-  dfyEngagement?: { id: string; status: string; phase: string; payer: string; acts: Array<{ kind: string; occurredAt: string }> };
+  dfyEngagement?: { id: string; status: string; phase: string; payer: string; composed?: boolean; acts: Array<{ kind: string; occurredAt: string }> };
   relatedClaims: Array<{ id: string; date_of_service: string; status: string; total_billed: number; provider_name: string | null }>;
   // S132 iter-6 Phase 1 — slugs present in user's plan_covered_services for
   // this claim's plan_id. Drives CategoryCorrectionModal filtering + best-
@@ -551,6 +551,7 @@ export function ClaimDetail({
   claimId,
   onBack,
   focusLineItemId,
+  autoCompose = false,
   backLabel = "Back to claims",
   onClaimUpdated,
   billState: billStateProp,
@@ -560,6 +561,8 @@ export function ClaimDetail({
   claimId: string;
   onBack: () => void;
   focusLineItemId?: string | null;
+  /** S330 — open the dispute flow on arrival (the done-for-you "choose what to argue" step). */
+  autoCompose?: boolean;
   backLabel?: string;
   /**
    * S316 — the /check anonymous flow's letter gate. When present, every
@@ -2710,7 +2713,8 @@ export function ClaimDetail({
             onGenerated={(result) => router.push(disputeUrlForResult(result))}
             existingDisputeId={data.disputes.find((d) => d.status !== "cancelled")?.id ?? null}
             muted={muted}
-          anonymousDraftGate={anonymousDraftGate}
+            anonymousDraftGate={anonymousDraftGate}
+            autoOpen={autoCompose}
             />
         </div>
       </div>
@@ -2801,8 +2805,10 @@ export function ClaimDetail({
             </>
           ) : data.dfyEngagement.status === "signed" ? (
             <>
-              <b>Your documents are signed.</b> Candid starts as soon as your appeal is composed and adopted here — that part is yours.{" "}
-              <Link href={`/dfy/${data.dfyEngagement.id}`} className="font-semibold underline">See your engagement</Link>
+              <b>Your documents are signed.</b>{" "}
+              {data.dfyEngagement.composed
+                ? <>We start as soon as we confirm we can take this one on. <Link href={`/dfy/${data.dfyEngagement.id}`} className="font-semibold underline">See your engagement</Link></>
+                : <>One step left, and it is yours: choose what to argue. Press <b>Dispute this charge</b> on a line below, pick your grounds, and adopt the letter. We start the moment it is ready. <Link href={`/dfy/${data.dfyEngagement.id}`} className="font-semibold underline">See your engagement</Link></>}
             </>
           ) : (
             <>
@@ -6379,9 +6385,12 @@ function BulkDisputeButton({
   size = "md",
   muted = false,
   anonymousDraftGate,
+  autoOpen = false,
 }: {
   claimId: string;
   claim: Record<string, unknown>;
+  /** S330 — press this button once on mount (the done-for-you member arrives with ?compose=1). */
+  autoOpen?: boolean;
   primaryLineItems: LineItem[];
   claimLevelFindings: ClaimLevelFindingMeta[];
   showDismissed: boolean;
@@ -6424,6 +6433,13 @@ function BulkDisputeButton({
   // where the user never drafts; flag OFF → chooser never opens, draft path is
   // byte-identical to pre-flag).
   const [chooserOpen, setChooserOpen] = useState(false);
+  const autoOpenedRef = useRef(false);
+  useEffect(() => {
+    if (!autoOpen || autoOpenedRef.current || anonymousDraftGate) return;
+    autoOpenedRef.current = true;
+    void handleClick();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once, on arrival
+  }, [autoOpen]);
   const [chooserPlans, setChooserPlans] = useState<DisputePlanChooserPlan[]>([]);
   const [chooserDefaultId, setChooserDefaultId] = useState<string | null>(null);
   const pinningFlagRef = useRef<boolean | null>(null);

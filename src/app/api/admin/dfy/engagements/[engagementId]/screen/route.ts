@@ -14,8 +14,8 @@
  * record shows exactly what was screened, by whom, and when.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { signedInstruments } from "@/lib/dfy/paper";
-import { sendDfyDeclineEmail } from "@/lib/email/dfy-emails";
+import { signedInstruments, paperComplete } from "@/lib/dfy/paper";
+import { sendDfyDeclineEmail, sendDfyMatterUpdateEmail } from "@/lib/email/dfy-emails";
 import { requireOperator } from "@/lib/admin/require-operator";
 import { logAdminAction } from "@/lib/admin/audit-log";
 import { operatorScoped, patchEngagement, OperatorAccessError } from "@/lib/security/operator-scoped";
@@ -158,6 +158,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ eng
       const finalRow = updated.status === "signed" ? await maybeActivateEngagement(supabase, updated, config, now) : updated;
       const scoped = { ...scope, engagement: finalRow };
       await emitOperatorEvent(supabase, scoped, "dfy_engagement_screened", { eligible: true, accepted: true });
+      // The member hears the acceptance. Activation sends its own "we've started"
+      // mail; when the matter is NOT yet active, the next step is theirs.
+      if (finalRow.status !== "active") {
+        const { data: mr } = await supabase.from("users").select("email, display_name").eq("id", finalRow.user_id).maybeSingle();
+        const member = mr as { email?: string | null; display_name?: string | null } | null;
+        const signedAll = paperComplete(finalRow.payer, finalRow.consent_event_ids);
+        const what = signedAll
+          ? "confirmed we can take your appeal on. Next: choose what to argue in the free tool, and we start the moment it's ready"
+          : "confirmed we can take your appeal on. Next: finish signing your documents, then choose what to argue in the free tool";
+        if (member?.email) void sendDfyMatterUpdateEmail({ to: member.email, firstName: member.display_name?.trim().split(/\s+/)[0] ?? null, claimId: finalRow.claim_id, what });
+      }
       await logAdminAction({ adminUserId: operatorUserId, adminEmail: operatorEmail, action: "dfy_accept", targetUserId: finalRow.user_id, targetTable: "dfy_engagements", details: `engagement ${finalRow.id}: accepted at intake (${role}) → ${finalRow.status}`, ipAddress: ip });
       return NextResponse.json({ ok: true, engagement: finalRow });
     }

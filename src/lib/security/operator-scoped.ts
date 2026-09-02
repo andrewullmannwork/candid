@@ -190,6 +190,35 @@ export async function listSponsorReportRows(
   }));
 }
 
+/**
+ * Record ONE signature atomically (mig 235 `dfy_sign_merge`): the ref merges
+ * into consent_event_ids on the row as it is, and the row flips to `signed`
+ * the moment every required key is present. Null = the row is no longer
+ * signable (not eligibility_pending) — never a lost ref.
+ */
+export async function mergeConsentRef(
+  supabase: SupabaseClient,
+  engagementId: string,
+  key: string,
+  ref: Record<string, unknown>,
+  requiredKeys: readonly string[],
+  now: Date = new Date(),
+): Promise<DfyEngagementRow | null> {
+  const { data, error } = await supabase.rpc("dfy_sign_merge", {
+    p_engagement: assertId(engagementId, "engagementId"),
+    p_key: key,
+    p_ref: ref,
+    p_required: [...requiredKeys],
+    p_now: now.toISOString(),
+  });
+  if (error) {
+    console.error("[operator-scoped] dfy_sign_merge failed:", error);
+    return null;
+  }
+  const row = Array.isArray(data) ? data[0] : data;
+  return row ? parseEngagementRow(row) : null;
+}
+
 /** Live matters counted against the per-operator cap (signed + active, held by this operator). */
 export async function countHeldMatters(
   supabase: SupabaseClient,

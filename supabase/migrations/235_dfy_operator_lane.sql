@@ -165,3 +165,34 @@ VALUES (
   '{"concurrent_cap": 5, "refusal_runway_business_days": 10, "ip_allowlist": [], "ip_allowlist_enforced": false, "marketing_gate_verified_on": null, "fee_cents": 0, "ops_channel_id": "C0BUFNW7VQE", "designation_named_party": {"erisa_plan": "entity", "plan_internal_grievance": "entity"}}'::jsonb
 )
 ON CONFLICT (flag_key) DO NOTHING;
+
+
+-- ── S330 round 4: the signature merge is ONE atomic statement ─────────────────
+-- Two signatures in quick succession (the member's page signs document after
+-- document) must never overwrite each other's ref, and the stack-complete
+-- transition must be decided on the row as it IS, not on a snapshot. The
+-- function merges one ref into consent_event_ids and flips the row to
+-- 'signed' when every required key is present, all in the row's own lock.
+-- Service-role only (the sign route); nothing user-facing calls it.
+CREATE OR REPLACE FUNCTION public.dfy_sign_merge(
+  p_engagement uuid,
+  p_key text,
+  p_ref jsonb,
+  p_required text[],
+  p_now timestamptz DEFAULT now()
+) RETURNS SETOF public.dfy_engagements
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  UPDATE public.dfy_engagements e
+     SET consent_event_ids = COALESCE(e.consent_event_ids, '{}'::jsonb) || jsonb_build_object(p_key, p_ref),
+         status = CASE WHEN (COALESCE(e.consent_event_ids, '{}'::jsonb) || jsonb_build_object(p_key, p_ref)) ?& p_required THEN 'signed' ELSE e.status END,
+         signed_at = CASE WHEN (COALESCE(e.consent_event_ids, '{}'::jsonb) || jsonb_build_object(p_key, p_ref)) ?& p_required THEN p_now ELSE e.signed_at END,
+         updated_at = p_now
+   WHERE e.id = p_engagement
+     AND e.status = 'eligibility_pending'
+  RETURNING e.*;
+$$;
+REVOKE ALL ON FUNCTION public.dfy_sign_merge(uuid, text, jsonb, text[], timestamptz) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.dfy_sign_merge(uuid, text, jsonb, text[], timestamptz) TO service_role;

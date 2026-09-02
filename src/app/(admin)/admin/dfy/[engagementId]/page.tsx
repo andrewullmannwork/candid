@@ -11,6 +11,7 @@
 "use client";
 
 import Link from "next/link";
+import { IntakeCard, defaultAnswers, type Answers, type IntakeAction, type IntakeMatter } from "@/components/admin/dfy/IntakeCard";
 import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/lib/auth/auth-context";
@@ -24,7 +25,9 @@ interface Gate { id: string; label: string; pass: boolean; reason: string | null
 interface DfyEvent { kind: string; occurredAt: string; disputeId: string | null; payload: Record<string, unknown> }
 interface MatterPayload {
   matter: {
-    engagement: { id: string; claim_id: string; status: string; payer: string; sponsor_ref: string | null; operator_user_id: string | null; consent_event_ids: Record<string, unknown>; intake: { decision?: { eligible: boolean; gates: Gate[]; declineReason: string | null } }; metadata: { payment?: { status?: string; amountCents?: number; refund?: { id: string } } } };
+    engagement: { id: string; claim_id: string; status: string; payer: string; sponsor_ref: string | null; operator_user_id: string | null; created_at: string; consent_event_ids: Record<string, unknown>; intake: { decision?: { eligible: boolean; gates: Gate[]; declineReason: string | null } | null; accepted?: { at: string }; declined?: { at: string; reason: string; memberReason: string } }; metadata: { payment?: { status?: string; amountCents?: number; refund?: { id: string } }; closedReason?: string | null; compositionAtApply?: boolean } };
+    paperwork?: IntakeMatter["paperwork"];
+    lastAct?: { kind: string; occurredAt: string } | null;
     member: UserDisplay & { state: string | null };
     holder: UserDisplay | null;
     composition: { groundSelected: boolean; letterAdopted: boolean };
@@ -96,6 +99,9 @@ export default function DfyMatterPage({ params }: { params: Promise<{ engagement
   const [closeReason, setCloseReason] = useState("");
   const [forumId, setForumId] = useState("");
   const [chan, setChan] = useState({ submissionChannel: "", wetInkRequired: false, designationFormRequired: false, formUrl: "", faxNumber: "", note: "" });
+  // intake screening on the matter page (the Slack ping lands here) — the same card as the queue
+  const [answers, setAnswers] = useState<Answers | undefined>(undefined);
+  const [declineReason, setDeclineReason] = useState("");
 
   const token = useCallback(async () => (user ? user.firebaseUser.getIdToken() : null), [user]);
   const [reloadKey, setReloadKey] = useState(0);
@@ -133,6 +139,23 @@ export default function DfyMatterPage({ params }: { params: Promise<{ engagement
     await refresh();
   }
   const act = (kind: string, extra: Record<string, unknown> = {}, disputeId: string | null = null) => post("actions", { kind, disputeId, ...extra });
+  const screen = (action: IntakeAction) => {
+    const m = data?.matter as unknown as IntakeMatter | undefined;
+    const a = answers ?? (m ? defaultAnswers(m) : undefined);
+    if (!a) return Promise.resolve();
+    const tri = (v: string) => (v === "yes" ? true : v === "no" ? false : null);
+    return post("screen", {
+      action,
+      reason: action === "decline" ? declineReason : undefined,
+      caRegulator: a.caRegulator || undefined,
+      coverageType: a.coverageType || undefined,
+      planSponsorType: a.planSponsorType || null,
+      secondaryCoverageCdi: tri(a.secondaryCoverageCdi),
+      governmentProgram: tri(a.governmentProgram),
+      memberAskedWhatToArgue: tri(a.memberAskedWhatToArgue),
+      part2Records: tri(a.part2Records),
+    });
+  };
 
   const groups: RailLetterGroup[] = useMemo(() => {
     if (!data?.timeline) return [];
@@ -222,6 +245,24 @@ export default function DfyMatterPage({ params }: { params: Promise<{ engagement
 
   return (
     <div className="max-w-4xl space-y-5">
+      {!e.intake?.accepted && (e.status === "eligibility_pending" || e.status === "signed") && (
+        <section className="mb-4">
+          <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+            <h2 className="text-[12px] font-semibold uppercase tracking-wide text-gray-500">Intake — screen before anything else</h2>
+            <span className="text-[12px] text-gray-500">Every act below stays locked until this matter is accepted and active.</span>
+          </div>
+          <IntakeCard
+            m={matter as unknown as IntakeMatter}
+            answers={answers}
+            onAnswers={setAnswers}
+            declineReason={declineReason}
+            onDeclineReason={setDeclineReason}
+            busy={busy}
+            onScreen={screen}
+            refusalRunwayBusinessDays={data.config.refusalRunwayBusinessDays}
+          />
+        </section>
+      )}
       <Link href="/admin/dfy" className="text-sm text-blue-700 hover:underline">← queue</Link>
       <div className="flex flex-wrap items-center gap-2 text-[12.5px]">
         <span className="text-[15px] font-semibold text-gray-900">{matter.member.displayName || matter.member.email || "member"}</span>

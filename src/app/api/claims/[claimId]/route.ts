@@ -909,7 +909,7 @@ export async function GET(
   }
 
   // S330 — the DFY engagement overlay, if any (member-owned row; live statuses only).
-  let dfyEngagement: { id: string; status: string; phase: string; payer: string; acts: Array<{ kind: string; occurredAt: string }> } | null = null;
+  let dfyEngagement: { id: string; status: string; phase: string; payer: string; composed: boolean; acts: Array<{ kind: string; occurredAt: string }> } | null = null;
   try {
     const { data: engRows } = await userScoped(supabase, user.id)
       .table("dfy_engagements")
@@ -934,7 +934,7 @@ export async function GET(
           .filter((ev) => ev.kind.startsWith("dfy_") && !ev.kind.startsWith("dfy_engagement_") && ev.kind !== "dfy_instrument_signed")
           .map((ev) => ({ kind: ev.kind, occurredAt: ev.occurredAt }));
         const lastAct = acts.length ? { ...events.find((ev) => ev.kind === acts[acts.length - 1].kind && ev.occurredAt === acts[acts.length - 1].occurredAt)!, payload: {} } : null;
-        dfyEngagement = { id: eng.id, status: eng.status, payer: eng.payer, phase: derivePhase(eng, proof, lastAct), acts };
+        dfyEngagement = { id: eng.id, status: eng.status, payer: eng.payer, composed: proof.groundSelected && proof.letterAdopted, phase: derivePhase(eng, proof, lastAct), acts };
       }
     }
   } catch (err) {

@@ -120,7 +120,8 @@ export default function DfySigningPage({ params }: { params: Promise<{ engagemen
       if (cancelled) return;
       setError(null);
       setData(json);
-      setOptimistic({});
+      // retire optimistic entries the server now confirms; keep the ones still in flight
+      setOptimistic((o) => { const n = { ...o }; for (const i of json.instruments) if (i.signed) delete n[i.type]; return n; });
       const next = json.instruments.find((i) => !i.signed);
       setOpenType((cur) => cur ?? next?.type ?? null);
     })();
@@ -160,11 +161,23 @@ export default function DfySigningPage({ params }: { params: Promise<{ engagemen
         method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
         body: JSON.stringify({ type, signedName, accepted: true }),
       });
-      const json = (await res.json().catch(() => ({}))) as { error?: string };
+      const json = (await res.json().catch(() => ({}))) as { error?: string; signed?: { signedName: string; signedAt: string }; completed?: boolean; status?: string };
       if (!res.ok) throw new Error(json.error || "Couldn't sign. Try again.");
+      return json;
     };
     signQueue.current = signQueue.current.then(run).then(
-      () => refresh(),
+      (json) => {
+        // the server's answer replaces the optimistic entry in place — no page reload per signature
+        setData((d) => d ? {
+          ...d,
+          instruments: d.instruments.map((i) => (i.type === type && json.signed ? { ...i, signed: json.signed } : i)),
+          engagement: json.status ? { ...d.engagement, status: json.status } : d.engagement,
+          canSign: json.completed ? false : d.canSign,
+        } : d);
+        setOptimistic((o) => { const n = { ...o }; delete n[type]; return n; });
+        // one reload at the end of the stack: PDF links, activation, the phase
+        if (json.completed) refresh();
+      },
       (err: unknown) => {
         setOptimistic((o) => { const n = { ...o }; delete n[type]; return n; });
         setOpenType(type);
@@ -182,9 +195,10 @@ export default function DfySigningPage({ params }: { params: Promise<{ engagemen
   const composed = data.composition.groundSelected && data.composition.letterAdopted;
 
   const closed = e.status === "terminated" || e.status === "converted" || e.status === "completed";
+  const allSigned = total > 0 && done === total;
   const stateLine =
     e.status === "active" ? "we're on it"
-    : e.status === "signed" ? "all signed"
+    : e.status === "signed" || allSigned ? "all signed"
     : closed ? (e.status === "completed" ? "complete" : "ended")
     : done > 0 ? "in progress" : "ready to sign";
 
@@ -210,9 +224,9 @@ export default function DfySigningPage({ params }: { params: Promise<{ engagemen
 
       {/* ── where you are ── */}
       {!closed && (
-        <ol className="grid grid-cols-4 gap-2 text-[11.5px] font-semibold">
-          {(["Request sent", "Sign your documents", "We confirm", "We start"] as const).map((label, i) => {
-            const current = e.status === "active" ? 3 : e.status === "signed" ? 2 : 1;
+        <ol className="grid grid-cols-5 gap-2 text-[11.5px] font-semibold">
+          {(["Request sent", "Sign your documents", "Choose what to argue", "We confirm", "We start"] as const).map((label, i) => {
+            const current = e.status === "active" ? 4 : (e.status === "signed" || allSigned) ? (composed ? 3 : 2) : 1;
             const state = i < current ? "done" : i === current ? "now" : "later";
             return (
               <li key={label} className={`rounded-xl border px-3 py-2 ${state === "done" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : state === "now" ? "border-blue-300 bg-blue-50 text-blue-800 ring-2 ring-blue-100" : "border-gray-200 bg-white text-gray-400"}`}>
@@ -235,7 +249,8 @@ export default function DfySigningPage({ params }: { params: Promise<{ engagemen
           ))}
         </div>
         <p className="mt-3 text-[13.5px] leading-relaxed text-gray-600">
-          {e.status === "eligibility_pending" && !data.screened && "Sign the documents below now. We're confirming we can take this one on and will start the moment it clears."}
+          {e.status === "eligibility_pending" && !data.screened && !allSigned && "Sign the documents below now. We're confirming we can take this one on and will start the moment it clears."}
+          {e.status === "eligibility_pending" && !data.screened && allSigned && "All signed. We're confirming we can take this one on, then we start."}
           {e.status === "eligibility_pending" && data.screened?.eligible && "You're approved. Sign the remaining documents and we start."}
           {e.status === "signed" && !data.screened && "All signed. We're confirming we can take this one on, then we start."}
           {e.status === "signed" && data.screened?.eligible && !composed && "We start as soon as you've built and adopted your appeal in the free tool. That part is yours."}
@@ -244,6 +259,15 @@ export default function DfySigningPage({ params }: { params: Promise<{ engagemen
           {closed && (e.status === "completed" ? "This engagement is complete." : "This engagement has ended.")}
         </p>
       </section>
+
+      {(e.status === "signed" || allSigned) && !composed && !closed && (
+        <section className="rounded-2xl border border-blue-200 bg-gradient-to-br from-blue-50 via-white to-white p-5 shadow-[0_1px_2px_rgba(16,24,40,0.04)]">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-blue-600">Your step</div>
+          <h2 className="mt-1 text-[20px] font-bold leading-tight text-gray-900">Choose what to argue.</h2>
+          <p className="mt-1.5 text-[14px] text-gray-600">We submit the appeal you build. On your claim, press <b>Dispute this charge</b> on a line, pick your grounds, and adopt the letter. We start the moment it is ready.</p>
+          <Link href={`/claim?claim=${e.claimId}&compose=1`} className="mt-4 inline-flex items-center justify-center rounded-xl bg-blue-600 px-6 py-3 text-[15px] font-semibold text-white shadow-sm hover:bg-blue-700">Choose what to argue</Link>
+        </section>
+      )}
 
       {data.payment.required && engagementId && (
         <section className="rounded-2xl border border-gray-200 bg-white p-5">

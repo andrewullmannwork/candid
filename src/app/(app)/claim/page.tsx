@@ -112,6 +112,9 @@ export default function CandidClaimPage() {
   // don't re-render). The banner deliberately has no `letter` — it covers
   // several letters at once and lands at the rail top.
   const urlLetterId = searchParams.get("letter");
+  // S330 — the done-for-you signing page sends the member here to choose what
+  // to argue: open the dispute flow on arrival (once), the same click as the button.
+  const urlCompose = searchParams.get("compose") === "1";
 
   const [tab, setTab] = useState<Tab>(urlFromTab || "bills");
   const tabsRef = useRef<HTMLDivElement | null>(null);
@@ -299,6 +302,7 @@ export default function CandidClaimPage() {
           claimId={selectedClaimId}
           onBack={closeClaimDetail}
           focusLineItemId={focusLineItemId}
+          autoCompose={urlCompose}
           backLabel={tabBeforeDetail === "letters" ? "Back to letters" : "Back to bills"}
           onClaimUpdated={refetchClaims}
           billState={billStates.get(selectedClaimId) ?? null}

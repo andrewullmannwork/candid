@@ -16,7 +16,7 @@ import { operatorScoped, claimEngagement, countHeldMatters } from "@/lib/securit
 import { emitOperatorEvent, operatorErrorResponse } from "@/lib/dfy/operator-action";
 import { CAP_COUNTED_STATUSES } from "@/lib/dfy/engagement-state";
 import { sendDfyInvitationEmail } from "@/lib/email/dfy-emails";
-import { signedInstruments, paperComplete } from "@/lib/dfy/paper";
+import { paperComplete } from "@/lib/dfy/paper";
 
 const LIVE = ["eligibility_pending", "signed", "active"] as const;
 

@@ -21,7 +21,7 @@
 import { createHash } from "crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { userScoped } from "@/lib/security/user-scoped";
-import { patchEngagement, type DfyEngagementRow, loadEngagement } from "@/lib/security/operator-scoped";
+import { patchEngagement, type DfyEngagementRow, loadEngagement, mergeConsentRef } from "@/lib/security/operator-scoped";
 import { emitCaseEvents } from "@/lib/case/case-events";
 import { postOpsMessage } from "@/lib/slack/ops-message";
 import { sendDfyMatterUpdateEmail } from "@/lib/email/dfy-emails";
@@ -274,22 +274,26 @@ export async function signInstrument(input: SignInput): Promise<SignResult> {
       ? { namedParty: ctx.namedParty, namedOperatorUserId: e.operator_user_id, channel: ctx.channel }
       : {}),
   };
-  // Merge against the row as it is NOW, not the snapshot this request started
-  // with: the member's page queues signatures back to back, and a stale
-  // snapshot would overwrite the previous signature's ref.
-  const fresh = await loadEngagement(supabase, e.id);
-  const current = fresh?.consent_event_ids ?? e.consent_event_ids;
-  const refs = { ...current, [type]: ref };
-  const completed = paperComplete(e.payer, refs);
-  const patched = await patchEngagement(
-    supabase,
-    e.id,
-    { status: "eligibility_pending" },
-    completed
-      ? (() => { assertTransition("eligibility_pending", "signed"); return { consent_event_ids: refs, status: "signed" as const, signed_at: now.toISOString() }; })()
-      : { consent_event_ids: refs },
-  );
-  if (!patched) throw new DfySignError(409, "sign_race", "the engagement changed while you were signing — reload");
+  // ONE atomic statement on the row (mig 235 dfy_sign_merge): merge the ref,
+  // flip to `signed` when the stack is complete. No snapshot, no lost ref.
+  const patched = await mergeConsentRef(supabase, e.id, type, ref as unknown as Record<string, unknown>, required, now);
+  if (!patched) {
+    // The row is no longer signable (ended, declined, or already complete). The
+    // consent event, the PDF and the document row were written above — take
+    // them back so nothing orphaned proves a signature the engagement never got.
+    const fresh = await loadEngagement(supabase, e.id);
+    console.error("[dfy sign] merge refused — engagement", e.id, "status now:", fresh?.status ?? "(gone)", "instrument:", type);
+    if (documentId) {
+      const { data: doc } = await scoped.table("documents").select("storage_path").eq("id", documentId).maybeSingle();
+      const path = (doc as { storage_path?: string } | null)?.storage_path;
+      if (path) await supabase.storage.from("documents").remove([path]);
+      await scoped.table("documents").delete().eq("id", documentId);
+    }
+    await scoped.table("consent_events").delete().eq("id", eventId);
+    throw new DfySignError(409, "not_signable", fresh?.status === "terminated" ? "this engagement has ended" : fresh?.status === "signed" ? "every document is already signed" : "the engagement changed while you were signing — reload");
+  }
+  const refs = patched.consent_event_ids;
+  const completed = patched.status === "signed";
   e = patched;
   await emitCaseEvents(supabase, member.id, [
     { claimId: e.claim_id, kind: "dfy_instrument_signed", actor: "user", payload: { engagementId: e.id, instrument: type, consentEventId: eventId, ...(documentId ? { documentId } : {}) } },
