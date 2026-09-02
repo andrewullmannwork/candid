@@ -14,13 +14,14 @@
  * record shows exactly what was screened, by whom, and when.
  */
 import { NextRequest, NextResponse } from "next/server";
+import { sendDfyDeclineEmail } from "@/lib/email/dfy-emails";
 import { requireOperator } from "@/lib/admin/require-operator";
 import { logAdminAction } from "@/lib/admin/audit-log";
-import { operatorScoped, patchEngagement } from "@/lib/security/operator-scoped";
+import { operatorScoped, patchEngagement, OperatorAccessError } from "@/lib/security/operator-scoped";
 import { maybeActivateEngagement } from "@/lib/dfy/sign";
 import { loadClaimLitigationAttested } from "@/lib/disputes/letter-access-state";
 import type { RegulatoryClassification } from "@/lib/disputes/forums";
-import { evaluateIntake, type IntakeFacts, type PlanSponsorType } from "@/lib/dfy/intake-gates";
+import { evaluateIntake, type IntakeFacts, type PlanSponsorType, memberDeclineCopy, type IntakeDecision } from "@/lib/dfy/intake-gates";
 import { computeRunway, loadInsurerLetter } from "@/lib/dfy/matter";
 import { emitOperatorEvent, loadCompositionProof, operatorErrorResponse } from "@/lib/dfy/operator-action";
 
@@ -42,11 +43,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ eng
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
+  // evaluate (default) runs the gates and stores the decision — it never closes
+  // anything; accept / decline are the operator's explicit calls; reopen undoes
+  // a decline at intake (Andrew, S330 round 2: "Screen" must not cancel).
+  const action = body.action === "accept" || body.action === "decline" || body.action === "reopen" ? (body.action as "accept" | "decline" | "reopen") : "evaluate";
+  const operatorReason = typeof body.reason === "string" ? body.reason.trim().slice(0, 300) : "";
   const planSponsorType = SPONSOR_TYPES.has(body.planSponsorType as PlanSponsorType) ? (body.planSponsorType as PlanSponsorType) : null;
 
   try {
     const scope = await operatorScoped(supabase, operatorUserId, engagementId, {
-      statuses: ["eligibility_pending", "signed"],
+      statuses: action === "reopen" ? ["terminated"] : ["eligibility_pending", "signed"],
       requireHolder: false,
     });
     const e = scope.engagement;
@@ -90,8 +96,61 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ eng
       refusalRunwayBusinessDays: config.refusalRunwayBusinessDays,
       marketingGateVerifiedOn: config.marketingGateVerifiedOn,
     };
-    const decision = evaluateIntake(facts);
+    const declinedAtIntake = e.status === "terminated" && typeof (e.metadata as { closedReason?: string }).closedReason === "string" && (e.metadata as { closedReason: string }).closedReason.startsWith("declined at intake");
+    const stored = (e.intake as { decision?: IntakeDecision | null }).decision ?? null;
 
+    if (action === "reopen") {
+      if (!declinedAtIntake) throw new OperatorAccessError(409, "not_declined_at_intake", "this matter was not declined at intake");
+      const updated = await patchEngagement(supabase, engagementId, { status: "terminated" }, {
+        status: "eligibility_pending",
+        closed_at: null,
+        intake: { ...e.intake, decision: null, reopened: { at: now.toISOString(), by: { operatorUserId, role } } },
+        metadata: { ...e.metadata, closedReason: null, closedBy: null, reopened: { at: now.toISOString(), by: operatorUserId, previousReason: (e.metadata as { closedReason?: string }).closedReason ?? null } },
+      });
+      if (!updated) return NextResponse.json({ error: "The matter changed underneath you — reload", code: "screen_race" }, { status: 409 });
+      const scoped = { ...scope, engagement: updated };
+      await emitOperatorEvent(supabase, scoped, "dfy_engagement_reopened", { at: "intake" });
+      await logAdminAction({ adminUserId: operatorUserId, adminEmail: operatorEmail, action: "dfy_reopen", targetUserId: updated.user_id, targetTable: "dfy_engagements", details: `engagement ${updated.id}: reopened at intake (${role})`, ipAddress: ip });
+      return NextResponse.json({ ok: true, engagement: updated });
+    }
+
+    if (action === "decline") {
+      // The member reads their plain sentence (the gate's copy when a gate failed,
+      // a generic one when the operator declined on judgment); the operator's
+      // words stay in the audit trail.
+      const memberReason = (stored && !stored.eligible ? memberDeclineCopy(stored) : null) ?? "This isn't one we can take on right now.";
+      const auditReason = operatorReason || (stored && !stored.eligible ? stored.declineReason : null) || "operator judgment";
+      const updated = await patchEngagement(supabase, engagementId, { status: e.status }, {
+        status: "terminated",
+        closed_at: now.toISOString(),
+        intake: { ...e.intake, declined: { at: now.toISOString(), by: { operatorUserId, role }, reason: auditReason, memberReason } },
+        metadata: { ...e.metadata, closedReason: `declined at intake — ${auditReason}`, closedBy: { operatorUserId, role } },
+      });
+      if (!updated) return NextResponse.json({ error: "The applicant changed underneath you — reload", code: "screen_race" }, { status: 409 });
+      const scoped = { ...scope, engagement: updated };
+      await emitOperatorEvent(supabase, scoped, "dfy_engagement_closed", { status: "terminated", at: "intake", reason: auditReason });
+      const { data: mr } = await supabase.from("users").select("email, display_name").eq("id", updated.user_id).maybeSingle();
+      const member = mr as { email?: string | null; display_name?: string | null } | null;
+      const emailed = member?.email ? await sendDfyDeclineEmail({ to: member.email, firstName: member.display_name?.trim().split(/\s+/)[0] ?? null, claimId: updated.claim_id, reason: memberReason }) : false;
+      await logAdminAction({ adminUserId: operatorUserId, adminEmail: operatorEmail, action: "dfy_decline", targetUserId: updated.user_id, targetTable: "dfy_engagements", details: `engagement ${updated.id}: declined at intake — ${auditReason} (${role}); member emailed: ${emailed}`, ipAddress: ip });
+      return NextResponse.json({ ok: true, engagement: updated, emailed });
+    }
+
+    if (action === "accept") {
+      if (!stored || !stored.eligible) throw new OperatorAccessError(409, "not_screened_eligible", "run the gates first — accept needs an eligible decision on the row");
+      const updated = await patchEngagement(supabase, engagementId, { status: e.status }, {
+        intake: { ...e.intake, accepted: { at: now.toISOString(), by: { operatorUserId, role } } },
+      });
+      if (!updated) return NextResponse.json({ error: "The applicant changed underneath you — reload", code: "screen_race" }, { status: 409 });
+      const finalRow = updated.status === "signed" ? await maybeActivateEngagement(supabase, updated, config, now) : updated;
+      const scoped = { ...scope, engagement: finalRow };
+      await emitOperatorEvent(supabase, scoped, "dfy_engagement_screened", { eligible: true, accepted: true });
+      await logAdminAction({ adminUserId: operatorUserId, adminEmail: operatorEmail, action: "dfy_accept", targetUserId: finalRow.user_id, targetTable: "dfy_engagements", details: `engagement ${finalRow.id}: accepted at intake (${role}) → ${finalRow.status}`, ipAddress: ip });
+      return NextResponse.json({ ok: true, engagement: finalRow });
+    }
+
+    // evaluate — run the gates, store the decision, never close anything.
+    const decision = evaluateIntake(facts);
     const intake = {
       ...e.intake,
       facts,
@@ -99,41 +158,24 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ eng
       screenedAt: now.toISOString(),
       screenedBy: { operatorUserId, role },
     };
-    const updated = await patchEngagement(
-      supabase,
-      engagementId,
-      { status: e.status },
-      decision.eligible
-        ? { intake }
-        : {
-            intake,
-            status: "terminated",
-            closed_at: now.toISOString(),
-            metadata: { ...e.metadata, closedReason: `declined at intake — ${decision.declineReason}`, closedBy: { operatorUserId, role } },
-          },
-    );
+    const updated = await patchEngagement(supabase, engagementId, { status: e.status }, { intake });
     if (!updated) {
       return NextResponse.json({ error: "The applicant changed underneath you — reload", code: "screen_race" }, { status: 409 });
     }
-    // Sign-first: the member may have completed the stack before screening —
-    // an eligible decision on a signed matter activates it here, so the
-    // operator can act at once (composition + payer rule still apply inside).
+    // Sign-first: an eligible decision on an already-signed matter activates it here.
     const finalRow = decision.eligible && updated.status === "signed" ? await maybeActivateEngagement(supabase, updated, config, now) : updated;
     const scoped = { ...scope, engagement: finalRow };
     await emitOperatorEvent(supabase, scoped, "dfy_engagement_screened", {
       eligible: decision.eligible,
       failedGates: decision.gates.filter((g) => !g.pass).map((g) => g.id),
     });
-    if (!decision.eligible) {
-      await emitOperatorEvent(supabase, scoped, "dfy_engagement_closed", { status: "terminated", at: "intake" });
-    }
     await logAdminAction({
       adminUserId: operatorUserId,
       adminEmail: operatorEmail,
       action: "dfy_screen",
-      targetUserId: updated.user_id,
+      targetUserId: finalRow.user_id,
       targetTable: "dfy_engagements",
-      details: `engagement ${updated.id}: ${decision.eligible ? "eligible" : `declined — ${decision.declineReason}`} (${role})`,
+      details: `engagement ${finalRow.id}: ${decision.eligible ? "eligible" : `gates failed — ${decision.declineReason}`} (${role})`,
       ipAddress: ip,
     });
     return NextResponse.json({ ok: true, decision, engagement: finalRow });

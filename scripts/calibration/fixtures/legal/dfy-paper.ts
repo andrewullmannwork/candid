@@ -47,7 +47,8 @@ const ctx: InstrumentContext = {
   check("sponsor-paid stack is five instruments", s.length === 5);
   check("member-paid includes the fee agreement, not the sponsor disclosure", m.includes("dfy_fee_agreement") && !m.includes("dfy_sponsor_paid_disclosure"));
   check("sponsor-paid swaps in the sponsor disclosure", s.includes("dfy_sponsor_paid_disclosure") && !s.includes("dfy_fee_agreement"));
-  check("both end with the platform's health-data consent", m[4] === "health_data_upload" && s[4] === "health_data_upload");
+  check("both end with the designation (it waits for its person)", m[4] === "dfy_authorized_representative_designation" && s[4] === "dfy_authorized_representative_designation");
+  check("the platform's health-data consent is re-affirmed fourth", m[3] === "health_data_upload" && s[3] === "health_data_upload");
   check("the authorization comes first", m[0] === "dfy_authorization_hipaa_cmia");
   check("every DFY instrument is registered in CONSENT_DOCUMENTS", ["dfy_authorization_hipaa_cmia", "dfy_authorized_representative_designation", "dfy_scope_of_engagement", "dfy_fee_agreement", "dfy_sponsor_paid_disclosure"].every((t) => t in CONSENT_DOCUMENTS));
   check("the five DFY instruments render to PDF; health-data consent does not", PDF_INSTRUMENTS.size === 5 && !PDF_INSTRUMENTS.has("health_data_upload"));

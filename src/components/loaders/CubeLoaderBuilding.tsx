@@ -19,7 +19,20 @@ import { cn } from "@/lib/utils/cn";
  *
  * Keyframes (cdCubeFloat / cdCubeGlow / cdCheckDraw) live in app/globals.css.
  */
-export function CubeLoaderBuilding({ className }: { className?: string }) {
+export function CubeLoaderBuilding({
+  className,
+  variant = "page",
+  size,
+  tone = "brand",
+}: {
+  className?: string;
+  /** "inline" (S330): just the cube with its check, sized for a button or a row — no page wireframe, no min-height. */
+  variant?: "page" | "inline";
+  /** inline only — the cube's edge in px (default 18). */
+  size?: number;
+  /** inline only — "onDark" draws a white cube with a blue check for use on a primary button. */
+  tone?: "brand" | "onDark";
+}) {
   const TOTAL_LINES = 6;
   const LINE_WIDTHS = [86, 64, 92, 72, 80, 56];
   const [filled, setFilled] = useState(0);
@@ -30,6 +43,23 @@ export function CubeLoaderBuilding({ className }: { className?: string }) {
     }, 500);
     return () => clearInterval(id);
   }, []);
+
+  if (variant === "inline") {
+    const s = size ?? 18;
+    const dark = tone === "onDark";
+    return (
+      <span role="status" aria-label="Loading" className={cn("inline-flex items-center justify-center align-middle", className)}>
+        <span
+          className={cn("relative block", dark ? "bg-white" : "bg-gradient-to-br from-blue-600 to-blue-700")}
+          style={{ width: s, height: s, borderRadius: Math.round(s * 0.28), animation: "cdCubeFloat 3.2s ease-in-out infinite" }}
+        >
+          <svg viewBox="0 0 24 24" className="absolute inset-0 h-full w-full" fill="none" stroke={dark ? "#2563eb" : "white"} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M7 12.5l3.2 3.2L17 9" style={{ strokeDasharray: 22, animation: "cdCheckDraw 2.0s ease-in-out infinite" }} />
+          </svg>
+        </span>
+      </span>
+    );
+  }
 
   return (
     <div

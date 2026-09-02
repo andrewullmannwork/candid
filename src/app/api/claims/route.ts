@@ -96,6 +96,27 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "User not found" }, { status: 404 });
   }
 
+  // S330 — fields=picker: the done-for-you claim picker needs id + provider +
+  // date only. The full list below computes line items, audits and recovery
+  // per claim and takes seconds; the picker took the same path and looked
+  // broken. Same ownership scope, same table, a fraction of the work.
+  if (req.nextUrl.searchParams.get("fields") === "picker") {
+    const { data: rows, error } = await userScoped(supabase, user.id)
+      .table("claims")
+      .select("id, date_of_service, metadata, created_at")
+      .is("deleted_at", null)
+      .is("merged_into_claim_id", null)
+      .order("date_of_service", { ascending: false, nullsFirst: false })
+      .limit(50);
+    if (error) return NextResponse.json({ error: "Could not load claims" }, { status: 500 });
+    const claims = ((rows ?? []) as Array<{ id: string; date_of_service: string | null; metadata: Record<string, unknown> | null }>).map((c) => {
+      const provider = (c.metadata?.provider as { name?: string } | undefined)?.name ?? null;
+      const insurer = (c.metadata?.insurer as { name?: string } | undefined)?.name ?? null;
+      return { id: c.id, date_of_service: c.date_of_service, provider_name: provider, insurer_name: insurer };
+    });
+    return NextResponse.json({ claims });
+  }
+
   // S307 (tracker AM) — case-aware representative selection: the copy of a
   // duplicate bill carrying the user's work (any non-cancelled dispute letter)
   // must win the display dedupe over mere recency. One fetch, shared by both

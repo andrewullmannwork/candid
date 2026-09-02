@@ -9,7 +9,7 @@ import Link from "next/link";
  * exactly one wording of it across the site.
  */
 
-export function LearnHeader() {
+export function LearnHeader({ session }: { session?: { signedIn: boolean; label?: string | null } } = {}) {
   return (
     <header className="learn-chrome-head">
       <Link href="/" className="learn-wordmark" aria-label="Candid home">
@@ -31,12 +31,22 @@ export function LearnHeader() {
       </Link>
       <nav className="learn-chrome-nav">
         <Link href="/learn">All guides</Link>
-        {/* Verbatim reuse of the landing nav's CTA label. Deliberately not a
-            new freeness claim ("free bill audit" etc.) — claim copy is
-            curated and approved elsewhere, not minted here. */}
-        <Link href="/auth/signup" className="learn-chrome-cta">
-          Sign up
-        </Link>
+        {session?.signedIn ? (
+          <>
+            {/* S330 — a signed-in reader sees their own door, not "Sign up". */}
+            {session.label && <span className="learn-chrome-who">{session.label}</span>}
+            <Link href="/dashboard" className="learn-chrome-cta">
+              Dashboard
+            </Link>
+          </>
+        ) : (
+          /* Verbatim reuse of the landing nav's CTA label. Deliberately not a
+             new freeness claim ("free bill audit" etc.) — claim copy is
+             curated and approved elsewhere, not minted here. */
+          <Link href="/auth/signup" className="learn-chrome-cta">
+            Sign up
+          </Link>
+        )}
       </nav>
     </header>
   );

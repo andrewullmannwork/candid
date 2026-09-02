@@ -102,3 +102,37 @@ export async function sendDfyOperatorSlaEmail(params: {
     console.error("[dfy-emails] SLA send failed (fail-soft):", err);
   }
 }
+
+/** Intake decline — the member's plain sentence, never the operator's audit reason. */
+export async function sendDfyDeclineEmail(params: {
+  to: string;
+  firstName: string | null;
+  claimId: string;
+  /** The MEMBER_DECLINE_COPY sentence (or a generic one) — already plain words. */
+  reason: string;
+}): Promise<boolean> {
+  const resend = getResend();
+  if (!resend) {
+    console.warn("[dfy-emails] RESEND_API_KEY missing — skipping decline email");
+    return false;
+  }
+  const url = `${APP_URL}/claim?claim=${params.claimId}`;
+  const name = params.firstName ? esc(params.firstName) : "there";
+  try {
+    await resend.emails.send({
+      from: FROM,
+      to: params.to,
+      subject: "About your appeal request",
+      html: `<p>Hi ${name},</p>
+<p>We looked at your request for Candid to handle your appeal and can't take this one on. ${esc(params.reason)}</p>
+<p>Your appeal and every free Candid tool stay yours, and you can always file on your own at no cost.</p>
+<p><a href="${url}">Open your claim</a></p>
+<p>— Candid</p>`,
+      text: `Hi ${name},\n\nWe looked at your request for Candid to handle your appeal and can't take this one on. ${params.reason}\n\nYour appeal and every free Candid tool stay yours, and you can always file on your own at no cost.\n\n${url}\n\n— Candid`,
+    });
+    return true;
+  } catch (err) {
+    console.error("[dfy-emails] decline send failed (fail-soft):", err);
+    return false;
+  }
+}

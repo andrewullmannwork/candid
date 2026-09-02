@@ -21,7 +21,7 @@
 import { createHash } from "crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { userScoped } from "@/lib/security/user-scoped";
-import { patchEngagement, type DfyEngagementRow } from "@/lib/security/operator-scoped";
+import { patchEngagement, type DfyEngagementRow, loadEngagement } from "@/lib/security/operator-scoped";
 import { emitCaseEvents } from "@/lib/case/case-events";
 import { postOpsMessage } from "@/lib/slack/ops-message";
 import { getConsentDocument } from "@/lib/consent/consent-documents";
@@ -273,7 +273,12 @@ export async function signInstrument(input: SignInput): Promise<SignResult> {
       ? { namedParty: ctx.namedParty, namedOperatorUserId: e.operator_user_id, channel: ctx.channel }
       : {}),
   };
-  const refs = { ...e.consent_event_ids, [type]: ref };
+  // Merge against the row as it is NOW, not the snapshot this request started
+  // with: the member's page queues signatures back to back, and a stale
+  // snapshot would overwrite the previous signature's ref.
+  const fresh = await loadEngagement(supabase, e.id);
+  const current = fresh?.consent_event_ids ?? e.consent_event_ids;
+  const refs = { ...current, [type]: ref };
   const completed = paperComplete(e.payer, refs);
   const patched = await patchEngagement(
     supabase,

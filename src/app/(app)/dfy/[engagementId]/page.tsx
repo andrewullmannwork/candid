@@ -11,10 +11,11 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useRef } from "react";
 import { Elements, PaymentElement, useElements, useStripe } from "@stripe/react-stripe-js";
 import { useAuth } from "@/lib/auth/auth-context";
 import { LegalText } from "@/components/legal-text";
+import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 import { getStripeBrowser } from "@/lib/stripe/browser";
 
 /** The on-screen signature face: system script fonts, cursive fallback — nothing to download. */
@@ -99,7 +100,9 @@ export default function DfySigningPage({ params }: { params: Promise<{ engagemen
   const [openType, setOpenType] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [checked, setChecked] = useState(false);
-  const [busy, setBusy] = useState(false);
+  /** Signatures shown as done before the server confirms them (type → who/when). */
+  const [optimistic, setOptimistic] = useState<Record<string, { signedName: string; signedAt: string }>>({});
+  const signQueue = useRef<Promise<void>>(Promise.resolve());
   const token = useCallback(async () => (user ? user.firebaseUser.getIdToken() : null), [user]);
   const refresh = useCallback(() => setReloadKey((k) => k + 1), []);
 
@@ -117,6 +120,7 @@ export default function DfySigningPage({ params }: { params: Promise<{ engagemen
       if (cancelled) return;
       setError(null);
       setData(json);
+      setOptimistic({});
       const next = json.instruments.find((i) => !i.signed);
       setOpenType((cur) => cur ?? next?.type ?? null);
     })();
@@ -124,32 +128,49 @@ export default function DfySigningPage({ params }: { params: Promise<{ engagemen
   }, [user, params, reloadKey]);
 
   async function cancel() {
-    if (!engagementId || !user) return;
+    if (!engagementId || !user || !data) return;
     if (!window.confirm("End this engagement? Within three business days of signing, any fee is refunded in full.")) return;
-    setBusy(true); setError(null);
+    setError(null);
+    // optimistic: the page ends the engagement now; the server confirms, or we put it back
+    const prev = data;
+    setData({ ...data, engagement: { ...data.engagement, status: "terminated" }, canSign: false });
     const t = await token();
     const res = await fetch(`/api/dfy/engagements/${engagementId}/cancel`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` }, body: JSON.stringify({}) });
     const json = (await res.json().catch(() => ({}))) as { error?: string };
-    setBusy(false);
-    if (!res.ok) { setError(json.error || "Couldn't cancel. Try again."); return; }
+    if (!res.ok) { setData(prev); setError(json.error || "Couldn't cancel. Try again."); return; }
     refresh();
   }
 
   async function sign(type: string) {
-    if (!engagementId) return;
-    const t = await token();
-    if (!t) return;
-    setBusy(true); setError(null);
-    const res = await fetch(`/api/dfy/engagements/${engagementId}/sign`, {
-      method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
-      body: JSON.stringify({ type, signedName: name, accepted: true }),
-    });
-    const json = (await res.json().catch(() => ({}))) as { error?: string };
-    setBusy(false);
-    if (!res.ok) { setError(json.error || "Couldn't sign. Try again."); return; }
+    if (!engagementId || !data || name.trim().length < 2) return;
+    setError(null);
+    // optimistic: the card flips to signed the moment the box is ticked and the
+    // button pressed; the PDF + filing take a few seconds server-side and the
+    // page moves on to the next document meanwhile. A failure puts it back.
+    // Requests are queued one behind another so two quick signatures never
+    // race each other on the engagement row.
+    const signedName = name.trim();
+    setOptimistic((o) => ({ ...o, [type]: { signedName, signedAt: new Date().toISOString() } }));
     setChecked(false);
-    setOpenType(null);
-    refresh();
+    setOpenType(data.instruments.find((i) => !i.signed && !optimistic[i.type] && i.type !== type && !i.deferred)?.type ?? null);
+    const run = async () => {
+      const t = await token();
+      if (!t) throw new Error("no session");
+      const res = await fetch(`/api/dfy/engagements/${engagementId}/sign`, {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
+        body: JSON.stringify({ type, signedName, accepted: true }),
+      });
+      const json = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) throw new Error(json.error || "Couldn't sign. Try again.");
+    };
+    signQueue.current = signQueue.current.then(run).then(
+      () => refresh(),
+      (err: unknown) => {
+        setOptimistic((o) => { const n = { ...o }; delete n[type]; return n; });
+        setOpenType(type);
+        setError(err instanceof Error ? err.message : "Couldn't sign. Try again.");
+      },
+    );
   }
 
   if (!data) {
@@ -157,7 +178,7 @@ export default function DfySigningPage({ params }: { params: Promise<{ engagemen
   }
   const e = data.engagement;
   const total = data.instruments.length;
-  const done = data.instruments.filter((i) => i.signed).length;
+  const done = data.instruments.filter((i) => i.signed || optimistic[i.type]).length;
   const composed = data.composition.groundSelected && data.composition.letterAdopted;
 
   const closed = e.status === "terminated" || e.status === "converted" || e.status === "completed";
@@ -195,7 +216,7 @@ export default function DfySigningPage({ params }: { params: Promise<{ engagemen
         </div>
         <div className="mt-3 grid gap-1.5" style={{ gridTemplateColumns: `repeat(${total}, minmax(0, 1fr))` }}>
           {data.instruments.map((i) => (
-            <div key={i.type} className={`h-1.5 rounded-full ${i.signed ? "bg-blue-600" : "bg-gray-200"}`} />
+            <div key={i.type} className={`h-1.5 rounded-full ${i.signed || optimistic[i.type] ? "bg-blue-600" : "bg-gray-200"}`} />
           ))}
         </div>
         <p className="mt-3 text-[13.5px] leading-relaxed text-gray-600">
@@ -221,9 +242,10 @@ export default function DfySigningPage({ params }: { params: Promise<{ engagemen
       <ol className="space-y-3">
         {data.instruments.map((inst, idx) => {
           const open = openType === inst.type;
-          const signable = !inst.signed && data.canSign && !inst.deferred;
-          const pill = inst.signed
-            ? { cls: "bg-emerald-50 text-emerald-700 ring-emerald-200", text: `Signed ${fmt(inst.signed.signedAt)}` }
+          const sig = inst.signed ?? optimistic[inst.type] ?? null;
+          const signable = !sig && data.canSign && !inst.deferred;
+          const pill = sig
+            ? { cls: "bg-emerald-50 text-emerald-700 ring-emerald-200", text: `Signed ${fmt(sig.signedAt)}` }
             : inst.deferred && data.canSign
               ? { cls: "bg-amber-50 text-amber-800 ring-amber-200", text: "Waiting for your representative" }
               : data.canSign
@@ -232,8 +254,8 @@ export default function DfySigningPage({ params }: { params: Promise<{ engagemen
           return (
             <li key={inst.type} className={`overflow-hidden rounded-2xl border bg-white transition-shadow ${open ? "border-blue-200 shadow-[0_8px_24px_-12px_rgba(37,99,235,0.35)]" : "border-gray-200 shadow-[0_1px_2px_rgba(16,24,40,0.04)]"}`}>
               <button type="button" onClick={() => setOpenType(open ? null : inst.type)} className="flex w-full items-center gap-4 p-4 text-left sm:p-5">
-                <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[13px] font-bold ${inst.signed ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-600"}`}>
-                  {inst.signed ? (
+                <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[13px] font-bold ${sig ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-600"}`}>
+                  {sig ? (
                     <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg>
                   ) : idx + 1}
                 </div>
@@ -255,13 +277,13 @@ export default function DfySigningPage({ params }: { params: Promise<{ engagemen
 
                   {/* the signature panel */}
                   <div className="border-t border-gray-100 p-5 sm:p-6">
-                    {inst.signed ? (
+                    {sig ? (
                       <div className="rounded-2xl border border-emerald-200 bg-emerald-50/50 p-5">
-                        <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-emerald-700">Signed electronically</div>
+                        <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-emerald-700">Signed electronically{!inst.signed && <CubeLoaderBuilding variant="inline" size={14} />}</div>
                         <div className="mt-3 flex flex-wrap items-end justify-between gap-4">
                           <div className="min-w-0">
-                            <div className="truncate pb-1 text-[30px] leading-none text-gray-900" style={{ fontFamily: SIGNATURE_FONT }}>{inst.signed.signedName}</div>
-                            <div className="border-t border-gray-400 pt-1.5 text-[12px] text-gray-500">{inst.signed.signedName} · {new Date(inst.signed.signedAt).toLocaleString("en-US", { month: "long", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })}</div>
+                            <div className="truncate pb-1 text-[30px] leading-none text-gray-900" style={{ fontFamily: SIGNATURE_FONT }}>{sig.signedName}</div>
+                            <div className="border-t border-gray-400 pt-1.5 text-[12px] text-gray-500">{sig.signedName} · {new Date(sig.signedAt).toLocaleString("en-US", { month: "long", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })}</div>
                           </div>
                           {inst.pdfUrl && (
                             <a href={inst.pdfUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-xl border border-gray-300 bg-white px-3.5 py-2 text-[13px] font-semibold text-gray-800 hover:bg-gray-50">
@@ -293,8 +315,8 @@ export default function DfySigningPage({ params }: { params: Promise<{ engagemen
                           <input type="checkbox" checked={checked} onChange={(ev) => setChecked(ev.target.checked)} className="mt-1 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
                           <span>I&apos;ve read this {inst.title} in full and sign it electronically. I understand it is separate from the other documents on this page.</span>
                         </label>
-                        <button disabled={!checked || name.trim().length < 2 || busy} onClick={() => void sign(inst.type)} className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-5 py-3 text-[15px] font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto">
-                          {busy ? "Signing…" : `Sign ${inst.title}`}
+                        <button disabled={!checked || name.trim().length < 2} onClick={() => void sign(inst.type)} className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-5 py-3 text-[15px] font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto">
+                          Sign {inst.title}
                         </button>
                       </div>
                     ) : (
@@ -319,7 +341,7 @@ export default function DfySigningPage({ params }: { params: Promise<{ engagemen
         <div className="rounded-2xl border border-gray-200 bg-white p-5 text-sm">
           <div className="font-semibold text-gray-900">Changed your mind?</div>
           <p className="mt-1 leading-relaxed text-gray-600">End this engagement any time. Cancel within three business days of signing and any fee is refunded in full. After that, your fee agreement&apos;s refund terms apply. Every free Candid tool stays yours.</p>
-          <button disabled={busy} onClick={() => void cancel()} className="mt-3 rounded-xl border border-gray-300 bg-white px-3.5 py-2 text-[13px] font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50">End this engagement</button>
+          <button onClick={() => void cancel()} className="mt-3 rounded-xl border border-gray-300 bg-white px-3.5 py-2 text-[13px] font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50">End this engagement</button>
         </div>
       )}
       <p className="text-xs text-gray-400">This product is not a substitute for the advice of an attorney.</p>

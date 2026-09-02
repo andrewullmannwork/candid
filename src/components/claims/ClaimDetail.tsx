@@ -22,6 +22,7 @@ import { Fragment, useState, useEffect, useCallback, useMemo, useRef } from "rea
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
 import { useDfyEntry } from "@/lib/dfy/use-dfy-entry";
+import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 import { clearDfyIntent } from "@/lib/dfy/intent";
 import type { BillState } from "@/lib/claims/derive-bill-state";
 import { buildBillState } from "@/lib/claims/use-claim-pipeline";
@@ -35,7 +36,6 @@ import { buildSavingsDerivation } from "@/lib/claims/savings-derivation";
 import { buildAcaOverrideLine, type AcaOverride } from "@/lib/claims/aca-override-line";
 import { LineDrawer } from "@/components/claims/LineDrawer";
 import { BundleSuggestion } from "@/components/claims/BundleSuggestion";
-import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 import { useDisputeDraftOverlay } from "@/lib/loading/dispute-draft-overlay";
 import { DisputePlanChooser, type DisputePlanChooserPlan } from "@/components/disputes/DisputePlanChooser";
 import { CompositionStep, type MemberCompositionSelection, type CompositionEntryInput } from "@/components/disputes/CompositionStep";
@@ -2764,10 +2764,20 @@ export function ClaimDetail({
           full account, no engagement yet. Asking needs no composition; execution
           stays gated on the member's own composition events. */}
       {dfyEntry === true && !data.dfyEngagement && user && !user.isAnonymous && (
-        <div className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-violet-200 bg-violet-50 px-4 py-3 text-[13px] text-violet-900">
-          <span><b>Want Candid to handle this appeal?</b> We prepare and submit it as your authorized representative and work it until there is a decision.</span>
-          <button type="button" disabled={dfyBusy} onClick={() => void requestDfy()} className="rounded-lg bg-violet-700 px-3 py-1 text-[12px] font-semibold text-white disabled:opacity-50">{dfyBusy ? "Sending…" : "Handle my appeal"}</button>
-          {dfyErr && <span className="text-red-700">{dfyErr}</span>}
+        <div className="mb-5 overflow-hidden rounded-2xl border border-blue-200 bg-gradient-to-br from-blue-50 via-white to-white p-5 shadow-[0_1px_2px_rgba(16,24,40,0.04)] sm:p-6">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-blue-600">Done for you</div>
+          <h2 className="mt-1 text-[22px] font-bold leading-tight tracking-tight text-gray-900">Your appeal, handled.</h2>
+          <p className="mt-1.5 text-[14.5px] text-gray-600">You built your appeal. We take it from here.</p>
+          <ul className="mt-3 space-y-1.5 text-[13.5px] text-gray-700">
+            {["We prepare and submit your appeal as your authorized representative.", "We work it until there is a decision and keep you posted the whole time.", "If it goes to the state, we prepare the packet. You file it."].map((t) => (
+              <li key={t} className="flex items-start gap-2"><svg viewBox="0 0 24 24" className="mt-0.5 h-4 w-4 shrink-0 text-blue-600" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg><span>{t}</span></li>
+            ))}
+          </ul>
+          <p className="mt-3 text-[13px] font-semibold text-gray-900">Free during our California pilot. Limited spots.</p>
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <button type="button" disabled={dfyBusy} onClick={() => void requestDfy()} className="inline-flex min-w-[190px] items-center justify-center gap-2 rounded-xl bg-blue-600 px-6 py-3 text-[15px] font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:opacity-80">{dfyBusy ? <CubeLoaderBuilding variant="inline" tone="onDark" /> : "Handle my appeal"}</button>
+            {dfyErr && <span className="text-[13px] text-red-700">{dfyErr}</span>}
+          </div>
         </div>
       )}
       {/* S330 — the member's own DFY engagement on this claim (additive; the

@@ -30,12 +30,15 @@ export type DfyInstrumentType = Extract<
 
 /** The signing ORDER (the member reads the authorization first; the fee last). */
 export function requiredDfyConsents(payer: EngagementPayer): DfyInstrumentType[] {
+  // Order = the signing order on the member's page. The designation is LAST:
+  // under individual naming it cannot be signed until a representative holds
+  // the matter, so everything else is signed first (Andrew, S330 round 1).
   return [
     "dfy_authorization_hipaa_cmia",
-    "dfy_authorized_representative_designation",
     "dfy_scope_of_engagement",
     payer === "sponsor_paid" ? "dfy_sponsor_paid_disclosure" : "dfy_fee_agreement",
     "health_data_upload",
+    "dfy_authorized_representative_designation",
   ];
 }
 

@@ -41,8 +41,19 @@ export interface UserDisplay {
   email: string | null;
 }
 
+/** The member's own paperwork, read through their ownership — what the operator screens FROM. */
+export interface MatterPaperwork {
+  plan: { id: string; planName: string | null; insurerName: string | null; planType: string | null; state: string | null; employerName: string | null; groupNumber: string | null; classification: Record<string, unknown> | null } | null;
+  claim: { claimNumber: string | null; provider: string | null; insurer: string | null; dateOfService: string | null; totalBilled: number | null; patientResponsibility: number | null; inCollections: boolean };
+  /** The grounds the member selected (ground_selected payload.groundType), newest first, deduped — "what the member argued". */
+  grounds: string[];
+  documents: Array<{ id: string; fileName: string | null; docType: string | null; classifiedType: string | null; createdAt: string | null }>;
+}
+
 export interface MatterSummary {
   engagement: DfyEngagementRow;
+  /** Absent only in fixtures that build a summary by hand. */
+  paperwork?: MatterPaperwork;
   member: UserDisplay & { state: string | null };
   holder: UserDisplay | null;
   composition: CompositionProof;
@@ -175,6 +186,44 @@ export function derivePhase(engagement: DfyEngagementRow, composition: Compositi
   }
 }
 
+export async function loadPaperwork(supabase: SupabaseClient, memberUserId: string, claimId: string): Promise<MatterPaperwork> {
+  const scoped = userScoped(supabase, memberUserId);
+  const { data: c } = await scoped.table("claims").select("id, claim_number, date_of_service, total_billed, total_patient_responsibility, insurance_plan_id, source_document_id, metadata").eq("id", claimId).maybeSingle();
+  const claim = c as { claim_number: string | null; date_of_service: string | null; total_billed: number | null; total_patient_responsibility: number | null; insurance_plan_id: string | null; source_document_id: string | null; metadata: Record<string, unknown> | null } | null;
+  const meta = claim?.metadata ?? {};
+  const [planRes, groundsRes] = await Promise.all([
+    claim?.insurance_plan_id
+      ? scoped.table("insurance_plans").select("id, plan_name, insurer_name, plan_type, state, employer_name, group_number, source_document_id, metadata").eq("id", claim.insurance_plan_id).maybeSingle()
+      : Promise.resolve({ data: null }),
+    scoped.table("claim_case_events").select("payload, occurred_at").eq("claim_id", claimId).eq("kind", "ground_selected").order("occurred_at", { ascending: false }).limit(20),
+  ]);
+  const plan = planRes.data as { id: string; plan_name: string | null; insurer_name: string | null; plan_type: string | null; state: string | null; employer_name: string | null; group_number: string | null; source_document_id: string | null; metadata: Record<string, unknown> | null } | null;
+  const docIds = [claim?.source_document_id, plan?.source_document_id].filter((x): x is string => typeof x === "string");
+  let docQuery = scoped.table("documents").select("id, file_name, doc_type, classified_type, created_at, linked_insurance_plan_id");
+  docQuery = plan ? docQuery.or(`id.in.(${docIds.length ? docIds.join(",") : "00000000-0000-0000-0000-000000000000"}),linked_insurance_plan_id.eq.${plan.id}`) : docQuery.in("id", docIds.length ? docIds : ["00000000-0000-0000-0000-000000000000"]);
+  const { data: docs } = await docQuery.order("created_at", { ascending: false }).limit(12);
+  const grounds: string[] = [];
+  for (const g of (groundsRes.data ?? []) as Array<{ payload: Record<string, unknown> | null }>) {
+    const t = typeof g.payload?.groundType === "string" ? (g.payload.groundType as string) : null;
+    if (t && !grounds.includes(t)) grounds.push(t);
+  }
+  const cls = plan?.metadata && typeof plan.metadata.regulatory_classification === "object" ? (plan.metadata.regulatory_classification as Record<string, unknown> | null) : null;
+  return {
+    plan: plan ? { id: plan.id, planName: plan.plan_name, insurerName: plan.insurer_name, planType: plan.plan_type, state: plan.state, employerName: plan.employer_name, groupNumber: plan.group_number, classification: cls } : null,
+    claim: {
+      claimNumber: claim?.claim_number ?? null,
+      provider: ((meta.provider as { name?: string } | undefined)?.name) ?? null,
+      insurer: ((meta.insurer as { name?: string } | undefined)?.name) ?? null,
+      dateOfService: claim?.date_of_service ?? null,
+      totalBilled: claim?.total_billed ?? null,
+      patientResponsibility: claim?.total_patient_responsibility ?? null,
+      inCollections: !!meta.collector,
+    },
+    grounds,
+    documents: ((docs ?? []) as Array<{ id: string; file_name: string | null; doc_type: string | null; classified_type: string | null; created_at: string | null }>).map((d) => ({ id: d.id, fileName: d.file_name, docType: d.doc_type, classifiedType: d.classified_type, createdAt: d.created_at })),
+  };
+}
+
 export async function loadMatterSummary(
   supabase: SupabaseClient,
   engagement: DfyEngagementRow,
@@ -182,12 +231,13 @@ export async function loadMatterSummary(
 ): Promise<MatterSummary> {
   const now = opts.now ?? new Date();
   const member = engagement.user_id;
-  const [composition, insurerLetter, events, profile, users] = await Promise.all([
+  const [composition, insurerLetter, events, profile, users, paperwork] = await Promise.all([
     loadCompositionProof(supabase, member, engagement.claim_id),
     loadInsurerLetter(supabase, member, engagement.claim_id),
     loadDfyEvents(supabase, member, engagement.claim_id),
     userScoped(supabase, member).table("profiles").select("state").maybeSingle(),
     opts.users ?? loadUsersDisplay(supabase, [member, ...(engagement.operator_user_id ? [engagement.operator_user_id] : [])]),
+    loadPaperwork(supabase, member, engagement.claim_id),
   ]);
   const runwayBusinessDays = await computeRunway(supabase, insurerLetter, now);
   const acts = events.filter((e) => e.kind in ACT_PHASE);
@@ -198,6 +248,7 @@ export async function loadMatterSummary(
     : null;
   return {
     engagement,
+    paperwork,
     member: { ...memberDisplay, state: ((profile.data as { state?: string | null } | null)?.state ?? engagement.member_state) ?? null },
     holder,
     composition,

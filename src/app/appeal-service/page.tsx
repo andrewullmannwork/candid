@@ -19,8 +19,9 @@ import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth/auth-context";
 import { LearnFooter, LearnHeader } from "@/components/learn/LearnChrome";
 import { useDfyEntry } from "@/lib/dfy/use-dfy-entry";
+import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 
-interface ClaimRow { id: string; date_of_service: string | null; provider_name: string | null }
+interface ClaimRow { id: string; date_of_service: string | null; provider_name: string | null; insurer_name?: string | null }
 
 const STEPS: ReadonlyArray<{ num: string; text: string }> = [
   { num: "01", text: "We prepare and submit your appeal as your authorized representative." },
@@ -34,7 +35,7 @@ export default function AppealServicePage() {
   const { user } = useAuth();
   const signedIn = !!user && !user.isAnonymous;
   const open = useDfyEntry();
-  const [claims, setClaims] = useState<ClaimRow[]>([]);
+  const [claims, setClaims] = useState<ClaimRow[] | null>(null);
   const [claimId, setClaimId] = useState("");
   const [sponsorCode, setSponsorCode] = useState("");
   const [busy, setBusy] = useState(false);
@@ -45,10 +46,11 @@ export default function AppealServicePage() {
     let cancelled = false;
     (async () => {
       const t = await user.firebaseUser.getIdToken();
-      const r = await fetch("/api/claims", { headers: { Authorization: `Bearer ${t}` } });
-      const j = (await r.json().catch(() => ({}))) as { claims?: Array<{ id: string; date_of_service: string | null; provider_name?: string | null; metadata?: { provider?: { name?: string } } }> };
+      // fields=picker: id + provider + date only — the full list computes audits per claim and takes seconds
+      const r = await fetch("/api/claims?fields=picker", { headers: { Authorization: `Bearer ${t}` } });
+      const j = (await r.json().catch(() => ({}))) as { claims?: ClaimRow[] };
       if (cancelled) return;
-      setClaims((j.claims ?? []).map((c) => ({ id: c.id, date_of_service: c.date_of_service, provider_name: c.provider_name ?? c.metadata?.provider?.name ?? null })));
+      setClaims(j.claims ?? []);
     })();
     return () => { cancelled = true; };
   }, [user, signedIn]);
@@ -65,7 +67,7 @@ export default function AppealServicePage() {
 
   return (
     <div className="learn-page">
-      <LearnHeader />
+      <LearnHeader session={{ signedIn, label: signedIn ? user?.email ?? null : null }} />
       <main className="landing" style={{ flex: 1 }}>
         {open === null ? (
           <section className="section"><div className="section-narrow"><p className="section-sub">Loading…</p></div></section>
@@ -102,25 +104,33 @@ export default function AppealServicePage() {
             <section className="section" style={{ paddingTop: 0 }}>
               <div className="section-narrow">
                 <div className="step" style={{ maxWidth: 680, gap: 0 }}>
-                  {signedIn ? (
+                  {msg?.tone === "ok" && msg.engagementId ? (
+                    <>
+                      <span className="section-eyebrow">Request received</span>
+                      <p style={{ margin: 0, fontSize: 20, lineHeight: 1.35, fontWeight: 700, color: "var(--fg-2)" }}>Sign your documents now, and we&apos;ll confirm we can take this one.</p>
+                      <div className="hero-ctas" style={{ marginTop: 22 }}>
+                        <Link href={`/dfy/${msg.engagementId}`} className="btn btn-primary btn-xl">Sign now</Link>
+                      </div>
+                    </>
+                  ) : signedIn ? (
                     <>
                       <label className="block text-sm font-semibold text-gray-800">Which claim?
-                        <select className={field} value={claimId} onChange={(e) => setClaimId(e.target.value)}>
-                          <option value="">Choose the claim</option>
-                          {claims.map((c) => <option key={c.id} value={c.id}>{c.provider_name ?? "Claim"} · {c.date_of_service ?? "—"}</option>)}
-                        </select>
+                        {claims === null ? (
+                          <div className="mt-1.5 flex h-[46px] items-center gap-3 rounded-xl border border-gray-200 bg-gray-50 px-3.5"><CubeLoaderBuilding variant="inline" size={16} /><span className="h-3 w-40 animate-pulse rounded bg-gray-200" /></div>
+                        ) : (
+                          <select className={field} value={claimId} onChange={(e) => setClaimId(e.target.value)}>
+                            <option value="">Choose the claim</option>
+                            {claims.map((c) => <option key={c.id} value={c.id}>{c.provider_name ?? c.insurer_name ?? "Claim"} · {c.date_of_service ?? "—"}</option>)}
+                          </select>
+                        )}
                       </label>
                       <label className="mt-5 block text-sm font-semibold text-gray-800">Employer code (optional)
                         <input className={`${field} max-w-xs`} value={sponsorCode} onChange={(e) => setSponsorCode(e.target.value)} placeholder="optional" />
                       </label>
                       <div className="hero-ctas" style={{ marginTop: 24 }}>
-                        <button type="button" disabled={!claimId || busy} onClick={() => void apply()} className="btn btn-primary btn-xl" style={{ opacity: !claimId || busy ? 0.55 : 1 }}>{busy ? "Sending…" : "Handle my appeal"}</button>
+                        <button type="button" disabled={!claimId || busy} onClick={() => void apply()} className="btn btn-primary btn-xl" style={{ opacity: !claimId ? 0.55 : 1, minWidth: 190 }}>{busy ? <CubeLoaderBuilding variant="inline" tone="onDark" /> : "Handle my appeal"}</button>
                       </div>
-                      {msg && (
-                        <p className={`mt-4 text-[14px] ${msg.tone === "ok" ? "text-emerald-700" : "text-red-700"}`}>
-                          {msg.text}{msg.engagementId && <> <Link href={`/dfy/${msg.engagementId}`} className="font-semibold underline">Sign now</Link></>}
-                        </p>
-                      )}
+                      {msg && msg.tone === "err" && <p className="mt-4 text-[14px] text-red-700">{msg.text}</p>}
                     </>
                   ) : (
                     <>

@@ -326,6 +326,7 @@ html {
   color: var(--fg-3); text-decoration: none;
 }
 .learn-chrome-nav a:hover { color: var(--fg-1); }
+.learn-chrome-who { font-size: 13px; color: var(--fg-4); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .learn-chrome-cta {
   background: var(--candid-blue-600); color: #fff !important;
   padding: var(--space-2) var(--space-4); border-radius: var(--radius-pill);

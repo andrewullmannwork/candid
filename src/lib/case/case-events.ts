@@ -121,6 +121,7 @@ export const CASE_EVENT_KINDS = [
   "dfy_engagement_signed",
   "dfy_engagement_activated",
   "dfy_engagement_closed",
+  "dfy_engagement_reopened",
   // … the claim mechanic (who holds the matter) …
   "dfy_claimed",
   "dfy_released",

@@ -16,10 +16,10 @@ export function DfyIntentBanner() {
   const show = useSyncExternalStore(subscribeDfyIntent, hasDfyIntent, noDfyIntentOnServer);
   if (!show || entry !== true) return null;
   return (
-    <div className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-violet-200 bg-violet-50 px-4 py-3 text-[13px] text-violet-900">
-      <span><b>Next: upload the denied bill.</b> Then press <b>Handle my appeal</b> on it and sign the documents. We take it from there.</span>
-      <Link href="/upload" className="rounded-lg bg-violet-700 px-3 py-1 text-[12px] font-semibold text-white">Upload the bill</Link>
-      <button type="button" onClick={() => clearDfyIntent()} className="text-[12px] text-violet-700 underline">Not now</button>
+    <div className="mb-5 flex flex-wrap items-center gap-4 rounded-2xl border border-blue-200 bg-gradient-to-br from-blue-50 via-white to-white px-5 py-4 text-[14.5px] text-gray-800 shadow-[0_1px_2px_rgba(16,24,40,0.04)]">
+      <span className="min-w-[240px] flex-1"><b className="text-gray-900">Next: upload the denied bill.</b> Then press <b>Handle my appeal</b> on it and sign the documents. We take it from there.</span>
+      <Link href="/upload" className="rounded-xl bg-blue-600 px-5 py-2.5 text-[14px] font-semibold text-white shadow-sm hover:bg-blue-700">Upload the bill</Link>
+      <button type="button" onClick={() => clearDfyIntent()} className="text-[13px] font-medium text-gray-500 underline-offset-2 hover:underline">Not now</button>
     </div>
   );
 }
