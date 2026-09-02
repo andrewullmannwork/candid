@@ -909,7 +909,7 @@ export async function GET(
   }
 
   // S330 — the DFY engagement overlay, if any (member-owned row; live statuses only).
-  let dfyEngagement: { id: string; status: string; phase: string; payer: string } | null = null;
+  let dfyEngagement: { id: string; status: string; phase: string; payer: string; acts: Array<{ kind: string; occurredAt: string }> } | null = null;
   try {
     const { data: engRows } = await userScoped(supabase, user.id)
       .table("dfy_engagements")
@@ -922,10 +922,19 @@ export async function GET(
       const { parseEngagementRow } = await import("@/lib/security/operator-scoped");
       const { derivePhase } = await import("@/lib/dfy/matter");
       const { loadCompositionProof } = await import("@/lib/dfy/operator-action");
+      const { loadDfyEvents } = await import("@/lib/dfy/matter");
       const eng = parseEngagementRow(engRaw);
       if (eng) {
-        const proof = await loadCompositionProof(supabase, user.id, claimId);
-        dfyEngagement = { id: eng.id, status: eng.status, payer: eng.payer, phase: derivePhase(eng, proof, null) };
+        const [proof, events] = await Promise.all([
+          loadCompositionProof(supabase, user.id, claimId),
+          loadDfyEvents(supabase, user.id, claimId),
+        ]);
+        // The operator's acts on this case, oldest first — "Done by Candid · date".
+        const acts = events
+          .filter((ev) => ev.kind.startsWith("dfy_") && !ev.kind.startsWith("dfy_engagement_") && ev.kind !== "dfy_instrument_signed")
+          .map((ev) => ({ kind: ev.kind, occurredAt: ev.occurredAt }));
+        const lastAct = acts.length ? { ...events.find((ev) => ev.kind === acts[acts.length - 1].kind && ev.occurredAt === acts[acts.length - 1].occurredAt)!, payload: {} } : null;
+        dfyEngagement = { id: eng.id, status: eng.status, payer: eng.payer, phase: derivePhase(eng, proof, lastAct), acts };
       }
     }
   } catch (err) {

@@ -21,7 +21,9 @@
 --      state + plan classification snapshotted at intake, the Gates 0–6
 --      results (JSONB, Rule #9 first), and the consent-event references the
 --      paper stack (PR-DFY-2) fills in.
---   4. The dfy_operator_v1 flag seed (OFF/global) with its config — every cap
+--   4. consent_type ENUM gains the five DFY instrument values (PR-DFY-2) —
+--      the signing pipeline is the platform's own consent_events mechanic.
+--   5. The dfy_operator_v1 flag seed (OFF/global) with its config — every cap
 --      and window config-backed (Ship Gate G6): concurrent cap PER OPERATOR,
 --      the R18 refusal runway (business days), the D8 IP allowlist, and the
 --      Gate-6 marketing attestation date (null = the gate fails closed and
@@ -39,6 +41,7 @@
 -- be applied via the exec_sql RPC from the migration file verbatim.
 --
 -- ROLLBACK:
+--   (enum values cannot be dropped in PostgreSQL; they are inert if unused)
 --   DELETE FROM public.feature_flag_rules WHERE flag_key = 'dfy_operator_v1';
 --   DROP TABLE IF EXISTS public.dfy_engagements;
 --   ALTER TABLE public.users DROP COLUMN IF EXISTS is_operator;
@@ -106,6 +109,21 @@ REVOKE ALL ON TABLE public.dfy_engagements FROM anon, authenticated;
 
 COMMENT ON TABLE public.dfy_engagements IS
   'S330 (mig 235) — the DFY engagement grant: an overlay on an ordinary claim + dispute row. Server-only writes via operatorScoped / userScoped (B9); one live engagement per claim; payer seam (member_paid | sponsor_paid); operator_user_id = the holder (claim mechanic). RLS enabled with no policies = deny all non-service access.';
+
+-- The five DFY instruments are consent_events rows (the platform's own e-sign
+-- mechanic), and consent_events.consent_type is an ENUM — so the vocabulary
+-- must widen here, in the same migration the lane ships in. IF NOT EXISTS makes
+-- each idempotent. (ALTER TYPE … ADD VALUE commits with the transaction; the
+-- app only writes these values after deploy, so a single Studio paste is safe.)
+ALTER TYPE public.consent_type ADD VALUE IF NOT EXISTS 'dfy_authorization_hipaa_cmia';
+
+ALTER TYPE public.consent_type ADD VALUE IF NOT EXISTS 'dfy_authorized_representative_designation';
+
+ALTER TYPE public.consent_type ADD VALUE IF NOT EXISTS 'dfy_scope_of_engagement';
+
+ALTER TYPE public.consent_type ADD VALUE IF NOT EXISTS 'dfy_fee_agreement';
+
+ALTER TYPE public.consent_type ADD VALUE IF NOT EXISTS 'dfy_sponsor_paid_disclosure';
 
 INSERT INTO public.feature_flag_rules (flag_key, enabled, description, target_type, config)
 VALUES (

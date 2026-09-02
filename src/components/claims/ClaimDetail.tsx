@@ -2,6 +2,22 @@
 
 import Link from "next/link";
 
+/** S330 — the member-facing words for an operator's act (facts, never advice). */
+const DFY_ACT_LABEL: Record<string, string> = {
+  dfy_claimed: "took on your matter",
+  dfy_released: "handed your matter back to the queue",
+  dfy_designation_submitted: "submitted your representative designation to the plan",
+  dfy_designation_acknowledged: "the plan acknowledged the designation",
+  dfy_document_requested: "requested your claim file and plan documents",
+  dfy_appeal_transmitted: "transmitted the appeal you composed",
+  dfy_status_called: "called the plan to confirm status",
+  dfy_response_recorded: "recorded a response from the plan",
+  dfy_offer_relayed: "relayed an offer from the plan",
+  dfy_packet_prepared: "prepared the state-level packet for you to file",
+  dfy_determination_recorded: "recorded the plan's determination",
+  dfy_audit_logged: "logged an internal audit review",
+};
+
 import { Fragment, useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
@@ -287,7 +303,7 @@ interface ClaimData {
     insurerNameByDispute: Record<string, string>;
   };
   // S330 — the member's own DFY engagement on this claim (additive; absent when none).
-  dfyEngagement?: { id: string; status: string; phase: string; payer: string };
+  dfyEngagement?: { id: string; status: string; phase: string; payer: string; acts: Array<{ kind: string; occurredAt: string }> };
   relatedClaims: Array<{ id: string; date_of_service: string; status: string; total_billed: number; provider_name: string | null }>;
   // S132 iter-6 Phase 1 — slugs present in user's plan_covered_services for
   // this claim's plan_id. Drives CategoryCorrectionModal filtering + best-
@@ -2732,8 +2748,17 @@ export function ClaimDetail({
         <div className="mb-4 rounded-xl border border-violet-200 bg-violet-50 px-4 py-3 text-[13px] text-violet-900">
           {data.dfyEngagement.status === "active" ? (
             <>
-              <b>Candid is handling the paperwork for this appeal</b> as your authorized representative. Every step shows on your timeline below as &quot;Done by Candid&quot;; anything that needs a decision stays yours.
+              <b>Candid is handling the paperwork for this appeal</b> as your authorized representative. Anything that needs a decision stays yours.
               <span className="ml-2 text-violet-700">{data.dfyEngagement.phase}</span>
+              {data.dfyEngagement.acts.length > 0 && (
+                <ul className="mt-2 space-y-0.5 text-[12px] text-violet-800">
+                  {data.dfyEngagement.acts.map((a, i) => (
+                    <li key={`${a.kind}-${i}`}>
+                      <span className="font-semibold">Done by Candid</span> · {DFY_ACT_LABEL[a.kind] ?? a.kind.replace("dfy_", "").replace(/_/g, " ")} · {new Date(a.occurredAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                    </li>
+                  ))}
+                </ul>
+              )}
             </>
           ) : data.dfyEngagement.status === "signed" ? (
             <>

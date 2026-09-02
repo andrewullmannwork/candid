@@ -117,6 +117,7 @@ export const CASE_EVENT_KINDS = [
   // Engagement lifecycle (payload: engagementId + status refs) …
   "dfy_engagement_created",
   "dfy_engagement_screened",
+  "dfy_instrument_signed",
   "dfy_engagement_signed",
   "dfy_engagement_activated",
   "dfy_engagement_closed",

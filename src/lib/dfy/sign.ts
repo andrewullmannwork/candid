@@ -263,7 +263,10 @@ export async function signInstrument(input: SignInput): Promise<SignResult> {
   if (!patched) throw new DfySignError(409, "sign_race", "the engagement changed while you were signing — reload");
   e = patched;
   await emitCaseEvents(supabase, member.id, [
-    { claimId: e.claim_id, kind: completed ? "dfy_engagement_signed" : "dfy_engagement_created", actor: "user", payload: { engagementId: e.id, instrument: type, consentEventId: eventId, ...(documentId ? { documentId } : {}), ...(completed ? { stackComplete: true } : {}) } },
+    { claimId: e.claim_id, kind: "dfy_instrument_signed", actor: "user", payload: { engagementId: e.id, instrument: type, consentEventId: eventId, ...(documentId ? { documentId } : {}) } },
+    ...(completed
+      ? [{ claimId: e.claim_id, kind: "dfy_engagement_signed" as const, actor: "user" as const, payload: { engagementId: e.id, stackComplete: true } }]
+      : []),
   ]);
   if (completed) e = await maybeActivateEngagement(supabase, e, config, now);
   return { ref, engagement: e, completed };
