@@ -228,6 +228,13 @@ function Hero({ loggedIn }: { loggedIn: boolean }) {
   // SP-1 Variant B (S315 design §7.6, Andrew-approved LP5): today's hero
   // untouched; a quiet ghost secondary under the CTAs routes to /check.
   const { enabled: anonCheck } = useFeatureFlag("anonymous_bill_check_v1");
+  // S330 — ONE public boolean: flag ON AND config entry_point_enabled.
+  const [dfyEntry, setDfyEntry] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/dfy/entry-point").then((r) => r.json()).then((j: { enabled?: boolean }) => { if (!cancelled) setDfyEntry(j.enabled === true); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
   return (
     <section className="hero">
       <div className="hero-inner">
@@ -255,7 +262,12 @@ function Hero({ loggedIn }: { loggedIn: boolean }) {
                 button, replacing "See what you get" while the anonymous
                 surface is on; flag OFF (or logged in) restores it, so the
                 hero always keeps exactly two actions. */}
-            {anonCheck && !loggedIn ? (
+            {dfyEntry ? (
+              // S330 — the done-for-you entry point (S324 §3.5): process, never
+              // outcomes. Dark until config `entry_point_enabled`; the /check
+              // entry keeps the slot until then.
+              <Link href="/appeal-service" className="btn btn-ghost btn-xl">We handle your appeal</Link>
+            ) : anonCheck && !loggedIn ? (
               <Link href="/check" className="btn btn-ghost btn-xl">Try a bill first</Link>
             ) : (
               <a href="#suite" className="btn btn-ghost btn-xl">See what you get</a>

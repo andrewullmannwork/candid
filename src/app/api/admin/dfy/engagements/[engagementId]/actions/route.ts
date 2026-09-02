@@ -25,6 +25,8 @@ import {
   operatorErrorResponse,
 } from "@/lib/dfy/operator-action";
 import { signedInstruments } from "@/lib/dfy/paper";
+import { buildPacket } from "@/lib/dfy/packet";
+import { userScoped } from "@/lib/security/user-scoped";
 import { sendDfyMatterUpdateEmail } from "@/lib/email/dfy-emails";
 
 /** The member-facing plain-words line for the facts that notify them. */
@@ -65,6 +67,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ eng
     return NextResponse.json({ error: "Unknown act kind", code: "bad_kind" }, { status: 400 });
   }
   const disputeId = typeof body.disputeId === "string" && body.disputeId.length > 0 ? body.disputeId : null;
+  const isChannel = kind === "dfy_channel_observed";
 
   try {
     const scope = await assertOperatorAction(supabase, operatorUserId, engagementId, kind);
@@ -127,6 +130,86 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ eng
         console.error("[dfy actions] dispute metadata write failed:", updErr);
         return NextResponse.json({ error: "Could not record the fact on the letter", code: "write_failed" }, { status: 500 });
       }
+    }
+
+    // The state-level packet: built on the Case File compiler, filed in the
+    // member's documents; the act payload carries only the references.
+    if (kind === "dfy_packet_prepared") {
+      const forumId = ref(body.forumId);
+      if (!forumId) return NextResponse.json({ error: "forumId required — pick the forum from the routed menu", code: "forum_required" }, { status: 400 });
+      const [{ data: memberRow }, { data: opRow }] = await Promise.all([
+        supabase.from("users").select("display_name, email").eq("id", scope.engagement.user_id).maybeSingle(),
+        supabase.from("users").select("display_name, email").eq("id", operatorUserId).maybeSingle(),
+      ]);
+      const memberName = (memberRow as { display_name?: string | null; email?: string } | null)?.display_name || (memberRow as { email?: string } | null)?.email || "the member";
+      const operatorName = (opRow as { display_name?: string | null; email?: string } | null)?.display_name || (opRow as { email?: string } | null)?.email || "the Candid operator";
+      try {
+        const built = await buildPacket(supabase, scope.engagement, forumId, disputeId, operatorName, memberName);
+        payload.forumId = built.forumId;
+        payload.documentId = built.documentId;
+      } catch (err) {
+        console.error("[dfy actions] packet build failed:", err);
+        return NextResponse.json({ error: `Could not build the packet: ${err instanceof Error ? err.message : "unknown"}`, code: "packet_failed" }, { status: 500 });
+      }
+    }
+
+    // Channel observations ride the EXISTING insurer-intelligence machinery:
+    // a corrected appeals address/phone opens a proposed_changes row for admin
+    // review (the same queue user corrections use); every observation is an
+    // insurer_appeals_confirmations event (the log) — never a new pipeline.
+    if (isChannel) {
+      const insurerId = ref(body.insurerId);
+      if (!insurerId) return NextResponse.json({ error: "insurerId required", code: "insurer_required" }, { status: 400 });
+      const { data: insurer } = await supabase
+        .from("insurer_catalog")
+        .select("id, name, appeals_address_line_1, appeals_address_line_2, appeals_city, appeals_state, appeals_postal_code, appeals_phone, appeals_source")
+        .eq("id", insurerId)
+        .maybeSingle();
+      if (!insurer) return NextResponse.json({ error: "Insurer not found", code: "insurer_not_found" }, { status: 404 });
+      const ins = insurer as Record<string, string | null>;
+      const observation: Record<string, unknown> = {
+        submissionChannel: ref(body.submissionChannel) ?? null,          // mail | fax | portal | email
+        designationFormRequired: body.designationFormRequired === true,
+        wetInkRequired: body.wetInkRequired === true,
+        formUrl: ref(body.formUrl) ?? null,
+        faxNumber: ref(body.faxNumber) ?? null,
+        portalUrl: ref(body.portalUrl) ?? null,
+        note: typeof body.note === "string" ? body.note.trim().slice(0, 300) : null,
+        observedBy: { operatorUserId, role, engagementId: scope.engagement.id },
+      };
+      await userScoped(supabase, scope.engagement.user_id).table("insurer_appeals_confirmations").insert({
+        insurer_id: ins.id,
+        action: "proposed_correction",
+        metadata: { source: "dfy_operator", observation },
+      });
+      const addr = {
+        address_line_1: ref(body.addressLine1),
+        address_line_2: ref(body.addressLine2) ?? "",
+        city: ref(body.city),
+        state: ref(body.state),
+        postal_code: ref(body.postalCode),
+        phone: ref(body.phone),
+      };
+      if (addr.address_line_1 && addr.city && addr.state && addr.postal_code) {
+        await supabase.from("insurer_appeals_proposed_changes").insert({
+          insurer_id: ins.id,
+          proposed_by: "user_correction",
+          proposed_by_user_id: operatorUserId,
+          source_document_id: null,
+          source_excerpt: `DFY operator observation on engagement ${scope.engagement.id}: ${observation.note ?? "verified submission channel"}`,
+          current_values: {
+            address_line_1: ins.appeals_address_line_1, address_line_2: ins.appeals_address_line_2, city: ins.appeals_city,
+            state: ins.appeals_state, postal_code: ins.appeals_postal_code, phone: ins.appeals_phone, source: ins.appeals_source,
+          },
+          proposed_values: { ...addr, phone: addr.phone ?? ins.appeals_phone ?? null, source: "dfy_operator" },
+          confidence: 0.9,
+          status: "pending",
+        });
+        payload.addressProposed = true;
+      }
+      payload.insurerId = ins.id;
+      if (observation.submissionChannel) payload.submissionChannel = observation.submissionChannel;
+      if (observation.wetInkRequired) payload.wetInkRequired = true;
     }
 
     await emitOperatorEvent(supabase, scope, kind, payload, disputeId);

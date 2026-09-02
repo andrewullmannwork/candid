@@ -29,6 +29,9 @@ interface Matter {
   lastAct: { kind: string; occurredAt: string } | null;
   phase: string;
 }
+interface Sponsor { id: string; code: string; name: string; contact_email: string | null; agreement_signed_at: string | null; active: boolean }
+interface SponsorReport { code: string; name: string; total: number; suppressed: boolean; k: number; byStatus: Record<string, number> | null; byDetermination: Record<string, number> | null }
+interface AccessReview { operators: Array<{ userId: string; email: string; displayName: string | null; isAdmin: boolean }>; lastReview: { at: string | null; by: string | null }; ageDays: number | null; stale: boolean }
 interface QueuePayload {
   operator: { userId: string; email: string; role: string; held: number; cap: number; ip: string | null };
   config: { refusalRunwayBusinessDays: number; ipAllowlistEnforced: boolean; ipAllowlistSize: number; marketingGateVerifiedOn: string | null };
@@ -74,6 +77,11 @@ export default function DfyQueuePage() {
   const [inviteMsg, setInviteMsg] = useState<string | null>(null);
   // Screening answers per applicant
   const [answers, setAnswers] = useState<Record<string, { planSponsorType: string; secondaryCoverageCdi: string; governmentProgram: string; memberAskedWhatToArgue: string; part2Records: string }>>({});
+  // Admin-only sections (sponsors + the weekly access review) — the routes refuse non-admins; the UI simply hides on 403.
+  const [sponsors, setSponsors] = useState<Sponsor[] | null>(null);
+  const [sponsorForm, setSponsorForm] = useState({ code: "", name: "", contactEmail: "", agreementSignedAt: "" });
+  const [report, setReport] = useState<SponsorReport | null>(null);
+  const [access, setAccess] = useState<AccessReview | null>(null);
 
   const token = useCallback(async () => (user ? user.firebaseUser.getIdToken() : null), [user]);
   // Reload = bump the key; the load itself lives in the effect body (the admin
@@ -86,6 +94,9 @@ export default function DfyQueuePage() {
     let cancelled = false;
     async function load() {
       const t = await user!.firebaseUser.getIdToken();
+      // admin-only panels load beside the queue; a 403 just leaves them hidden
+      void fetch("/api/admin/dfy/sponsors", { headers: { Authorization: `Bearer ${t}` } }).then(async (r) => { if (r.ok && !cancelled) setSponsors(((await r.json()) as { sponsors: Sponsor[] }).sponsors); });
+      void fetch("/api/admin/dfy/access-review", { headers: { Authorization: `Bearer ${t}` } }).then(async (r) => { if (r.ok && !cancelled) setAccess((await r.json()) as AccessReview); });
       const res = await fetch("/api/admin/dfy/queue", { headers: { Authorization: `Bearer ${t}` } });
       if (cancelled) return;
       if (res.status === 404) { setDark(true); setData(null); return; }
@@ -181,6 +192,12 @@ export default function DfyQueuePage() {
           <span><b>Operator session</b> · {data.operator.email} ({data.operator.role})</span>
           <span>IP {data.config.ipAllowlistEnforced ? `allowlisted (${data.config.ipAllowlistSize})` : "allowlist not enforced"} · config-backed</span>
           <span>hardened password ✓</span>
+          {access && (
+            <span className={access.stale ? "rounded-md border border-amber-200 bg-amber-50 px-2 py-0.5 text-amber-800" : ""}>
+              last access review: {access.lastReview.at ? `${new Date(access.lastReview.at).toLocaleDateString("en-US", { month: "short", day: "numeric" })} · weekly` : "never"}{access.stale ? " — due" : ""}
+              <button className="ml-2 rounded-md border border-violet-300 bg-white px-1.5 py-0.5 text-[11px] font-semibold text-violet-800" onClick={() => void post("/api/admin/dfy/access-review").then(() => refresh())}>Log review ({access.operators.length} operator{access.operators.length === 1 ? "" : "s"})</button>
+            </span>
+          )}
           <span><b>Your load</b>: {data.operator.held} of {data.operator.cap} · per-operator cap, config <code>concurrent_cap</code></span>
           {!data.config.marketingGateVerifiedOn && (
             <span className="rounded-md border border-amber-200 bg-amber-50 px-2 py-0.5 text-amber-800">Gate 6 unverified — every applicant is refused until <code>marketing_gate_verified_on</code> is set</span>
@@ -257,7 +274,7 @@ export default function DfyQueuePage() {
             return (
               <div key={e.id} className="rounded-xl border border-gray-200 p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="font-medium text-gray-900">{who(m.member)} <span className="text-[11px] font-normal text-gray-400">{m.member.state ?? "state —"} · claim {e.claim_id.slice(0, 8)}… · {e.payer}</span></div>
+                  <div className="font-medium text-gray-900">{who(m.member)} <span className="text-[11px] font-normal text-gray-400">{m.member.state ?? "state —"} · claim {e.claim_id.slice(0, 8)}… · {e.payer}{e.sponsor_ref ? ` · ${e.sponsor_ref}` : ""}{e.operator_user_id ? "" : " · applied (unclaimed)"}</span></div>
                   <div className={runwayTone(m.runwayBusinessDays)}>{m.runwayBusinessDays === null ? "no dated window" : `${m.runwayBusinessDays} business days`}</div>
                 </div>
                 <div className="mt-3 grid gap-2 sm:grid-cols-5">
@@ -300,6 +317,43 @@ export default function DfyQueuePage() {
           })}
         </div>
       </section>
+
+      {sponsors && (
+        <section className="rounded-2xl border border-gray-200 bg-white p-5">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-500">Sponsors (employer-paid lane) — admin</h2>
+          <p className="mt-1 text-[12px] text-gray-500">Paper before code: a sponsor code works at intake only once the signed agreement date is on file and the sponsor is active. Reporting to a sponsor is aggregate-only — counts across at least {5} members, never a member or a claim.</p>
+          <div className="mt-3 overflow-x-auto">
+            <table className="w-full text-[13px]">
+              <thead><tr className="text-left text-[11px] uppercase tracking-wide text-gray-500"><th className="px-2 py-1.5">Code</th><th className="px-2 py-1.5">Name</th><th className="px-2 py-1.5">Agreement signed</th><th className="px-2 py-1.5">Active</th><th className="px-2 py-1.5"></th></tr></thead>
+              <tbody>
+                {sponsors.map((sp) => (
+                  <tr key={sp.id} className="border-t border-gray-100">
+                    <td className="px-2 py-1.5 font-mono">{sp.code}</td><td className="px-2 py-1.5">{sp.name}</td>
+                    <td className="px-2 py-1.5">{sp.agreement_signed_at ? fmtDate(sp.agreement_signed_at) : <span className="text-red-700">not signed — code unusable</span>}</td>
+                    <td className="px-2 py-1.5">{sp.active ? "yes" : "no"}</td>
+                    <td className="px-2 py-1.5"><button className="text-[12px] font-semibold text-blue-700 hover:underline" onClick={async () => { const t = await token(); const r = await fetch(`/api/admin/dfy/sponsors/${sp.id}/report`, { headers: { Authorization: `Bearer ${t}` } }); if (r.ok) setReport(((await r.json()) as { report: SponsorReport }).report); }}>Aggregate report</button></td>
+                  </tr>
+                ))}
+                {sponsors.length === 0 && <tr><td className="px-2 py-2 text-gray-500" colSpan={5}>No sponsors yet.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+          {report && (
+            <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50 p-3 text-[12.5px]">
+              <b>{report.name}</b> ({report.code}) · {report.suppressed ? `fewer than ${report.k} matters — suppressed` : `${report.total} matters`}
+              {!report.suppressed && report.byStatus && <span className="ml-2 text-gray-600">by status: {Object.entries(report.byStatus).map(([k, v]) => `${k} ${v}`).join(" · ")}</span>}
+              {!report.suppressed && report.byDetermination && Object.keys(report.byDetermination).length > 0 && <span className="ml-2 text-gray-600">by determination: {Object.entries(report.byDetermination).map(([k, v]) => `${k} ${v}`).join(" · ")}</span>}
+            </div>
+          )}
+          <div className="mt-3 grid gap-2 sm:grid-cols-5">
+            <input className="rounded-md border border-gray-300 px-2 py-1 text-[12.5px]" placeholder="code (e.g. ACME-2026)" value={sponsorForm.code} onChange={(e) => setSponsorForm({ ...sponsorForm, code: e.target.value })} />
+            <input className="rounded-md border border-gray-300 px-2 py-1 text-[12.5px]" placeholder="sponsor name" value={sponsorForm.name} onChange={(e) => setSponsorForm({ ...sponsorForm, name: e.target.value })} />
+            <input className="rounded-md border border-gray-300 px-2 py-1 text-[12.5px]" placeholder="contact email" value={sponsorForm.contactEmail} onChange={(e) => setSponsorForm({ ...sponsorForm, contactEmail: e.target.value })} />
+            <input className="rounded-md border border-gray-300 px-2 py-1 text-[12.5px]" type="date" value={sponsorForm.agreementSignedAt} onChange={(e) => setSponsorForm({ ...sponsorForm, agreementSignedAt: e.target.value })} title="agreement signed on" />
+            <button disabled={!sponsorForm.code || !sponsorForm.name} className="rounded-lg bg-gray-900 px-3 py-1 text-[12px] font-semibold text-white disabled:opacity-50" onClick={async () => { const r = await post("/api/admin/dfy/sponsors", { code: sponsorForm.code, name: sponsorForm.name, contactEmail: sponsorForm.contactEmail || undefined, agreementSignedAt: sponsorForm.agreementSignedAt || undefined, active: true }); if (!r.ok) setError(String(r.json.error ?? "Could not save sponsor")); else { setSponsorForm({ code: "", name: "", contactEmail: "", agreementSignedAt: "" }); refresh(); } }}>Save sponsor</button>
+          </div>
+        </section>
+      )}
 
       <section className="rounded-2xl border border-gray-200 bg-white p-5">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-500">Invite a member (pilot is invitation-only)</h2>

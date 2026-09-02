@@ -23,6 +23,8 @@
 --      paper stack (PR-DFY-2) fills in.
 --   4. consent_type ENUM gains the five DFY instrument values (PR-DFY-2) —
 --      the signing pipeline is the platform's own consent_events mechanic.
+--   4b. dfy_sponsors + dfy_engagements.sponsor_id — the sponsor lane's
+--      paper-before-code rule as a table (R17).
 --   5. The dfy_operator_v1 flag seed (OFF/global) with its config — every cap
 --      and window config-backed (Ship Gate G6): concurrent cap PER OPERATOR,
 --      the R18 refusal runway (business days), the D8 IP allowlist, and the
@@ -43,6 +45,8 @@
 -- ROLLBACK:
 --   (enum values cannot be dropped in PostgreSQL; they are inert if unused)
 --   DELETE FROM public.feature_flag_rules WHERE flag_key = 'dfy_operator_v1';
+--   ALTER TABLE public.dfy_engagements DROP COLUMN IF EXISTS sponsor_id;
+--   DROP TABLE IF EXISTS public.dfy_sponsors;
 --   DROP TABLE IF EXISTS public.dfy_engagements;
 --   ALTER TABLE public.users DROP COLUMN IF EXISTS is_operator;
 --   ALTER TABLE public.claim_case_events DROP CONSTRAINT IF EXISTS claim_case_events_actor_known;
@@ -109,6 +113,33 @@ REVOKE ALL ON TABLE public.dfy_engagements FROM anon, authenticated;
 
 COMMENT ON TABLE public.dfy_engagements IS
   'S330 (mig 235) — the DFY engagement grant: an overlay on an ordinary claim + dispute row. Server-only writes via operatorScoped / userScoped (B9); one live engagement per claim; payer seam (member_paid | sponsor_paid); operator_user_id = the holder (claim mechanic). RLS enabled with no policies = deny all non-service access.';
+
+-- The SPONSOR lane's paper-before-code rule made structural (R17: a signed
+-- sponsor agreement before any sponsor code exists): a sponsor code is accepted
+-- at intake ONLY when a dfy_sponsors row carries it with agreement_signed_at
+-- set and active = true. Sponsors are reference data (admin-curated), never
+-- member-owned; the engagement keeps sponsor_ref (the code as typed) AND the
+-- resolved sponsor_id. Reporting to a sponsor is AGGREGATE ONLY (>= 5 rule).
+CREATE TABLE IF NOT EXISTS public.dfy_sponsors (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  code text NOT NULL UNIQUE,
+  name text NOT NULL,
+  contact_email text,
+  agreement_signed_at timestamptz,
+  active boolean NOT NULL DEFAULT true,
+  terms jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE public.dfy_sponsors ENABLE ROW LEVEL SECURITY;
+
+REVOKE ALL ON TABLE public.dfy_sponsors FROM anon, authenticated;
+
+COMMENT ON TABLE public.dfy_sponsors IS
+  'S330 (mig 235) — DFY sponsors (employer / plan-sponsor payers, R17 Path C). Admin-curated reference data; a code is valid only with agreement_signed_at set + active. Sponsor reporting is aggregate-only (>= 5).';
+
+ALTER TABLE public.dfy_engagements ADD COLUMN IF NOT EXISTS sponsor_id uuid REFERENCES public.dfy_sponsors(id) ON DELETE SET NULL;
 
 -- The five DFY instruments are consent_events rows (the platform's own e-sign
 -- mechanic), and consent_events.consent_type is an ENUM — so the vocabulary

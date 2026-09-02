@@ -19,6 +19,7 @@ import { emitCaseEvents } from "@/lib/case/case-events";
 import { operatorErrorResponse } from "@/lib/dfy/operator-action";
 import { CAP_COUNTED_STATUSES } from "@/lib/dfy/engagement-state";
 import { sendDfyInvitationEmail } from "@/lib/email/dfy-emails";
+import { loadSponsorByCode, sponsorCodeUsable, normalizeSponsorCode } from "@/lib/dfy/sponsors";
 
 export async function POST(req: NextRequest) {
   const auth = await requireOperator(req);
@@ -36,11 +37,22 @@ export async function POST(req: NextRequest) {
   const payer: EngagementPayer = body.payer === "sponsor_paid" ? "sponsor_paid" : "member_paid";
   const sponsorRef = typeof body.sponsorRef === "string" && body.sponsorRef.trim() ? body.sponsorRef.trim().slice(0, 80) : null;
   if (payer === "sponsor_paid" && !sponsorRef) {
-    return NextResponse.json({ error: "A sponsor reference is required for a sponsor-paid matter", code: "sponsor_ref_missing" }, { status: 400 });
+    return NextResponse.json({ error: "A sponsor code is required for a sponsor-paid matter", code: "sponsor_ref_missing" }, { status: 400 });
   }
 
   try {
     // Resolve the member (users is not a user-owned-registered table).
+    // Paper before code (R17): a sponsor code is accepted only when a sponsor
+    // row carries it, active, with a signed agreement on file.
+    let sponsorId: string | null = null;
+    if (payer === "sponsor_paid") {
+      const sponsor = await loadSponsorByCode(supabase, sponsorRef!);
+      const usable = sponsorCodeUsable(sponsor);
+      if (!usable.ok) {
+        return NextResponse.json({ error: `Sponsor code ${normalizeSponsorCode(sponsorRef!)} cannot be used: ${usable.reason}`, code: "sponsor_code_unusable" }, { status: 409 });
+      }
+      sponsorId = sponsor!.id;
+    }
     // The inviter becomes the HOLDER: the designation the member signs names the
     // individual operator (the who-is-named seam), so the matter must have one
     // before the member signs. Cap-checked like any claim.
@@ -80,7 +92,8 @@ export async function POST(req: NextRequest) {
     const { engagement, conflict } = await createEngagement(supabase, m.id, {
       claim_id: c.id,
       payer,
-      sponsor_ref: sponsorRef,
+      sponsor_ref: sponsorRef ? normalizeSponsorCode(sponsorRef) : null,
+      sponsor_id: sponsorId,
       member_state: ((profile.data as { state?: string | null } | null)?.state ?? null),
       plan_classification: classification,
       metadata: { invitedBy: { operatorUserId, role }, invitedAt: new Date().toISOString() },

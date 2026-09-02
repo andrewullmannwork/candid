@@ -138,6 +138,8 @@ export const CASE_EVENT_KINDS = [
   "dfy_packet_prepared",
   "dfy_determination_recorded",
   "dfy_audit_logged",
+  "dfy_channel_observed",
+  "dfy_fee_refunded",
 ] as const;
 
 export type CaseEventKind = (typeof CASE_EVENT_KINDS)[number];

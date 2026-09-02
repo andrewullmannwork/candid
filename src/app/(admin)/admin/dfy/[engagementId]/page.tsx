@@ -23,7 +23,7 @@ interface Gate { id: string; label: string; pass: boolean; reason: string | null
 interface DfyEvent { kind: string; occurredAt: string; disputeId: string | null; payload: Record<string, unknown> }
 interface MatterPayload {
   matter: {
-    engagement: { id: string; claim_id: string; status: string; payer: string; sponsor_ref: string | null; operator_user_id: string | null; consent_event_ids: Record<string, unknown>; intake: { decision?: { eligible: boolean; gates: Gate[]; declineReason: string | null } } };
+    engagement: { id: string; claim_id: string; status: string; payer: string; sponsor_ref: string | null; operator_user_id: string | null; consent_event_ids: Record<string, unknown>; intake: { decision?: { eligible: boolean; gates: Gate[]; declineReason: string | null } }; metadata: { payment?: { status?: string; amountCents?: number; refund?: { id: string } } } };
     member: UserDisplay & { state: string | null };
     holder: UserDisplay | null;
     composition: { groundSelected: boolean; letterAdopted: boolean };
@@ -36,6 +36,9 @@ interface MatterPayload {
   canAct: boolean;
   isHolder: boolean;
   config: { refusalRunwayBusinessDays: number };
+  /** The forums the member could file with (the SAME router the rail uses) — the packet's cover names the one the operator picks. */
+  forums: Array<{ id: string; short: string; menuLabel: string; role: string }>;
+  insurer: { id: string; name: string } | null;
 }
 
 const ACT_LABEL: Record<string, string> = {
@@ -90,6 +93,8 @@ export default function DfyMatterPage({ params }: { params: Promise<{ engagement
   const [offerDollars, setOfferDollars] = useState("");
   const [determination, setDetermination] = useState<"approved" | "denied" | "partial">("denied");
   const [closeReason, setCloseReason] = useState("");
+  const [forumId, setForumId] = useState("");
+  const [chan, setChan] = useState({ submissionChannel: "", wetInkRequired: false, designationFormRequired: false, formUrl: "", faxNumber: "", note: "" });
 
   const token = useCallback(async () => (user ? user.firebaseUser.getIdToken() : null), [user]);
   const [reloadKey, setReloadKey] = useState(0);
@@ -201,7 +206,11 @@ export default function DfyMatterPage({ params }: { params: Promise<{ engagement
     if (s.kind === "next-move") {
       return (
         <div className="mt-2 flex flex-wrap items-center gap-2">
-          <button className={btn} disabled={!canAct || busy} onClick={() => void act("dfy_packet_prepared", {}, disputeId)}>Prepare packet</button>
+          <select className="rounded-md border border-gray-300 bg-white px-2 py-1 text-[12px]" value={forumId} onChange={(ev) => setForumId(ev.target.value)}>
+            <option value="">forum…</option>
+            {(data?.forums ?? []).map((f) => <option key={f.id} value={f.id}>{f.menuLabel}</option>)}
+          </select>
+          <button className={btn} disabled={!canAct || busy || !forumId} onClick={() => void act("dfy_packet_prepared", { forumId }, disputeId)}>Prepare packet</button>
           <span className="text-[11.5px] text-gray-600"><b>The MEMBER files it</b> at the state level: Candid prepares the finished DMHC packet; the member signs and submits it.</span>
           {doneBy(disputeId, ["dfy_packet_prepared"])}
         </div>
@@ -273,8 +282,25 @@ export default function DfyMatterPage({ params }: { params: Promise<{ engagement
             <button className={sec} disabled={busy} onClick={() => void post("transition", { to: "terminated", reason: closeReason })}>Terminate</button>
           </>
         )}
+        {["terminated", "converted", "completed"].includes(e.status) && e.metadata?.payment?.status === "succeeded" && !e.metadata.payment.refund && (
+          <button className={sec} disabled={busy} onClick={() => void post("refund", { basis: e.status === "converted" ? "converted_before_transmit" : "operator_discretion" })}>Refund ${((e.metadata.payment.amountCents ?? 0) / 100).toFixed(2)}</button>
+        )}
         <span className="text-[11.5px] text-gray-500">every button on this page writes a tagged operator event to the same timeline the member sees</span>
       </div>
+
+      <section className="rounded-2xl border border-gray-200 bg-white p-4">
+        <h2 className="text-[12px] font-semibold uppercase tracking-wide text-gray-500">What this plan actually required — feeds the insurer-intelligence queue</h2>
+        <p className="mt-1 text-[12px] text-gray-500">{data.insurer ? `Insurer: ${data.insurer.name}.` : "No insurer on the pinned plan."} A verified submission channel, a designation-form requirement, or a corrected appeals address goes through the same queues member corrections use — never a new pipeline.</p>
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-[12px]">
+          <select className="rounded-md border border-gray-300 bg-white px-2 py-1" value={chan.submissionChannel} onChange={(ev) => setChan({ ...chan, submissionChannel: ev.target.value })}><option value="">channel…</option><option value="mail">mail</option><option value="fax">fax</option><option value="portal">portal</option><option value="email">email</option></select>
+          <label className="flex items-center gap-1"><input type="checkbox" checked={chan.designationFormRequired} onChange={(ev) => setChan({ ...chan, designationFormRequired: ev.target.checked })} /> plan&apos;s own designation form required</label>
+          <label className="flex items-center gap-1"><input type="checkbox" checked={chan.wetInkRequired} onChange={(ev) => setChan({ ...chan, wetInkRequired: ev.target.checked })} /> wet-ink signature required</label>
+          <input className={inp} placeholder="form URL" value={chan.formUrl} onChange={(ev) => setChan({ ...chan, formUrl: ev.target.value })} />
+          <input className={inp} placeholder="fax #" value={chan.faxNumber} onChange={(ev) => setChan({ ...chan, faxNumber: ev.target.value })} />
+          <input className="rounded-md border border-gray-300 px-2 py-1 text-[12px] w-64" placeholder="note (facts only)" value={chan.note} onChange={(ev) => setChan({ ...chan, note: ev.target.value })} />
+          <button className={btn} disabled={!canAct || busy || !data.insurer} onClick={() => void act("dfy_channel_observed", { insurerId: data.insurer?.id, ...chan })}>Record observation</button>
+        </div>
+      </section>
 
       <section className="rounded-2xl border border-gray-200 bg-white p-4">
         <h2 className="text-[12px] font-semibold uppercase tracking-wide text-gray-500">Operator log</h2>

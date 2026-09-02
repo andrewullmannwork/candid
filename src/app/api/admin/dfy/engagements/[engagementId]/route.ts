@@ -13,6 +13,7 @@ import { loadCaseTimelinePayload } from "@/lib/case/load-case-timeline";
 import { loadMatterSummary } from "@/lib/dfy/matter";
 import { ENGAGEMENT_STATUSES } from "@/lib/dfy/engagement-state";
 import { operatorErrorResponse } from "@/lib/dfy/operator-action";
+import { packetForumsFor } from "@/lib/dfy/packet";
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ engagementId: string }> }) {
   const auth = await requireOperator(req);
@@ -25,13 +26,23 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ enga
       requireHolder: false,
     });
     const e = scope.engagement;
-    const [matter, timeline] = await Promise.all([
+    const [matter, timeline, insurer] = await Promise.all([
       loadMatterSummary(supabase, e),
       loadCaseTimelinePayload(supabase, e.user_id, e.claim_id),
+      (async () => {
+        const { data: c } = await scope.table("claims").select("insurance_plan_id").maybeSingle();
+        const planId = (c as { insurance_plan_id?: string | null } | null)?.insurance_plan_id ?? null;
+        if (!planId) return null;
+        const { data: plan } = await scope.table("insurance_plans").select("insurer_id, insurer_name").eq("id", planId).maybeSingle();
+        const p = plan as { insurer_id?: string | null; insurer_name?: string | null } | null;
+        return p?.insurer_id ? { id: p.insurer_id, name: p.insurer_name ?? "the insurer" } : null;
+      })(),
     ]);
     return NextResponse.json({
       matter,
       timeline,
+      forums: packetForumsFor(e).map((f) => ({ id: f.id, short: f.short, menuLabel: f.menuLabel, role: f.role })),
+      insurer,
       canAct: e.status === "active" && e.operator_user_id === operatorUserId,
       isHolder: e.operator_user_id === operatorUserId,
       config: { refusalRunwayBusinessDays: config.refusalRunwayBusinessDays },

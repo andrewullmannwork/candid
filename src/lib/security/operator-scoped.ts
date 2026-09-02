@@ -38,6 +38,8 @@ export interface DfyEngagementRow {
   lane: "insurer";
   payer: EngagementPayer;
   sponsor_ref: string | null;
+  /** The resolved dfy_sponsors row (paper before code); sponsor_ref keeps the code as typed. */
+  sponsor_id: string | null;
   operator_user_id: string | null;
   member_state: string | null;
   plan_classification: Record<string, unknown> | null;
@@ -53,7 +55,7 @@ export interface DfyEngagementRow {
 }
 
 export const DFY_ENGAGEMENT_COLUMNS =
-  "id, user_id, claim_id, status, lane, payer, sponsor_ref, operator_user_id, member_state, plan_classification, scope, intake, consent_event_ids, metadata, signed_at, activated_at, closed_at, created_at, updated_at";
+  "id, user_id, claim_id, status, lane, payer, sponsor_ref, sponsor_id, operator_user_id, member_state, plan_classification, scope, intake, consent_event_ids, metadata, signed_at, activated_at, closed_at, created_at, updated_at";
 
 export class OperatorAccessError extends Error {
   readonly status: 401 | 403 | 404 | 409;
@@ -122,6 +124,7 @@ export function parseEngagementRow(raw: unknown): DfyEngagementRow | null {
     lane: "insurer",
     payer,
     sponsor_ref: typeof r.sponsor_ref === "string" ? r.sponsor_ref : null,
+    sponsor_id: typeof r.sponsor_id === "string" ? r.sponsor_id : null,
     operator_user_id: typeof r.operator_user_id === "string" ? r.operator_user_id : null,
     member_state: typeof r.member_state === "string" ? r.member_state : null,
     plan_classification: r.plan_classification && typeof r.plan_classification === "object" ? (r.plan_classification as Record<string, unknown>) : null,
@@ -165,6 +168,26 @@ export async function listEngagementsForOperators(
     .select(DFY_ENGAGEMENT_COLUMNS)
     .order("created_at", { ascending: true });
   return ((data ?? []) as unknown[]).map(parseEngagementRow).filter((r): r is DfyEngagementRow => r !== null);
+}
+
+/**
+ * Sponsor report rows — (status, determination) ONLY, for the k-anonymous
+ * aggregate a sponsor may see. Deliberately NOT the engagement row: no member
+ * id, no claim id, no dates. Admin-only at the route; the builder folds any
+ * cell under k into "other" (sponsors.ts).
+ */
+export async function listSponsorReportRows(
+  supabase: SupabaseClient,
+  sponsorId: string,
+): Promise<Array<{ status: string; determination: string | null }>> {
+  const { data } = await supabase
+    .from("dfy_engagements")
+    .select("status, metadata")
+    .eq("sponsor_id", assertId(sponsorId, "sponsorId"));
+  return ((data ?? []) as Array<{ status: string; metadata: Record<string, unknown> | null }>).map((r) => ({
+    status: r.status,
+    determination: ((r.metadata?.determination as { determination?: string } | undefined)?.determination) ?? null,
+  }));
 }
 
 /** Live matters counted against the per-operator cap (signed + active, held by this operator). */
@@ -354,6 +377,7 @@ export async function createEngagement(
     claim_id: string;
     payer: EngagementPayer;
     sponsor_ref: string | null;
+    sponsor_id?: string | null;
     member_state: string | null;
     plan_classification: Record<string, unknown> | null;
     metadata?: Record<string, unknown>;
@@ -367,6 +391,7 @@ export async function createEngagement(
       lane: "insurer",
       payer: row.payer,
       sponsor_ref: row.sponsor_ref,
+      sponsor_id: row.sponsor_id ?? null,
       member_state: row.member_state,
       plan_classification: row.plan_classification,
       metadata: row.metadata ?? {},

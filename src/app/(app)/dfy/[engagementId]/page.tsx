@@ -118,6 +118,18 @@ export default function DfySigningPage({ params }: { params: Promise<{ engagemen
     return () => { cancelled = true; };
   }, [user, params, reloadKey]);
 
+  async function cancel() {
+    if (!engagementId || !user) return;
+    if (!window.confirm("End this engagement? Within three business days of signing, any fee you paid is refunded in full.")) return;
+    setBusy(true); setError(null);
+    const t = await token();
+    const res = await fetch(`/api/dfy/engagements/${engagementId}/cancel`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` }, body: JSON.stringify({}) });
+    const json = (await res.json().catch(() => ({}))) as { error?: string };
+    setBusy(false);
+    if (!res.ok) { setError(json.error || "Could not cancel"); return; }
+    refresh();
+  }
+
   async function sign(type: string) {
     if (!engagementId) return;
     const t = await token();
@@ -219,12 +231,26 @@ export default function DfySigningPage({ params }: { params: Promise<{ engagemen
                     </div>
                   )}
                   {!inst.signed && !data.canSign && <p className="mt-4 text-sm text-gray-500">Signing opens once Candid confirms it can take this matter on.</p>}
+                  {inst.type !== "health_data_upload" && engagementId && (
+                    <p className="mt-3 text-xs text-gray-500">
+                      If your plan requires a handwritten signature on this document,{" "}
+                      <a href={`/api/dfy/engagements/${engagementId}/instrument?type=${inst.type}`} target="_blank" rel="noopener noreferrer" className="text-blue-700 hover:underline">print the form to sign by hand</a>
+                      {" "}and upload the signed pages through <Link href="/upload" className="text-blue-700 hover:underline">Upload</Link>. Your typed signature here stays on file either way.
+                    </p>
+                  )}
                 </div>
               )}
             </li>
           );
         })}
       </ol>
+      {["eligibility_pending", "signed", "active"].includes(e.status) && (
+        <div className="rounded-xl border border-gray-200 bg-white p-4 text-sm">
+          <div className="font-semibold text-gray-900">Changed your mind?</div>
+          <p className="mt-1 text-gray-600">You can end this engagement at any time. Within three business days of signing, any fee you paid is refunded in full; after that, the refund terms in your fee agreement apply. Every free Candid tool stays yours.</p>
+          <button disabled={busy} onClick={() => void cancel()} className="mt-2 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-semibold text-gray-700 disabled:opacity-50">End this engagement</button>
+        </div>
+      )}
       <p className="text-xs text-gray-400">This product is not a substitute for the advice of an attorney.</p>
     </div>
   );

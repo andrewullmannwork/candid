@@ -44,14 +44,15 @@ export interface InstrumentSignature {
 
 export interface InstrumentPdfProps {
   instrument: RenderedInstrument;
-  signature: InstrumentSignature;
+  /** null = the UNSIGNED print form (wet-ink path): handwritten signature + date lines. */
+  signature: InstrumentSignature | null;
   /** The counterparty line for the designation ("Accepted: Airgetlam Labs LLC, by …") — null for the others. */
   counterparty: string | null;
   engagementId: string;
 }
 
 export function InstrumentPdf({ instrument, signature, counterparty, engagementId }: InstrumentPdfProps) {
-  const signedDate = new Date(signature.signedAt).toLocaleString("en-US", { year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short" });
+  const signedDate = signature ? new Date(signature.signedAt).toLocaleString("en-US", { year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short" }) : "";
   return (
     <Document title={instrument.title}>
       <Page size="LETTER" style={styles.page}>
@@ -65,8 +66,17 @@ export function InstrumentPdf({ instrument, signature, counterparty, engagementI
         </View>
         <Text style={styles.eyebrow}>Candid · Done-for-you appeal execution</Text>
         <Text style={styles.title}>{instrument.title}</Text>
-        <Text style={styles.sub}>Version {instrument.version} · effective {instrument.effectiveDate} · signed instance</Text>
+        <Text style={styles.sub}>Version {instrument.version} · effective {instrument.effectiveDate} · {signature ? "signed instance" : "print form — sign by hand"}</Text>
         <Text style={instrument.authorizationForm ? styles.bodyAuthorization : styles.body}>{instrument.text}</Text>
+        {!signature ? (
+          <View style={styles.sig} wrap={false}>
+            <Text style={styles.sigTitle}>Signature (by hand)</Text>
+            <View style={styles.sigRow}><Text style={styles.sigLabel}>Signature</Text><Text style={styles.sigValue}>________________________________________</Text></View>
+            <View style={styles.sigRow}><Text style={styles.sigLabel}>Printed name</Text><Text style={styles.sigValue}>________________________________________</Text></View>
+            <View style={styles.sigRow}><Text style={styles.sigLabel}>Date</Text><Text style={styles.sigValue}>____________________</Text></View>
+            <Text style={styles.counter}>Sign and date by hand, then upload the signed pages to your Candid documents. Your typed acceptance on the Candid page remains on file as well.</Text>
+          </View>
+        ) : (
         <View style={styles.sig} wrap={false}>
           <Text style={styles.sigTitle}>Electronic signature</Text>
           <View style={styles.sigRow}><Text style={styles.sigLabel}>Signed by (typed)</Text><Text style={styles.sigValue}>{signature.signedName}</Text></View>
@@ -76,6 +86,7 @@ export function InstrumentPdf({ instrument, signature, counterparty, engagementI
           <View style={styles.sigRow}><Text style={styles.sigLabel}>Captured from</Text><Text style={styles.sigValue}>{signature.ip ?? "—"}{signature.userAgent ? ` · ${signature.userAgent.slice(0, 80)}` : ""}</Text></View>
           {counterparty ? <Text style={styles.counter}>{counterparty}</Text> : null}
         </View>
+        )}
       </Page>
     </Document>
   );

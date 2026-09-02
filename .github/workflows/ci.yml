@@ -234,6 +234,12 @@ jobs:
         # elements, the designation's execution-only limits + member-files
         # clause, the who-is-named variant, the sponsor data wall).
         run: npx tsx scripts/calibration/fixtures/legal/dfy-paper.ts
+      - name: DFY lane rules — sponsors, fees, SLA, access review (S330)
+        # Paper before code (a sponsor code needs a signed, active agreement);
+        # the sponsor report suppresses below the floor and folds sub-floor
+        # cells; the three-business-day cancel window and what is refundable;
+        # which live matters the daily SLA cron flags; the weekly access review.
+        run: npx tsx scripts/calibration/fixtures/legal/dfy-lane-rules.ts
       - name: Citation party split — strip provider, member-adopt insurer (S326)
         # Rule 3: scoped provider letters emit ZERO citation-shaped strings;
         # scoped insurer letters cite only member-adopted authorities and fall

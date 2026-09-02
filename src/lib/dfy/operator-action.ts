@@ -70,6 +70,7 @@ export const OPERATOR_ACT_KINDS = [
   "dfy_packet_prepared",
   "dfy_determination_recorded",
   "dfy_audit_logged",
+  "dfy_channel_observed",
 ] as const satisfies readonly CaseEventKind[];
 
 export type OperatorActKind = (typeof OPERATOR_ACT_KINDS)[number];

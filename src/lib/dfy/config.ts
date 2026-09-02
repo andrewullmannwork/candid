@@ -12,6 +12,9 @@
  *
  *   fee_cents                      member-paid fee (0 = free pilot; 500 = $5 on counsel signature)
  *   designation_named_party        {erisa_plan, plan_internal_grievance}: individual | entity
+ *   sla_days                       operator SLA — days without an act before the cron flags a matter
+ *   access_review                  {at, by} — the last D8 weekly access review (written by the review route)
+ *   entry_point_enabled            the member-initiated entry point (off until Gate 6 + counsel)
  *
  * Tune with:
  *   UPDATE feature_flag_rules SET config = config || '{"concurrent_cap": 8}'
@@ -38,6 +41,14 @@ export interface DfyConfig {
    *  designation per channel. DMHC's 20-160 has one "person assisting" field;
    *  federal channels appear to permit the entity. Individual by default. */
   designationNamedParty: { erisa_plan: "individual" | "entity"; plan_internal_grievance: "individual" | "entity" };
+  /** Operator SLA: an active matter with no operator act for this many days,
+   *  or with runway under the refusal threshold, is flagged on the daily cron. */
+  slaDays: number;
+  /** D8 weekly access review — the last review, logged by an admin. */
+  accessReview: { at: string | null; by: string | null };
+  /** The member-initiated entry point (/appeal-service + the hero CTA). Off
+   *  until Gate 6 is attested and counsel signs — the pilot is invitation-only. */
+  entryPointEnabled: boolean;
 }
 
 export const DFY_CONFIG_DEFAULTS: DfyConfig = Object.freeze<DfyConfig>({
@@ -48,6 +59,9 @@ export const DFY_CONFIG_DEFAULTS: DfyConfig = Object.freeze<DfyConfig>({
   marketingGateVerifiedOn: null,
   feeCents: 0,
   designationNamedParty: { erisa_plan: "individual", plan_internal_grievance: "individual" },
+  slaDays: 3,
+  accessReview: { at: null, by: null },
+  entryPointEnabled: false,
 });
 
 function posInt(v: unknown, fallback: number): number {
@@ -83,6 +97,12 @@ export function parseDfyConfig(raw: unknown): DfyConfig {
       erisa_plan: namedParty((c.designation_named_party as Record<string, unknown> | undefined)?.erisa_plan, "individual"),
       plan_internal_grievance: namedParty((c.designation_named_party as Record<string, unknown> | undefined)?.plan_internal_grievance, "individual"),
     },
+    slaDays: posInt(c.sla_days, DFY_CONFIG_DEFAULTS.slaDays),
+    accessReview: {
+      at: typeof (c.access_review as Record<string, unknown> | undefined)?.at === "string" ? ((c.access_review as Record<string, unknown>).at as string) : null,
+      by: typeof (c.access_review as Record<string, unknown> | undefined)?.by === "string" ? ((c.access_review as Record<string, unknown>).by as string) : null,
+    },
+    entryPointEnabled: c.entry_point_enabled === true,
   };
 }
 
@@ -109,4 +129,33 @@ export async function readDfyState(supabase?: SupabaseClient): Promise<DfyState>
 export function ipAdmitted(ip: string | null, config: Pick<DfyConfig, "ipAllowlist" | "ipAllowlistEnforced">): boolean {
   if (!config.ipAllowlistEnforced || config.ipAllowlist.length === 0) return true;
   return ip !== null && config.ipAllowlist.includes(ip);
+}
+
+/** Days since the last access review; null when never reviewed. */
+export function accessReviewAgeDays(config: Pick<DfyConfig, "accessReview">, now: Date = new Date()): number | null {
+  if (!config.accessReview.at) return null;
+  const at = new Date(config.accessReview.at).getTime();
+  if (Number.isNaN(at)) return null;
+  return Math.floor((now.getTime() - at) / 86_400_000);
+}
+
+/** The D8 review is WEEKLY: stale when older than 7 days or never done. */
+export function accessReviewStale(config: Pick<DfyConfig, "accessReview">, now: Date = new Date()): boolean {
+  const age = accessReviewAgeDays(config, now);
+  return age === null || age > 7;
+}
+
+/** Write one config key back (read-merge-write on the flag row's JSONB). */
+export async function writeDfyConfigKey(
+  supabase: SupabaseClient,
+  key: string,
+  value: unknown,
+): Promise<void> {
+  const { data } = await supabase.from("feature_flag_rules").select("config").eq("flag_key", DFY_FLAG_KEY).maybeSingle();
+  const current = ((data as { config?: Record<string, unknown> } | null)?.config ?? {}) as Record<string, unknown>;
+  const { error } = await supabase
+    .from("feature_flag_rules")
+    .update({ config: { ...current, [key]: value }, updated_at: new Date().toISOString() })
+    .eq("flag_key", DFY_FLAG_KEY);
+  if (error) throw error;
 }

@@ -21,7 +21,7 @@ export async function GET(req: NextRequest) {
   let query = supabase
     .from("users")
     .select(`
-      id, email, display_name, is_admin, firebase_uid, created_at,
+      id, email, display_name, is_admin, is_operator, firebase_uid, created_at,
       profiles (insurer, plan_type, state, primary_concern),
       stripe_customers (stripe_customer_id, subscription_status, subscription_tier, current_period_end),
       documents (id, file_name, doc_type, status, created_at),

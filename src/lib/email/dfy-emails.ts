@@ -80,3 +80,24 @@ export async function sendDfyMatterUpdateEmail(params: {
     console.error("[dfy-emails] matter-update send failed (fail-soft):", err);
   }
 }
+
+/** The daily SLA nudge to a holder — facts and links, nothing else. */
+export async function sendDfyOperatorSlaEmail(params: {
+  to: string;
+  items: Array<{ engagementId: string; reasons: string[] }>;
+}): Promise<void> {
+  const resend = getResend();
+  if (!resend) return;
+  const rows = params.items.map((i) => `• ${APP_URL}/admin/dfy/${i.engagementId} — ${i.reasons.join("; ")}`);
+  try {
+    await resend.emails.send({
+      from: FROM,
+      to: params.to,
+      subject: `DFY: ${params.items.length} matter(s) need attention today`,
+      text: `Matters you hold that breach the operator SLA:\n\n${rows.join("\n")}\n\n— Candid ops`,
+      html: `<p>Matters you hold that breach the operator SLA:</p><ul>${params.items.map((i) => `<li><a href="${APP_URL}/admin/dfy/${i.engagementId}">${i.engagementId.slice(0, 8)}</a> — ${esc(i.reasons.join("; "))}</li>`).join("")}</ul><p>— Candid ops</p>`,
+    });
+  } catch (err) {
+    console.error("[dfy-emails] SLA send failed (fail-soft):", err);
+  }
+}

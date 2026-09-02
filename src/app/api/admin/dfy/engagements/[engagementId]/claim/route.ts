@@ -15,6 +15,8 @@ import { logAdminAction } from "@/lib/admin/audit-log";
 import { operatorScoped, claimEngagement, countHeldMatters } from "@/lib/security/operator-scoped";
 import { emitOperatorEvent, operatorErrorResponse } from "@/lib/dfy/operator-action";
 import { CAP_COUNTED_STATUSES } from "@/lib/dfy/engagement-state";
+import { sendDfyInvitationEmail } from "@/lib/email/dfy-emails";
+import { signedInstruments } from "@/lib/dfy/paper";
 
 const LIVE = ["eligibility_pending", "signed", "active"] as const;
 
@@ -49,6 +51,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ eng
       return NextResponse.json({ error: "Claim did not land — someone else claimed first", code: "claim_race" }, { status: 409 });
     }
     await emitOperatorEvent(supabase, { ...scope, engagement: updated }, "dfy_claimed");
+    // A member who APPLIED (no inviter) and screened eligible can sign only once a
+    // holder exists — the designation names that person. Point them to their page now.
+    const decision = (updated.intake as { decision?: { eligible?: boolean } }).decision;
+    if (updated.status === "eligibility_pending" && decision?.eligible === true && Object.keys(signedInstruments(updated.consent_event_ids)).length === 0) {
+      const { data: m } = await supabase.from("users").select("email, display_name").eq("id", updated.user_id).maybeSingle();
+      const mr = m as { email?: string; display_name?: string | null } | null;
+      if (mr?.email) void sendDfyInvitationEmail({ to: mr.email, firstName: mr.display_name?.trim().split(/\s+/)[0] ?? null, engagementId: updated.id });
+    }
     await logAdminAction({
       adminUserId: operatorUserId,
       adminEmail: operatorEmail,

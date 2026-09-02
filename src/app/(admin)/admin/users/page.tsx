@@ -8,6 +8,7 @@ interface UserDetail {
   email: string;
   display_name: string | null;
   is_admin: boolean;
+  is_operator?: boolean;
   firebase_uid: string;
   created_at: string;
   profiles: {
@@ -171,6 +172,11 @@ export default function AdminUsersPage() {
                           Admin
                         </span>
                       )}
+                      {u.is_operator && (
+                        <span className="ml-2 px-1.5 py-0.5 bg-violet-100 text-violet-700 text-xs rounded">
+                          Operator
+                        </span>
+                      )}
                     </div>
                     <div className="flex items-center gap-2 text-xs">
                       {stripe && (
@@ -306,6 +312,21 @@ export default function AdminUsersPage() {
                         </div>
                       </div>
                     )}
+
+                    {/* S330 — the DFY operator role (admits to /admin/dfy only; never touches admin) */}
+                    <div className="pt-3 border-t">
+                      <button
+                        onClick={async () => {
+                          if (!adminUser) return;
+                          const t = await adminUser.firebaseUser.getIdToken();
+                          const res = await fetch(`/api/admin/users/${u.id}/operator`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` }, body: JSON.stringify({ isOperator: !u.is_operator }) });
+                          if (res.ok) setUsers((prev) => prev.map((x) => (x.id === u.id ? { ...x, is_operator: !u.is_operator } : x)));
+                        }}
+                        className="px-4 py-2 bg-violet-700 text-white text-xs rounded-lg hover:bg-violet-800"
+                      >
+                        {u.is_operator ? "Revoke operator role" : "Grant operator role (DFY section only)"}
+                      </button>
+                    </div>
 
                     {/* Delete user */}
                     {!u.is_admin && (
