@@ -40,12 +40,12 @@ export async function sendDfyInvitationEmail(params: {
       to: params.to,
       subject: "We can take your appeal from here",
       html: `<p>Hi ${name},</p>
-<p>You built an appeal in Candid. Want us to handle the rest? We'll prepare it, submit it to your plan as your authorized representative, and follow up until you have an answer.</p>
-<p>To start, read and sign five short documents.</p>
-<p><a href="${url}">Review and sign</a></p>
-<p>Nothing happens until you sign. You can always file on your own at no cost, and every free Candid tool stays yours.</p>
+<p>You built an appeal in Candid. Want us to handle the rest? We'll prepare it, submit it as your authorized representative, and follow up until you have an answer.</p>
+<p>Click here to sign up.</p>
+<p><a href="${url}">Sign up</a></p>
+<p>You can always file on your own at no cost using our free Candid tools.</p>
 <p>— Candid</p>`,
-      text: `Hi ${name},\n\nYou built an appeal in Candid. Want us to handle the rest? We'll prepare it, submit it to your plan as your authorized representative, and follow up until you have an answer.\n\nTo start, read and sign five short documents:\n${url}\n\nNothing happens until you sign. You can always file on your own at no cost, and every free Candid tool stays yours.\n\n— Candid`,
+      text: `Hi ${name},\n\nYou built an appeal in Candid. Want us to handle the rest? We'll prepare it, submit it as your authorized representative, and follow up until you have an answer.\n\nClick here to sign up:\n${url}\n\nYou can always file on your own at no cost using our free Candid tools.\n\n— Candid`,
     });
   } catch (err) {
     console.error("[dfy-emails] invitation send failed (fail-soft):", err);

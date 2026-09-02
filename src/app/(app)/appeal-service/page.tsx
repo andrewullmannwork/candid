@@ -73,10 +73,10 @@ export default function AppealServicePage() {
       <div>
         <div className="text-[11px] font-semibold uppercase tracking-wider text-blue-600">Done for you</div>
         <h1 className="mt-1 text-2xl font-bold text-gray-900">Your appeal, handled.</h1>
-        <p className="mt-2 text-sm text-gray-600">You&apos;ve built your appeal. We take it from here.</p>
+        <p className="mt-2 text-sm text-gray-600">You built your appeal. We take it from here.</p>
         <ul className="mt-2 space-y-1 text-sm text-gray-600">
-          <li>• We prepare it and submit it to your plan as your authorized representative.</li>
-          <li>• We follow up until you have a decision, and keep you posted.</li>
+          <li>• We prepare and submit your appeal as your authorized representative.</li>
+          <li>• We work it until there is a decision and keep you posted the whole time.</li>
           <li>• If it goes to the state, we prepare the packet. You file it.</li>
         </ul>
         <p className="mt-2 text-sm font-semibold text-gray-900">Free during our California pilot. Limited spots.</p>

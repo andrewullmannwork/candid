@@ -161,7 +161,7 @@ export default function DfySigningPage({ params }: { params: Promise<{ engagemen
         <div className="text-[11px] font-semibold uppercase tracking-wider text-blue-600">Done for you</div>
         <h1 className="mt-1 text-2xl font-bold text-gray-900">Your appeal, handled.</h1>
         <p className="mt-2 text-sm text-gray-600">
-          You built this appeal. To have us submit it, follow up, and track its deadlines as your authorized representative, read and sign the {total} documents below, each one separately. Nothing happens until you do. You can always file on your own at no cost, and every free Candid tool stays yours.
+          To have us submit your appeal, follow up, and track its deadlines as your authorized representative, read and sign the {total} documents below. Nothing happens until you do. You can always file on your own at no cost using Candid&apos;s free tools.
         </p>
         <p className="mt-2 text-xs text-gray-500"><Link href={`/claim?claim=${e.claimId}`} className="text-blue-700 hover:underline">← Back to your claim</Link></p>
       </div>
@@ -174,7 +174,7 @@ export default function DfySigningPage({ params }: { params: Promise<{ engagemen
         </div>
       )}
       {e.status === "eligibility_pending" && !data.screened && (
-        <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700">We&apos;re confirming we can take this one on. Signing opens once that clears.</div>
+        <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700">We&apos;re confirming we can take this one on. Signing opens once approved.</div>
       )}
 
       {(e.status === "signed" || e.status === "active" || done > 0) && (
@@ -190,7 +190,7 @@ export default function DfySigningPage({ params }: { params: Promise<{ engagemen
       {data.payment.required && engagementId && (
         <section className="rounded-2xl border border-gray-200 bg-white p-5">
           <h2 className="text-base font-semibold text-gray-900">The fee</h2>
-          <p className="mt-1 text-sm text-gray-600">${(data.payment.feeCents / 100).toFixed(2)}, once, for this appeal only, as your fee agreement says. The appeal itself is free. This pays for our preparation and submission work.</p>
+          <p className="mt-1 text-sm text-gray-600">${(data.payment.feeCents / 100).toFixed(2)}, one time, for this claim only. The appeal itself is free. This fee pays for our preparation and submission work.</p>
           <div className="mt-3"><PayStep engagementId={engagementId} token={token} onPaid={() => setTimeout(refresh, 1500)} /></div>
         </section>
       )}
