@@ -16,6 +16,7 @@ import { userScoped } from "@/lib/security/user-scoped";
 import { updateDisputeOutcome, getUserDisputes } from "@/lib/disputes/persist";
 import { isOutcomeDetail } from "@/lib/disputes/outcome-taxonomy";
 import { emitCaseEvents, type CaseEventInput } from "@/lib/case/case-events";
+import { commitDisputeOutcome, OUTCOME_METADATA_KEYS } from "@/lib/disputes/commit-outcome";
 import { bankSentVersion, stampUnsent } from "@/lib/disputes/sent-versions";
 import {
   resolveDisputeReadiness,
@@ -234,25 +235,22 @@ export async function POST(req: NextRequest) {
     // fine-grained outcome is the launch record + the seed for the tracker-M
     // auto-advance state machine. Merge (never clobber sibling metadata). Non-
     // fatal — the status write already succeeded and is the source of truth.
+    // S331 — the metadata trio, provenance and follow-up quieting now live in
+    // ONE writer shared with the DFY operator path (see commit-outcome). The
+    // coarse status above stays here: it can be `won_on_escalation`, which the
+    // taxonomy mapper never returns. The returned event is emitted below, in
+    // the same batch as this route's own.
+    let outcomeEvent: CaseEventInput | null = null;
     if (outcomeDetail && isOutcomeDetail(outcomeDetail)) {
-      try {
-        const baseMetadata = (existing.metadata as Record<string, unknown>) ?? {};
-        await userScoped(supabase, userId)
-          .table("dispute_outcomes")
-          .update({
-            metadata: {
-              ...baseMetadata,
-              outcomeDetail,
-              outcomeReportedAt: new Date().toISOString(),
-            },
-          })
-          .eq("id", disputeId);
-      } catch (err) {
-        console.error(
-          "[disputes/outcome] outcomeDetail metadata persist failed (non-fatal):",
-          err,
-        );
-      }
+      outcomeEvent = await commitDisputeOutcome(supabase, {
+        disputeId,
+        claimId: (existing.claim_id as string | null) ?? null,
+        userId,
+        outcomeDetail,
+        status,
+        existingMetadata: (existing.metadata as Record<string, unknown> | null) ?? null,
+        reportedBy: { actor: "user" },
+      });
     }
 
     // S320 — the enclosure-aware send record: the attestation + method from
@@ -304,8 +302,7 @@ export async function POST(req: NextRequest) {
               (existing.metadata as Record<string, unknown>)) ??
               {}),
           };
-          delete baseMetadata.outcomeDetail;
-          delete baseMetadata.outcomeReportedAt;
+          for (const k of OUTCOME_METADATA_KEYS) delete baseMetadata[k];
           patch.metadata = baseMetadata;
         }
         await userScoped(supabase, userId)
@@ -486,16 +483,7 @@ export async function POST(req: NextRequest) {
       if (clearOutcomeDetail) {
         events.push({ claimId, disputeId, kind: "outcome_undone" });
       }
-      if (outcomeDetail && isOutcomeDetail(outcomeDetail)) {
-        events.push({
-          claimId,
-          disputeId,
-          // The union carries "collections" for exhaustiveness; if a caller
-          // ever posts it here, the honest event is the collections one.
-          kind: outcomeDetail === "collections" ? "collections_reported" : "response_logged",
-          payload: { outcomeDetail, status },
-        });
-      }
+      if (outcomeEvent) events.push(outcomeEvent);
       // Mirror of the D16 snapshot guard: only the genuine drafted→sent
       // transition (idempotent re-clicks and undo round-trips excluded).
       if (
@@ -524,10 +512,7 @@ export async function POST(req: NextRequest) {
     // Deliberately re-anchors instead of cancelling: those cases are still
     // OPEN, and going dark on them would lose the outcome that actually feeds
     // the flywheel. Fail-soft inside.
-    if (outcomeDetail && isOutcomeDetail(outcomeDetail)) {
-      const { quietOutcomeFollowups } = await import("@/lib/disputes/followups");
-      await quietOutcomeFollowups(supabase, { disputeId, userId, outcomeDetail });
-    }
+    // (follow-up re-anchoring runs inside commitDisputeOutcome above.)
 
     return NextResponse.json({ success: true });
   } catch (error) {

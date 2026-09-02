@@ -165,8 +165,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ eng
         const member = mr as { email?: string | null; display_name?: string | null } | null;
         const signedAll = paperComplete(finalRow.payer, finalRow.consent_event_ids);
         const what = signedAll
-          ? "confirmed we can take your appeal on. Next: choose what to argue in the free tool, and we start the moment it's ready"
-          : "confirmed we can take your appeal on. Next: finish signing your documents, then choose what to argue in the free tool";
+          ? "confirmed we can manage your appeal for you. Next step: choose your dispute path. We start the moment you are done"
+          : "confirmed we can manage your appeal for you. Next step: finish signing your documents and choose your dispute path";
         if (member?.email) void sendDfyMatterUpdateEmail({ to: member.email, firstName: member.display_name?.trim().split(/\s+/)[0] ?? null, claimId: finalRow.claim_id, what });
       }
       await logAdminAction({ adminUserId: operatorUserId, adminEmail: operatorEmail, action: "dfy_accept", targetUserId: finalRow.user_id, targetTable: "dfy_engagements", details: `engagement ${finalRow.id}: accepted at intake (${role}) → ${finalRow.status}`, ipAddress: ip });

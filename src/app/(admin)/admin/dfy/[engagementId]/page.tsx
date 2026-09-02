@@ -13,6 +13,11 @@
 import Link from "next/link";
 import { IntakeCard, defaultAnswers, type Answers, type IntakeAction, type IntakeMatter } from "@/components/admin/dfy/IntakeCard";
 import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
+import {
+  OPERATOR_DETERMINATIONS,
+  OUTCOME_LABELS,
+  type OutcomeDetail,
+} from "@/lib/disputes/outcome-taxonomy";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/lib/auth/auth-context";
 import { RailStep } from "@/components/claims/CaseRail";
@@ -95,7 +100,10 @@ export default function DfyMatterPage({ params }: { params: Promise<{ engagement
   const [callRef, setCallRef] = useState("");
   const [tracking, setTracking] = useState("");
   const [offerDollars, setOfferDollars] = useState("");
-  const [determination, setDetermination] = useState<"approved" | "denied" | "partial">("denied");
+  // S331 — the operator records the plan's answer in the MEMBER's vocabulary
+  // (the shared outcome taxonomy), not a private three-value one. Default to
+  // the commonest answer on an appeal rather than the happiest.
+  const [determination, setDetermination] = useState<OutcomeDetail>("denied_fully");
   const [closeReason, setCloseReason] = useState("");
   const [forumId, setForumId] = useState("");
   const [chan, setChan] = useState({ submissionChannel: "", wetInkRequired: false, designationFormRequired: false, formUrl: "", faxNumber: "", note: "" });
@@ -312,7 +320,7 @@ export default function DfyMatterPage({ params }: { params: Promise<{ engagement
 
       <div className="flex flex-wrap items-center gap-2 border-t border-dashed border-gray-300 pt-3 text-[12.5px]">
         <span className="text-gray-500">Matter-level:</span>
-        <select className="rounded-md border border-gray-300 bg-white px-2 py-1 text-[12px]" value={determination} onChange={(ev) => setDetermination(ev.target.value as "approved" | "denied" | "partial")}><option value="approved">approved</option><option value="denied">denied</option><option value="partial">partial</option></select>
+        <select className="rounded-md border border-gray-300 bg-white px-2 py-1 text-[12px]" value={determination} onChange={(ev) => setDetermination(ev.target.value as OutcomeDetail)}>{OPERATOR_DETERMINATIONS.map((d) => (<option key={d} value={d}>{OUTCOME_LABELS[d]}</option>))}</select>
         <button className={btn} disabled={!canAct || busy || !matter.insurerLetter} onClick={() => void act("dfy_determination_recorded", { determination }, matter.insurerLetter?.disputeId ?? null)}>Record determination</button>
         <button className={sec} disabled={!canAct || busy} onClick={() => void act("dfy_audit_logged", {})}>Log audit review</button>
         {e.status === "signed" && isHolder && <button className={btn} disabled={busy || !composed} onClick={() => void post("transition", { to: "active" })}>Activate</button>}

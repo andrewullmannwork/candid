@@ -16,7 +16,6 @@ import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth/auth-context";
 
 interface UserDisplay { userId: string; displayName: string | null; email: string | null }
-interface Gate { id: string; label: string; pass: boolean; reason: string | null }
 type Matter = IntakeMatter;
 interface Sponsor { id: string; code: string; name: string; contact_email: string | null; agreement_signed_at: string | null; active: boolean }
 interface SponsorReport { code: string; name: string; total: number; suppressed: boolean; k: number; byStatus: Record<string, number> | null; byDetermination: Record<string, number> | null }

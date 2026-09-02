@@ -292,7 +292,6 @@ export async function signInstrument(input: SignInput): Promise<SignResult> {
     await scoped.table("consent_events").delete().eq("id", eventId);
     throw new DfySignError(409, "not_signable", fresh?.status === "terminated" ? "this engagement has ended" : fresh?.status === "signed" ? "every document is already signed" : "the engagement changed while you were signing — reload");
   }
-  const refs = patched.consent_event_ids;
   const completed = patched.status === "signed";
   e = patched;
   await emitCaseEvents(supabase, member.id, [

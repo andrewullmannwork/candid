@@ -60,6 +60,30 @@ export function isOutcomeDetail(v: unknown): v is OutcomeDetail {
  * a collections-outcome row render (the modal itself never offers it — it
  * routes through the dedicated "Sent to collections" entry).
  */
+/**
+ * The outcomes a DFY operator may record as the plan's answer on an appeal
+ * (S331). A SUBSET of this taxonomy, never a parallel vocabulary — it replaced
+ * the lane's private `approved | denied | partial`. Excluded: `no_response` and
+ * `new_problem` (the operator has dedicated acts for a status call and a fresh
+ * problem) and `collections` (its member-facing entry routes to debt
+ * validation — C1 — which is not the operator's to trigger).
+ *
+ * Lives here, in the pure module, so the operator screen and the server route
+ * read ONE list and the client bundle stays free of server-only code.
+ */
+export const OPERATOR_DETERMINATIONS: readonly OutcomeDetail[] = [
+  "resolved_win",
+  "denied_partial",
+  "denied_some_covered",
+  "denied_counteroffer",
+  "denied_fully",
+  "needs_info",
+] as const;
+
+export function isOperatorDetermination(v: unknown): v is OutcomeDetail {
+  return typeof v === "string" && (OPERATOR_DETERMINATIONS as readonly string[]).includes(v);
+}
+
 export const OUTCOME_LABELS: Record<OutcomeDetail, string> = {
   resolved_win: "Resolved — they approved it / paid in full",
   denied_partial: "Partially paid — less than the billed amount",

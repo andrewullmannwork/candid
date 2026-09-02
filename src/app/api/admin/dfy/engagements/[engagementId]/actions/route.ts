@@ -28,18 +28,25 @@ import { signedInstruments } from "@/lib/dfy/paper";
 import { buildPacket } from "@/lib/dfy/packet";
 import { userScoped } from "@/lib/security/user-scoped";
 import { sendDfyMatterUpdateEmail } from "@/lib/email/dfy-emails";
+import { commitDisputeOutcome } from "@/lib/disputes/commit-outcome";
+import {
+  isOperatorDetermination,
+  mapOutcomeToStatus,
+  OPERATOR_DETERMINATIONS,
+} from "@/lib/disputes/outcome-taxonomy";
+import { updateDisputeOutcome } from "@/lib/disputes/persist";
+import { emitCaseEvents } from "@/lib/case/case-events";
 
 /** The member-facing plain-words line for the facts that notify them. */
 const MEMBER_NOTIFY: Partial<Record<string, string>> = {
   dfy_response_recorded: "recorded a response from your plan on your appeal",
   dfy_offer_relayed: "relayed an offer from your plan on your appeal — the number is on your timeline, the decision is yours",
   dfy_determination_recorded: "recorded your plan's determination on your appeal",
-  dfy_packet_prepared: "prepared the packet for the state-level step, which you file yourself if you choose to",
+  dfy_packet_prepared: "prepared the packet for the state-level step. You will need to file if you want to continue",
 };
 
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 const REF_MAX = 120;
-const DETERMINATIONS = new Set(["approved", "denied", "partial"]);
 
 function ref(v: unknown): string | undefined {
   if (typeof v !== "string") return undefined;
@@ -102,33 +109,67 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ eng
 
     if (kind === "dfy_offer_relayed" || kind === "dfy_determination_recorded") {
       if (!disputeId) return NextResponse.json({ error: "disputeId required for this act", code: "dispute_required" }, { status: 400 });
-      const fact: Record<string, unknown> = { at: new Date().toISOString(), operatorUserId };
+      // The read is the authority proof as well as the current state: the
+      // operator scope narrows dispute_outcomes by the engagement's claim_id,
+      // so a dispute on any other claim simply is not visible here.
+      const { data: row } = await scope.table("dispute_outcomes").select("metadata").eq("id", disputeId).maybeSingle();
+      if (!row) {
+        return NextResponse.json({ error: "That letter is not on this matter", code: "dispute_not_on_matter" }, { status: 404 });
+      }
+      const meta = ((row as { metadata?: Record<string, unknown> } | null)?.metadata ?? {}) as Record<string, unknown>;
+
       if (kind === "dfy_offer_relayed") {
         const cents = body.amountCents;
         if (!(typeof cents === "number" && Number.isInteger(cents) && cents >= 0)) {
           return NextResponse.json({ error: "amountCents must be a non-negative integer", code: "bad_amount" }, { status: 400 });
         }
-        fact.amountCents = cents;
-      } else {
-        const det = body.determination;
-        if (typeof det !== "string" || !DETERMINATIONS.has(det)) {
-          return NextResponse.json({ error: "determination must be approved | denied | partial", code: "bad_determination" }, { status: 400 });
+        // Read-merge-write on the dispute row's metadata — sibling keys survive
+        // (the S326 wipe hazard is a REPLACE; this is a merge).
+        const fact: Record<string, unknown> = { at: new Date().toISOString(), operatorUserId, amountCents: cents };
+        const { error: updErr } = await scope
+          .table("dispute_outcomes")
+          .update({ metadata: { ...meta, dfy_offer: fact } })
+          .eq("id", disputeId);
+        if (updErr) {
+          console.error("[dfy actions] dispute metadata write failed:", updErr);
+          return NextResponse.json({ error: "Could not record the fact on the letter", code: "write_failed" }, { status: 500 });
         }
-        fact.determination = det;
+      } else {
+        // S331 — a determination is the dispute's OUTCOME, in the member's own
+        // vocabulary and the member's own home. It used to land in a private
+        // `metadata.dfy_determination` key that nothing read: no rail step, no
+        // status change, no follow-up quieting, no accuracy scoring, no
+        // escalation door. It now commits through the SAME writer the member's
+        // own report uses, marked as operator-reported.
+        const det = body.determination;
+        if (!isOperatorDetermination(det)) {
+          return NextResponse.json(
+            { error: `determination must be one of: ${OPERATOR_DETERMINATIONS.join(" | ")}`, code: "bad_determination" },
+            { status: 400 },
+          );
+        }
         payload.determinationRef = det;
-      }
-      // Read-merge-write on the dispute row's metadata — sibling keys survive
-      // (the S326 wipe hazard is a REPLACE; this is a merge).
-      const { data: row } = await scope.table("dispute_outcomes").select("metadata").eq("id", disputeId).maybeSingle();
-      const meta = ((row as { metadata?: Record<string, unknown> } | null)?.metadata ?? {}) as Record<string, unknown>;
-      const key = kind === "dfy_offer_relayed" ? "dfy_offer" : "dfy_determination";
-      const { error: updErr } = await scope
-        .table("dispute_outcomes")
-        .update({ metadata: { ...meta, [key]: fact } })
-        .eq("id", disputeId);
-      if (updErr) {
-        console.error("[dfy actions] dispute metadata write failed:", updErr);
-        return NextResponse.json({ error: "Could not record the fact on the letter", code: "write_failed" }, { status: 500 });
+        const outcomeStatus = mapOutcomeToStatus(det);
+        // The coarse column first — it also runs the resolved sweep (follow-up
+        // cancellation, Pattern 1 #13 outlier evaluation, accuracy scoring).
+        const wrote = await updateDisputeOutcome(supabase, disputeId, { status: outcomeStatus });
+        if (!wrote) {
+          console.error("[dfy actions] outcome status write failed for dispute", disputeId);
+          return NextResponse.json({ error: "Could not record the determination on the letter", code: "write_failed" }, { status: 500 });
+        }
+        const outcomeEvent = await commitDisputeOutcome(supabase, {
+          disputeId,
+          claimId: scope.engagement.claim_id,
+          userId: scope.engagement.user_id,
+          outcomeDetail: det,
+          status: outcomeStatus,
+          existingMetadata: meta,
+          reportedBy: { actor: "operator", engagementId: scope.engagement.id, operatorUserId },
+        });
+        // Two facts, one home each: the outcome above is the DISPUTE's result;
+        // the dfy_determination_recorded act emitted below is the history of
+        // what the OPERATOR did.
+        if (outcomeEvent) await emitCaseEvents(supabase, scope.engagement.user_id, [outcomeEvent]);
       }
     }
 

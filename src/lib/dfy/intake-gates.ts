@@ -96,14 +96,14 @@ export const GATE_LABELS: Readonly<Record<GateId, string>> = {
  */
 export const MEMBER_DECLINE_COPY: Readonly<Record<GateId, string>> = {
   lane: "Right now this service is open in California only.",
-  "0": "You asked us what to argue. We only submit the appeal you built, so this isn't one we can take.",
-  "1": "Your plan documents don't show which regulator covers this plan.",
-  "2": "This type of plan isn't one we can handle yet.",
-  "3": "This appeal falls outside what we can handle.",
-  "4": "This appeal falls outside what we can handle.",
+  "0": "We are still working on building out our \"do it for you\" service. This is an argument we do not currently support.",
+  "1": "We are still working on building out our \"do it for you\" service. This is a regulator dispute we do not currently support.",
+  "2": "We are still working on building out our \"do it for you\" service. This is a plan type we do not currently support.",
+  "3": "We are still working on building out our \"do it for you\" service. This is an appeal we do not currently support.",
+  "4": "We are still working on building out our \"do it for you\" service. This is an appeal we do not currently support.",
   "5": "There's no denial on record yet. Once your plan denies, we can take it from there.",
   "6": "We're not taking new matters right now.",
-  runway: "The deadline is too close for us to take this on safely. You can still file it yourself right away.",
+  runway: "The deadline is too close for us to take this on safely.",
 };
 
 /** The member's sentence for a decision: the FIRST failing gate's copy; null when eligible. */

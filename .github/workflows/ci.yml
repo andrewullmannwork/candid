@@ -240,6 +240,14 @@ jobs:
         # cells; the three-business-day cancel window and what is refundable;
         # which live matters the daily SLA cron flags; the weekly access review.
         run: npx tsx scripts/calibration/fixtures/legal/dfy-lane-rules.ts
+      - name: DFY outcome commit — ONE home for a dispute's result (S331)
+        # The operator's determination is the MEMBER's outcome, in the member's
+        # vocabulary and home: the operator list is a subset of the taxonomy
+        # (the private approved|denied|partial is gone), the coarse status
+        # mapping holds, the history event is honest about who reported it, the
+        # undo list deletes every provenance key, and an adverse operator
+        # determination still opens the member's escalation door.
+        run: npx tsx scripts/calibration/fixtures/legal/dfy-outcome-commit.ts
       - name: Citation party split — strip provider, member-adopt insurer (S326)
         # Rule 3: scoped provider letters emit ZERO citation-shaped strings;
         # scoped insurer letters cite only member-adopted authorities and fall

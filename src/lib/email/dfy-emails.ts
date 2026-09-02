@@ -38,14 +38,14 @@ export async function sendDfyInvitationEmail(params: {
     await resend.emails.send({
       from: FROM,
       to: params.to,
-      subject: "We can take your appeal from here",
+      subject: "Want us to handle your appeal",
       html: `<p>Hi ${name},</p>
-<p>You built an appeal in Candid. Want us to handle the rest? We'll prepare it, submit it as your authorized representative, and follow up until you have an answer.</p>
-<p>Click here to sign up.</p>
-<p><a href="${url}">Sign up</a></p>
-<p>You can always file on your own at no cost using our free Candid tools.</p>
+<p>We see you have an appeal on Candid. Want us to handle it for you? We'll prepare it, submit it as your authorized representative, handle all follow-ups, and reach out when we get a decision.</p>
+<p>Click here to get started.</p>
+<p><a href="${url}">Get started</a></p>
+<p>You can always continue to file on your own at no cost using our free Candid tools.</p>
 <p>— Candid</p>`,
-      text: `Hi ${name},\n\nYou built an appeal in Candid. Want us to handle the rest? We'll prepare it, submit it as your authorized representative, and follow up until you have an answer.\n\nClick here to sign up:\n${url}\n\nYou can always file on your own at no cost using our free Candid tools.\n\n— Candid`,
+      text: `Hi ${name},\n\nWe see you have an appeal on Candid. Want us to handle it for you? We'll prepare it, submit it as your authorized representative, handle all follow-ups, and reach out when we get a decision.\n\nClick here to get started:\n${url}\n\nYou can always continue to file on your own at no cost using our free Candid tools.\n\n— Candid`,
     });
   } catch (err) {
     console.error("[dfy-emails] invitation send failed (fail-soft):", err);
@@ -125,10 +125,10 @@ export async function sendDfyDeclineEmail(params: {
       subject: "About your appeal request",
       html: `<p>Hi ${name},</p>
 <p>We looked at your request for Candid to handle your appeal and can't take this one on. ${esc(params.reason)}</p>
-<p>Your appeal and every free Candid tool stay yours, and you can always file on your own at no cost.</p>
+<p>You can still appeal using Candid's free tools at no cost.</p>
 <p><a href="${url}">Open your claim</a></p>
 <p>— Candid</p>`,
-      text: `Hi ${name},\n\nWe looked at your request for Candid to handle your appeal and can't take this one on. ${params.reason}\n\nYour appeal and every free Candid tool stay yours, and you can always file on your own at no cost.\n\n${url}\n\n— Candid`,
+      text: `Hi ${name},\n\nWe looked at your request for Candid to handle your appeal and can't take this one on. ${params.reason}\n\nYou can still appeal using Candid's free tools at no cost.\n\n${url}\n\n— Candid`,
     });
     return true;
   } catch (err) {
