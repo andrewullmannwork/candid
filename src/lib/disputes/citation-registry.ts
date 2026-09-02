@@ -45,6 +45,31 @@ export const CITATION_REGISTRY: Record<string, CitationEntry> = {
     label: "The same requirement as incorporated for employer (ERISA) plans.",
     verified: "2026-08-26",
   },
+  // ── S330 — the DFY paper stack's citations of record (handoff §2.3: any DFY
+  // paper that cites law registers its cites). Verified against the counsel
+  // corpus at plans/findings/counsel-review-2026-08-26/ (03_Authorized-
+  // Representative_v2, 07_CMIA-Architecture-Research, 09_Engagement_v2 §Q2/Q10).
+  erisa_claims_rep: {
+    cite: "29 CFR §2560.503-1(b)(4)",
+    label: "ERISA claims procedure — a claimant may act through an authorized representative (the plan may verify the designation).",
+    verified: "2026-09-01",
+    note: "Contains no natural-person limitation; the 2000 preamble (65 Fed. Reg. 70246) and the DOL 2019 information letter treat entity representatives as permitted — counsel Q2 confirms which name appears in which channel.",
+  },
+  hipaa_authorization: {
+    cite: "45 CFR §164.508",
+    label: "HIPAA — the core elements and required statements of a valid authorization to use or disclose protected health information.",
+    verified: "2026-09-01",
+  },
+  cmia_authorization_form: {
+    cite: "Cal. Civ. Code §56.11",
+    label: "CMIA — the required form of an authorization to release medical information (separate instrument, 14-point type or handwritten, named parties, limits, expiration, revocation, copy).",
+    verified: "2026-09-01",
+  },
+  part2_records: {
+    cite: "42 CFR Part 2",
+    label: "Confidentiality of substance-use-disorder patient records — a separate, Part 2-compliant consent is required before such records may be disclosed.",
+    verified: "2026-09-01",
+  },
   external_review_reg: {
     cite: "45 CFR §147.136",
     label: "The HHS regulation implementing internal claims/appeals + external review.",

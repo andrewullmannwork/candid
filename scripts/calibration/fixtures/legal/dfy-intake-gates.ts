@@ -33,6 +33,7 @@ const eligible: IntakeFacts = {
   litigationAttested: false,
   inCollections: false,
   memberAskedWhatToArgue: false,
+  part2Records: false,
   compositionEvents: { groundSelected: true, letterAdopted: true },
   adverseDeterminationDate: "2026-08-20",
   runwayBusinessDays: 40,
@@ -80,6 +81,8 @@ failsAt({ ...eligible, governmentProgram: null }, "3", "government program unans
 failsAt({ ...eligible, litigationAttested: true }, "3", "lawsuit on record");
 failsAt({ ...eligible, litigationAttested: null }, "3", "litigation screening unanswered (fail closed)");
 failsAt({ ...eligible, inCollections: true }, "3", "in collections");
+failsAt({ ...eligible, part2Records: true }, "3", "Part 2 records present");
+failsAt({ ...eligible, part2Records: null }, "3", "Part 2 screen unanswered (fail closed)");
 failsAt({ ...eligible, adverseDeterminationDate: null }, "5", "no adverse determination");
 failsAt({ ...eligible, marketingGateVerifiedOn: null }, "6", "marketing gate unattested");
 failsAt({ ...eligible, runwayBusinessDays: 9 }, "runway", "runway below threshold");

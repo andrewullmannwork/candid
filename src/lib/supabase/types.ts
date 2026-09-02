@@ -7,7 +7,15 @@ export type ConsentType =
   | "privacy_policy"
   | "health_data_upload"
   | "marketplace_data_sharing"
-  | "aggregate_data_monetization";
+  | "aggregate_data_monetization"
+  // S330 — the DFY paper stack: five SEPARATE instruments, never one bundled
+  // click (handoff §3). Each is its own consent_events row; the designation and
+  // the authorization render to PDF into the member's own documents.
+  | "dfy_authorization_hipaa_cmia"
+  | "dfy_authorized_representative_designation"
+  | "dfy_scope_of_engagement"
+  | "dfy_fee_agreement"
+  | "dfy_sponsor_paid_disclosure";
 
 export type SubscriptionStatus =
   | "none"

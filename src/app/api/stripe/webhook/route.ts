@@ -174,6 +174,30 @@ export async function POST(req: NextRequest) {
         break;
       }
 
+      case "payment_intent.succeeded": {
+        // S330 — the DFY one-time matter fee (member_paid, fee_cents > 0). The
+        // intent carries the engagement id in its metadata; the payment FACT is
+        // written on the engagement (read-merge-write) and activation follows
+        // the same idempotent path the free pilot and the sponsor lane use.
+        const intent = event.data.object as Stripe.PaymentIntent;
+        const engagementId = intent.metadata?.dfy_engagement_id;
+        if (engagementId) {
+          const [{ loadEngagement, patchEngagement }, { maybeActivateEngagement }, { readDfyState }] = await Promise.all([
+            import("@/lib/security/operator-scoped"),
+            import("@/lib/dfy/sign"),
+            import("@/lib/dfy/config"),
+          ]);
+          const e = await loadEngagement(supabase, engagementId);
+          if (e && e.status === "signed") {
+            const patched = await patchEngagement(supabase, e.id, { status: "signed" }, {
+              metadata: { ...e.metadata, payment: { status: "succeeded", intentId: intent.id, amountCents: intent.amount_received, at: new Date().toISOString() } },
+            });
+            if (patched) await maybeActivateEngagement(supabase, patched, (await readDfyState(supabase)).config);
+          }
+        }
+        break;
+      }
+
       default:
         // Unhandled event type — log but don't fail.
         console.log(`Unhandled Stripe event: ${event.type}`);

@@ -1152,6 +1152,165 @@ You will not receive financial compensation for data included in aggregate datas
 Airgetlam Labs LLC
 Contact us via your account Settings page or by submitting a support ticket at candidclaim.com.`
   ),
+
+  // ===========================================================================
+  // S330 — THE DFY PAPER STACK (five SEPARATE instruments; handoff §3)
+  // Template slots ({{NAME}}) are filled per engagement by src/lib/dfy/paper.ts;
+  // the SIGNED instance text is what gets hashed into consent_events and
+  // rendered to the PDF in the member's own documents. The registry hash here
+  // is the template's. Counsel-governed drafts: item-10 (e-sign per channel)
+  // and Q2 (who is named) of the Rev-2 engagement packet review these before
+  // the pilot opens (the dfy_operator_v1 flag stays OFF in PROD until then).
+  // ===========================================================================
+
+  // ① HIPAA / CMIA authorization — drafted to BOTH 45 CFR §164.508(c) and Cal.
+  // Civ. Code §56.11. A SEPARATE instrument, rendered in the 14-point variant.
+  dfy_authorization_hipaa_cmia: defineConsent(
+    "dfy_authorization_hipaa_cmia",
+    "1.0",
+    "2026-09-01",
+    "Authorization to Use and Disclose Health Information",
+    "A separate, signed authorization letting Candid receive your appeal-related records from your plan and share your appeal materials with it — for this one matter, until it ends or you revoke.",
+    `AUTHORIZATION TO USE AND DISCLOSE HEALTH INFORMATION
+Version 1.0 — Effective September 1, 2026
+This authorization is a separate document. Read it on its own before you sign it.
+
+1. WHO IS AUTHORIZED TO DISCLOSE. {{MEMBER_NAME}} (the "Member") and, at the Member's direction, {{INSURER_NAME}} and the providers whose bills are part of this matter.
+
+2. WHO IS AUTHORIZED TO RECEIVE, AND WHAT THEY DO. Airgetlam Labs LLC (the operator of Candid), 7547 Leviston Avenue, El Cerrito, CA 94530, acting through {{REPRESENTATIVE_NAME}}, {{REPRESENTATIVE_KIND_CLAUSE}}. Their function is limited to execution: assembling, submitting, transmitting and following up on the appeal the Member has composed.
+
+3. WHAT INFORMATION. The records that relate to claim {{CLAIM_REF}} for services on {{DATE_OF_SERVICE}} under {{PLAN_NAME}}: the bill and itemized statements, explanations of benefits, the denial or adverse benefit determination and its appeal-rights notice, the appeal the Member composed, the plan's responses and decision letters, and the Member's plan documents. This authorization does NOT cover psychotherapy notes, records from a substance-use-disorder treatment program subject to 42 CFR Part 2, HIV test results, or genetic information; if any such record is part of the matter, a separate authorization is required before it may be used.
+
+4. PURPOSE. To carry out the internal appeal (and, for a self-funded ERISA plan, the federal external review) of that claim as the Member's authorized representative, and to keep the Member informed of its progress.
+
+5. LIMITS ON USE. The information may be used only for the purpose in Section 4. It will not be sold, used for marketing, or used to decide anything other than the appeal. Any information that also falls under the Member's Candid Health Data Consent remains subject to that consent's protections.
+
+6. EXPIRATION. This authorization expires on {{EXPIRY_DATE}}, or when the engagement it supports ends, whichever comes first.
+
+7. RIGHT TO REVOKE. The Member may revoke this authorization at any time by written notice to privacy@candidclaim.com or through the Member's account settings. Revocation takes effect when received; it does not undo a disclosure that was already made in reliance on this authorization.
+
+8. NO CONDITIONING. Neither treatment, payment, enrollment, nor eligibility for benefits is conditioned on signing this authorization. Candid's free tools remain available whether or not the Member signs.
+
+9. RE-DISCLOSURE. Information disclosed under this authorization to a party that is not covered by federal or California health-privacy law may no longer be protected by those laws once it is received by that party.
+
+10. COPY. The Member is entitled to a copy of this signed authorization; Candid places the signed copy in the Member's own documents.
+
+11. SIGNATURE. By typing their name and confirming below, the Member signs this authorization electronically on the date shown, and confirms they are the patient (or the patient's legal representative) for the records described.`
+  ),
+
+  // ② Authorized-representative designation — per channel (ERISA plan procedure
+  // / the plan's internal grievance), naming the individual operator OR the
+  // entity (the who-is-named variant seam; counsel Q2 decides per channel).
+  dfy_authorized_representative_designation: defineConsent(
+    "dfy_authorized_representative_designation",
+    "1.0",
+    "2026-09-01",
+    "Designation of Authorized Representative",
+    "Names your representative for the plan-level appeal of this one claim. Execution only: the representative never selects what to argue, never interprets your plan, and never advises you on an offer.",
+    `DESIGNATION OF AUTHORIZED REPRESENTATIVE
+Version 1.0 — Effective September 1, 2026
+
+1. THE DESIGNATION. I, {{MEMBER_NAME}} ({{MEMBER_EMAIL}}), designate {{REPRESENTATIVE_NAME}}, {{REPRESENTATIVE_KIND_CLAUSE}}, as my authorized representative for claim {{CLAIM_REF}} (services on {{DATE_OF_SERVICE}}) under {{PLAN_NAME}}, administered by {{INSURER_NAME}}.
+
+2. THE CHANNEL. {{CHANNEL_CLAUSE}}
+
+3. WHAT THE REPRESENTATIVE MAY DO. Assemble and submit the appeal I composed; submit this designation and any form the plan requires to recognize it; request the claim file, the plan documents and the documents the plan relied on; transmit my appeal and supporting documents to the plan; confirm receipt, status and decision dates; receive the plan's correspondence about the appeal and relay it to me; and record the plan's determination.
+
+4. WHAT THE REPRESENTATIVE WILL NOT DO. The representative will not select or change the grounds of my appeal, will not interpret my plan's terms for me, will not advise me whether to accept any offer or settlement, and will not make any statement to the plan on my behalf other than to transmit what I composed and to confirm status. Those decisions remain mine. Any new information the plan sends is relayed to me as facts, and I decide what to do with it.
+
+5. STATE-LEVEL FILINGS. This designation does not extend to complaints or Independent Medical Review requests filed with the California Department of Managed Health Care or any other government agency. If the plan-level appeal fails, I will sign and file those myself; Candid may prepare the packet and be named on the state's form as the person assisting me.
+
+6. DURATION AND REVOCATION. This designation lasts until the plan-level appeal concludes, until the engagement it supports ends, or until I revoke it in writing to privacy@candidclaim.com — whichever comes first.
+
+7. NOTICE TO THE PLAN. The plan may verify this designation with me directly. Please send copies of all appeal correspondence to both me and my representative.
+
+8. SIGNATURE. By typing my name and confirming below I sign this designation electronically on the date shown.`
+  ),
+
+  // ③ Scope of engagement — the 2a execution scope, the conversion triggers,
+  // and termination.
+  dfy_scope_of_engagement: defineConsent(
+    "dfy_scope_of_engagement",
+    "1.0",
+    "2026-09-01",
+    "Scope of Engagement — Done-for-You Appeal Execution",
+    "What Candid will and will not do in this matter, when the matter converts back to you, and how it ends.",
+    `SCOPE OF ENGAGEMENT — DONE-FOR-YOU APPEAL EXECUTION
+Version 1.0 — Effective September 1, 2026
+Between {{MEMBER_NAME}} (the "Member") and Airgetlam Labs LLC, the operator of Candid ("Candid"), for claim {{CLAIM_REF}} under {{PLAN_NAME}}.
+
+1. WHAT THIS IS. The Member has already used Candid's free tools to review the claim, select the grounds of the appeal, and adopt the appeal letter. Candid will now carry out the paperwork, submission, follow-up and deadline tracking for that appeal as the Member's authorized representative. This is execution of the Member's own decisions.
+
+2. WHAT CANDID WILL DO. Prepare and submit the representative designation the plan requires; assemble the appeal package from the Member's composed letter and documents; transmit it to the plan and keep proof of transmission; request the claim file and the documents the plan relied on; call the plan to confirm receipt, status and decision dates using a fixed script; relay every plan response and any offer to the Member as facts; track the governing deadlines; record the determination; and, if the appeal fails, prepare the packet for any state-level step the Member chooses to file.
+
+3. WHAT CANDID WILL NOT DO. Candid will not select or change the grounds of the appeal, interpret the plan's terms, give legal advice, advise the Member whether to accept an offer, argue the merits with the plan by phone, or sign or file anything with a government agency in the Member's name. Candid is not a law firm and does not provide legal representation. If the Member asks Candid what to argue, Candid will decline and point the Member to the Member's own tools.
+
+4. CONVERSION BACK TO THE MEMBER. The matter returns to the Member's own hands, and Candid stops acting, if: the plan raises a new rationale that the Member's composed appeal does not address; the Member asks Candid to decide what to argue or whether to accept an offer; the Member's plan documents turn out to place the claim outside the coverage classes Candid accepts; or a lawsuit is filed or served concerning the claim. Candid tells the Member when a conversion happens and why. The Member keeps every free tool.
+
+5. THE MEMBER'S PART. Keep contact details current; respond to Candid's requests for documents or decisions; tell Candid about any communication received directly from the plan; and file any state-level step personally if the Member chooses to take it.
+
+6. DEADLINES. Candid tracks the deadlines the Member's own documents state and acts within them, but Candid cannot extend a deadline the plan imposes. Candid declines matters that arrive with less than the runway its policy requires, so that no matter is taken that cannot be completed in time.
+
+7. TERMINATION. Either party may end this engagement at any time by written notice. Candid may end it on a conversion trigger (Section 4). On termination Candid returns the matter to the Member with everything prepared to date, in the Member's own documents.
+
+8. RECORDS. Every act Candid takes in the matter is recorded on the Member's own case timeline. The Member can see it at any time.
+
+9. SIGNATURE. By typing their name and confirming below the Member agrees to this scope electronically on the date shown.`
+  ),
+
+  // ④ Fee agreement — member-paid. Must state that the appeal and IMR are FREE
+  // processes (the member pays for preparation and submission, not access) and
+  // that a card on file never auto-charges. $0 during the pilot.
+  dfy_fee_agreement: defineConsent(
+    "dfy_fee_agreement",
+    "1.0",
+    "2026-09-01",
+    "Fee Agreement — Done-for-You Appeal Execution",
+    "A flat, per-matter fee charged only after an adverse determination exists — never a subscription, never an auto-charge. The appeal itself is a free process.",
+    `FEE AGREEMENT — DONE-FOR-YOU APPEAL EXECUTION
+Version 1.0 — Effective September 1, 2026
+Between {{MEMBER_NAME}} (the "Member") and Airgetlam Labs LLC, the operator of Candid ("Candid"), for claim {{CLAIM_REF}}.
+
+1. THE FEE. {{FEE_CLAUSE}} The fee is flat, per matter, and does not depend on the outcome of the appeal.
+
+2. WHAT THE FEE IS FOR. The fee pays for Candid's preparation, submission and follow-up work described in the Scope of Engagement. It does NOT buy access to the appeal: your plan's internal appeal, the federal external review, and California's Independent Medical Review are FREE processes that you may pursue yourself at no charge, using Candid's free tools or on your own.
+
+3. WHEN IT IS CHARGED. Only after an adverse determination on this claim exists and you have signed this agreement. Candid never sells a subscription or membership that includes future appeals, and never charges in advance for an appeal that has not been denied.
+
+4. YOUR CARD ON FILE. A payment method you keep on file with Candid is stored only for purchases you affirmatively make. It is never charged automatically, and this engagement does not renew.
+
+5. CANCELLATION AND REFUND. You may cancel this engagement within three business days of signing for a full refund of any fee paid. After that, if Candid ends the engagement on a conversion trigger before transmitting your appeal, the fee is refunded in full; if Candid declines the matter at intake, no fee is charged. Refunds are returned to the original payment method.
+
+6. NO OTHER CHARGES. Candid receives no payment from your plan, your provider, or anyone else in connection with this matter.
+
+7. SIGNATURE. By typing their name and confirming below the Member agrees to this fee agreement electronically on the date shown.`
+  ),
+
+  // ④′ Sponsor-paid disclosure — the employer lane (Path C, R17). Replaces the
+  // fee agreement when a sponsor code is present: who pays, the engagement
+  // runs to the MEMBER, the sponsor gets no control and aggregate-only data.
+  dfy_sponsor_paid_disclosure: defineConsent(
+    "dfy_sponsor_paid_disclosure",
+    "1.0",
+    "2026-09-01",
+    "Sponsor-Paid Engagement Disclosure",
+    "Your employer or plan sponsor is paying for this service. The engagement runs to you, the sponsor gets no control over it, and the sponsor sees only aggregate reporting — never your matter.",
+    `SPONSOR-PAID ENGAGEMENT DISCLOSURE
+Version 1.0 — Effective September 1, 2026
+For {{MEMBER_NAME}} (the "Member"), claim {{CLAIM_REF}}, sponsor reference {{SPONSOR_REF}}.
+
+1. WHO PAYS. A sponsor — your employer, plan sponsor, or an organization acting for one — has agreed to pay Candid for this service under a separate written agreement. You pay nothing for this engagement.
+
+2. WHOM CANDID WORKS FOR. The engagement runs to you, the Member. Candid acts only as your authorized representative and only within the Scope of Engagement you sign. The sponsor cannot direct what Candid does in your matter, cannot see your matter, and cannot end your engagement.
+
+3. WHAT THE SPONSOR SEES. The sponsor receives aggregate reporting only — counts and outcomes across at least five members at a time, never information that identifies you or your claim. Your health information is never shared with the sponsor.
+
+4. WHEN THE SPONSOR IS ALSO YOUR PLAN. If the sponsor is the sponsor of the very plan you are appealing against, know that Candid's duty in this matter runs to you alone. Candid's agreement with the sponsor says the same. If a conflict arises that Candid cannot manage, Candid converts the matter back to you and tells you why.
+
+5. THE APPEAL IS FREE ANYWAY. Your plan's internal appeal, the federal external review, and California's Independent Medical Review are free processes you may pursue yourself at any time.
+
+6. SIGNATURE. By typing their name and confirming below the Member acknowledges this disclosure electronically on the date shown.`
+  ),
 };
 
 /** Get the current consent document for a given type. */

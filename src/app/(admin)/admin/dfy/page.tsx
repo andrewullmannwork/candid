@@ -73,7 +73,7 @@ export default function DfyQueuePage() {
   const [inviteSponsor, setInviteSponsor] = useState("");
   const [inviteMsg, setInviteMsg] = useState<string | null>(null);
   // Screening answers per applicant
-  const [answers, setAnswers] = useState<Record<string, { planSponsorType: string; secondaryCoverageCdi: string; governmentProgram: string; memberAskedWhatToArgue: string }>>({});
+  const [answers, setAnswers] = useState<Record<string, { planSponsorType: string; secondaryCoverageCdi: string; governmentProgram: string; memberAskedWhatToArgue: string; part2Records: string }>>({});
 
   const token = useCallback(async () => (user ? user.firebaseUser.getIdToken() : null), [user]);
   // Reload = bump the key; the load itself lives in the effect body (the admin
@@ -127,7 +127,7 @@ export default function DfyQueuePage() {
     await refresh();
   }
   async function screen(id: string) {
-    const a = answers[id] ?? { planSponsorType: "", secondaryCoverageCdi: "", governmentProgram: "", memberAskedWhatToArgue: "" };
+    const a = answers[id] ?? { planSponsorType: "", secondaryCoverageCdi: "", governmentProgram: "", memberAskedWhatToArgue: "", part2Records: "" };
     const tri = (v: string) => (v === "yes" ? true : v === "no" ? false : null);
     setBusy(id);
     const r = await post(`/api/admin/dfy/engagements/${id}/screen`, {
@@ -135,6 +135,7 @@ export default function DfyQueuePage() {
       secondaryCoverageCdi: tri(a.secondaryCoverageCdi),
       governmentProgram: tri(a.governmentProgram),
       memberAskedWhatToArgue: tri(a.memberAskedWhatToArgue),
+      part2Records: tri(a.part2Records),
     });
     if (!r.ok) setError(String(r.json.error ?? "Screening failed"));
     setBusy(null);
@@ -249,7 +250,7 @@ export default function DfyQueuePage() {
         <div className="mt-3 space-y-4">
           {data?.applicants.map((m) => {
             const e = m.engagement;
-            const a = answers[e.id] ?? { planSponsorType: "", secondaryCoverageCdi: "", governmentProgram: "", memberAskedWhatToArgue: "" };
+            const a = answers[e.id] ?? { planSponsorType: "", secondaryCoverageCdi: "", governmentProgram: "", memberAskedWhatToArgue: "", part2Records: "" };
             const set = (k: keyof typeof a, v: string) => setAnswers((p) => ({ ...p, [e.id]: { ...a, [k]: v } }));
             const decision = e.intake?.decision;
             const sel = "rounded-md border border-gray-300 bg-white px-2 py-1 text-[12px]";
@@ -259,7 +260,7 @@ export default function DfyQueuePage() {
                   <div className="font-medium text-gray-900">{who(m.member)} <span className="text-[11px] font-normal text-gray-400">{m.member.state ?? "state —"} · claim {e.claim_id.slice(0, 8)}… · {e.payer}</span></div>
                   <div className={runwayTone(m.runwayBusinessDays)}>{m.runwayBusinessDays === null ? "no dated window" : `${m.runwayBusinessDays} business days`}</div>
                 </div>
-                <div className="mt-3 grid gap-2 sm:grid-cols-4">
+                <div className="mt-3 grid gap-2 sm:grid-cols-5">
                   <label className="text-[12px] text-gray-600">Plan sponsor (from documents)
                     <select className={`${sel} mt-1 w-full`} value={a.planSponsorType} onChange={(ev) => set("planSponsorType", ev.target.value)}>
                       <option value="">—</option><option value="single_employer">single employer</option><option value="mewa_association_peo">MEWA / association / PEO</option><option value="individual_marketplace">individual / marketplace</option><option value="unknown">cannot tell</option>
@@ -270,6 +271,9 @@ export default function DfyQueuePage() {
                   </label>
                   <label className="text-[12px] text-gray-600">Government program (TRICARE / VA) in the matter?
                     <select className={`${sel} mt-1 w-full`} value={a.governmentProgram} onChange={(ev) => set("governmentProgram", ev.target.value)}><option value="">—</option><option value="no">no</option><option value="yes">yes</option></select>
+                  </label>
+                  <label className="text-[12px] text-gray-600">Any records from a substance-use treatment provider (42 CFR Part 2)?
+                    <select className={`${sel} mt-1 w-full`} value={a.part2Records} onChange={(ev) => set("part2Records", ev.target.value)}><option value="">—</option><option value="no">no</option><option value="yes">yes</option></select>
                   </label>
                   <label className="text-[12px] text-gray-600">Did the member ask us what to argue?
                     <select className={`${sel} mt-1 w-full`} value={a.memberAskedWhatToArgue} onChange={(ev) => set("memberAskedWhatToArgue", ev.target.value)}><option value="">—</option><option value="no">no</option><option value="yes">yes</option></select>

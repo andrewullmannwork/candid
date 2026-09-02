@@ -82,6 +82,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ eng
       litigationAttested: litigation,
       inCollections: !!claimMeta.collector,
       memberAskedWhatToArgue: tri(body.memberAskedWhatToArgue),
+      part2Records: tri(body.part2Records),
       compositionEvents: composition,
       adverseDeterminationDate: insurerLetter?.denialNoticeDate ?? null,
       runwayBusinessDays,

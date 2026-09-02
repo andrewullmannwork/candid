@@ -24,6 +24,16 @@ import {
   isOperatorActKind,
   operatorErrorResponse,
 } from "@/lib/dfy/operator-action";
+import { signedInstruments } from "@/lib/dfy/paper";
+import { sendDfyMatterUpdateEmail } from "@/lib/email/dfy-emails";
+
+/** The member-facing plain-words line for the facts that notify them. */
+const MEMBER_NOTIFY: Partial<Record<string, string>> = {
+  dfy_response_recorded: "recorded a response from your plan on your appeal",
+  dfy_offer_relayed: "relayed an offer from your plan on your appeal — the number is on your timeline, the decision is yours",
+  dfy_determination_recorded: "recorded your plan's determination on your appeal",
+  dfy_packet_prepared: "prepared the packet for the state-level step, which you file yourself if you choose to",
+};
 
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 const REF_MAX = 120;
@@ -58,6 +68,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ eng
 
   try {
     const scope = await assertOperatorAction(supabase, operatorUserId, engagementId, kind);
+
+    // The designation names ONE person (or the entity). A submission by an
+    // operator the instrument does not name is not a valid designation — a
+    // hand-off after signing needs a fresh instrument, never a silent swap.
+    if (kind === "dfy_designation_submitted") {
+      const des = signedInstruments(scope.engagement.consent_event_ids).dfy_authorized_representative_designation;
+      if (!des) return NextResponse.json({ error: "The member has not signed the designation yet", code: "designation_unsigned" }, { status: 409 });
+      if (des.namedParty !== "entity" && des.namedOperatorUserId && des.namedOperatorUserId !== operatorUserId) {
+        return NextResponse.json({ error: "The signed designation names a different operator — the member must sign a new one", code: "designation_names_other_operator" }, { status: 409 });
+      }
+    }
 
     // A dispute named in the act must be one of THIS claim's letters (the scope
     // narrows dispute_outcomes to the engagement's claim, so a foreign id reads null).
@@ -109,6 +130,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ eng
     }
 
     await emitOperatorEvent(supabase, scope, kind, payload, disputeId);
+    const notify = MEMBER_NOTIFY[kind];
+    if (notify) {
+      const { data: memberRow } = await supabase.from("users").select("email, display_name").eq("id", scope.engagement.user_id).maybeSingle();
+      const mr = memberRow as { email?: string; display_name?: string | null } | null;
+      if (mr?.email) void sendDfyMatterUpdateEmail({ to: mr.email, firstName: mr.display_name?.trim().split(/\s+/)[0] ?? null, claimId: scope.engagement.claim_id, what: notify });
+    }
     await logAdminAction({
       adminUserId: operatorUserId,
       adminEmail: operatorEmail,

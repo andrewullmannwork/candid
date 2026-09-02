@@ -25,7 +25,10 @@
 --      and window config-backed (Ship Gate G6): concurrent cap PER OPERATOR,
 --      the R18 refusal runway (business days), the D8 IP allowlist, and the
 --      Gate-6 marketing attestation date (null = the gate fails closed and
---      intake refuses every applicant until the approved copy sweep ships).
+--      intake refuses every applicant until the approved copy sweep ships),
+--      the member-paid fee in cents (0 = the free pilot; the $5 charge flips
+--      on counsel's opinion signature), and the who-is-named designation
+--      variant per channel (individual | entity; counsel Q2).
 --
 -- ERASURE: user_id CASCADE — the CHD right-to-erasure covers the grant row
 -- natively (E1–E4). operator_user_id SET NULL — deleting an operator account
@@ -110,6 +113,6 @@ VALUES (
   false,
   'S330 (PR-DFY-1). Gates the do-it-for-you operator lane: the /admin/dfy queue + intake screening + matter view, the operator action routes, and the engagement lifecycle. Config: concurrent_cap (per operator), refusal_runway_business_days (R18 intake refusal), ip_allowlist + ip_allowlist_enforced (D8 access hardening), marketing_gate_verified_on (Gate 6 attestation date; null = every applicant refused). OFF = the section is dark and every operator route answers 404. Rollback = flip OFF.',
   'global',
-  '{"concurrent_cap": 5, "refusal_runway_business_days": 10, "ip_allowlist": [], "ip_allowlist_enforced": false, "marketing_gate_verified_on": null}'::jsonb
+  '{"concurrent_cap": 5, "refusal_runway_business_days": 10, "ip_allowlist": [], "ip_allowlist_enforced": false, "marketing_gate_verified_on": null, "fee_cents": 0, "designation_named_party": {"erisa_plan": "individual", "plan_internal_grievance": "individual"}}'::jsonb
 )
 ON CONFLICT (flag_key) DO NOTHING;

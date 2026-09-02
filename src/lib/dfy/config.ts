@@ -10,6 +10,9 @@
  *                                  applicant is refused (the homepage is the
  *                                  exhibit that defeats Gate 0).
  *
+ *   fee_cents                      member-paid fee (0 = free pilot; 500 = $5 on counsel signature)
+ *   designation_named_party        {erisa_plan, plan_internal_grievance}: individual | entity
+ *
  * Tune with:
  *   UPDATE feature_flag_rules SET config = config || '{"concurrent_cap": 8}'
  *   WHERE flag_key = 'dfy_operator_v1';
@@ -28,18 +31,33 @@ export interface DfyConfig {
   ipAllowlistEnforced: boolean;
   /** YYYY-MM-DD or null. */
   marketingGateVerifiedOn: string | null;
+  /** The member-paid fee, in cents. 0 = the free pilot (S326 ruling: free pilot
+   *  first; the $5 charge flips on counsel's opinion signature — set 500 then). */
+  feeCents: number;
+  /** The who-is-named variant seam (counsel Q2): which name appears on the
+   *  designation per channel. DMHC's 20-160 has one "person assisting" field;
+   *  federal channels appear to permit the entity. Individual by default. */
+  designationNamedParty: { erisa_plan: "individual" | "entity"; plan_internal_grievance: "individual" | "entity" };
 }
 
-export const DFY_CONFIG_DEFAULTS: DfyConfig = Object.freeze({
+export const DFY_CONFIG_DEFAULTS: DfyConfig = Object.freeze<DfyConfig>({
   concurrentCap: 5,
   refusalRunwayBusinessDays: 10,
   ipAllowlist: [],
   ipAllowlistEnforced: false,
   marketingGateVerifiedOn: null,
+  feeCents: 0,
+  designationNamedParty: { erisa_plan: "individual", plan_internal_grievance: "individual" },
 });
 
 function posInt(v: unknown, fallback: number): number {
   return typeof v === "number" && Number.isInteger(v) && v > 0 ? v : fallback;
+}
+function nonNegInt(v: unknown, fallback: number): number {
+  return typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : fallback;
+}
+function namedParty(v: unknown, fallback: "individual" | "entity"): "individual" | "entity" {
+  return v === "entity" || v === "individual" ? v : fallback;
 }
 
 export function parseDfyConfig(raw: unknown): DfyConfig {
@@ -60,6 +78,11 @@ export function parseDfyConfig(raw: unknown): DfyConfig {
     ipAllowlist: list,
     ipAllowlistEnforced: c.ip_allowlist_enforced === true,
     marketingGateVerifiedOn: verified,
+    feeCents: nonNegInt(c.fee_cents, DFY_CONFIG_DEFAULTS.feeCents),
+    designationNamedParty: {
+      erisa_plan: namedParty((c.designation_named_party as Record<string, unknown> | undefined)?.erisa_plan, "individual"),
+      plan_internal_grievance: namedParty((c.designation_named_party as Record<string, unknown> | undefined)?.plan_internal_grievance, "individual"),
+    },
   };
 }
 

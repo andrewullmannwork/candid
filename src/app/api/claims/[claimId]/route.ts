@@ -908,6 +908,30 @@ export async function GET(
     });
   }
 
+  // S330 — the DFY engagement overlay, if any (member-owned row; live statuses only).
+  let dfyEngagement: { id: string; status: string; phase: string; payer: string } | null = null;
+  try {
+    const { data: engRows } = await userScoped(supabase, user.id)
+      .table("dfy_engagements")
+      .select("id, status, payer, intake, consent_event_ids, operator_user_id, claim_id, user_id, lane, sponsor_ref, member_state, plan_classification, scope, metadata, signed_at, activated_at, closed_at, created_at, updated_at")
+      .eq("claim_id", claimId)
+      .in("status", ["eligibility_pending", "signed", "active"])
+      .limit(1);
+    const engRaw = (engRows ?? [])[0];
+    if (engRaw) {
+      const { parseEngagementRow } = await import("@/lib/security/operator-scoped");
+      const { derivePhase } = await import("@/lib/dfy/matter");
+      const { loadCompositionProof } = await import("@/lib/dfy/operator-action");
+      const eng = parseEngagementRow(engRaw);
+      if (eng) {
+        const proof = await loadCompositionProof(supabase, user.id, claimId);
+        dfyEngagement = { id: eng.id, status: eng.status, payer: eng.payer, phase: derivePhase(eng, proof, null) };
+      }
+    }
+  } catch (err) {
+    console.error("[claims GET] dfy engagement read failed (omitted):", err);
+  }
+
   // Fetch related claims in same group. S139 (B4.2 multi-line) — lift
   // provider_name from claim metadata so BundleSuggestion + MiniBillRow can
   // render peer rows with the source provider, not just an ID. Matches the
@@ -969,6 +993,10 @@ export async function GET(
     // S299 phase 1a — projector-derived case timeline (absent when
     // case_rail_v1 is OFF → byte-identical payload).
     ...(caseTimeline ? { caseTimeline } : {}),
+    // S330 — the member's own DFY engagement on this claim (additive; absent
+    // when none). One read through the member's ownership; the phase label is
+    // the same derivation the operator queue shows.
+    ...(dfyEngagement ? { dfyEngagement } : {}),
     relatedClaims,
     recovery: claimRecovery,
     // Cost-Share v2 (D1) — bill-level verdict for the §5 banner; flag-gated

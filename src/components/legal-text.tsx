@@ -4,7 +4,16 @@
  * Renders legal document text with markdown pipe table support.
  * Splits text into paragraphs and tables, rendering tables as proper HTML.
  */
-export function LegalText({ text }: { text: string }) {
+/**
+ * S330 — `variant="authorization"`: the Cal. Civ. Code §56.11 render form for a
+ * medical-information authorization — typeface no smaller than 14-point and
+ * clearly separate from any other language. One prop, not a second renderer.
+ */
+export function LegalText({ text, variant = "default" }: { text: string; variant?: "default" | "authorization" }) {
+  const textCls =
+    variant === "authorization"
+      ? "whitespace-pre-wrap font-sans text-[14pt] leading-relaxed text-gray-900"
+      : "whitespace-pre-wrap font-sans text-base text-gray-700 leading-relaxed";
   const lines = text.split("\n");
   const blocks: Array<{ type: "text"; content: string } | { type: "table"; headers: string[]; rows: string[][] }> = [];
 
@@ -50,11 +59,11 @@ export function LegalText({ text }: { text: string }) {
   }
 
   return (
-    <div className="space-y-6">
+    <div className={variant === "authorization" ? "space-y-6 rounded-xl border-2 border-gray-900 bg-white p-6" : "space-y-6"}>
       {blocks.map((block, idx) => {
         if (block.type === "text") {
           return (
-            <pre key={idx} className="whitespace-pre-wrap font-sans text-base text-gray-700 leading-relaxed">
+            <pre key={idx} className={textCls}>
               {block.content}
             </pre>
           );

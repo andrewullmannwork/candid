@@ -226,6 +226,14 @@ jobs:
         # unreachable, and the route-layer invariant refusing an executing act
         # without the member's own ground_selected + letter_adopted record.
         run: npx tsx scripts/calibration/fixtures/legal/dfy-operator-invariant.ts
+      - name: DFY paper stack — five separate instruments (S330)
+        # The member signs five SEPARATE instruments (never one bundled click);
+        # the sponsor code swaps the fee agreement for the sponsor disclosure;
+        # every template slot fills; the required statements are byte-present
+        # (the free-process disclosure at any price, no auto-charge, the §56.11
+        # elements, the designation's execution-only limits + member-files
+        # clause, the who-is-named variant, the sponsor data wall).
+        run: npx tsx scripts/calibration/fixtures/legal/dfy-paper.ts
       - name: Citation party split — strip provider, member-adopt insurer (S326)
         # Rule 3: scoped provider letters emit ZERO citation-shaped strings;
         # scoped insurer letters cite only member-adopted authorities and fall

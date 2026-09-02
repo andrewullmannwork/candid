@@ -41,6 +41,10 @@ export interface IntakeFacts {
   inCollections: boolean;
   /** Operator-attested: did the member ask Candid what to argue? null = not asked. */
   memberAskedWhatToArgue: boolean | null;
+  /** The 42 CFR Part 2 screen: do any records in the matter come from a
+   *  substance-use-disorder treatment provider? Those need a Part 2-compliant
+   *  consent Candid does not yet offer — true/null decline (fail closed). */
+  part2Records: boolean | null;
   /** The member's own composition events on the claim (ground_selected + letter_adopted). */
   compositionEvents: { groundSelected: boolean; letterAdopted: boolean };
   /** The adverse determination the appeal answers (denial notice date, YYYY-MM-DD). */
@@ -176,6 +180,12 @@ export function evaluateIntake(f: IntakeFacts): IntakeDecision {
   if (f.litigationAttested !== false)
     excludes.push(f.litigationAttested === true ? "a lawsuit is on record" : "litigation screening not yet answered");
   if (f.inCollections) excludes.push("the bill is in collections");
+  if (f.part2Records !== false)
+    excludes.push(
+      f.part2Records === true
+        ? "records from a substance-use treatment provider need a separate consent we don't offer yet"
+        : "the substance-use-records (42 CFR Part 2) screen is not yet answered",
+    );
   if (f.memberAskedWhatToArgue !== false) excludes.push("the member asked what to argue");
   gates.push(gate("3", excludes.length === 0, excludes.length ? excludes.join(" · ") : null));
 

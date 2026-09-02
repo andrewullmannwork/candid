@@ -14,14 +14,16 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireOperator } from "@/lib/admin/require-operator";
 import { logAdminAction } from "@/lib/admin/audit-log";
 import { userScoped } from "@/lib/security/user-scoped";
-import { createEngagement, type EngagementPayer } from "@/lib/security/operator-scoped";
+import { createEngagement, claimEngagement, countHeldMatters, type EngagementPayer } from "@/lib/security/operator-scoped";
 import { emitCaseEvents } from "@/lib/case/case-events";
 import { operatorErrorResponse } from "@/lib/dfy/operator-action";
+import { CAP_COUNTED_STATUSES } from "@/lib/dfy/engagement-state";
+import { sendDfyInvitationEmail } from "@/lib/email/dfy-emails";
 
 export async function POST(req: NextRequest) {
   const auth = await requireOperator(req);
   if (!auth.ok) return auth.response;
-  const { supabase, operatorUserId, operatorEmail, role, ip } = auth;
+  const { supabase, operatorUserId, operatorEmail, role, ip, config } = auth;
 
   let body: { memberEmail?: unknown; memberUserId?: unknown; claimId?: unknown; payer?: unknown; sponsorRef?: unknown };
   try {
@@ -39,12 +41,19 @@ export async function POST(req: NextRequest) {
 
   try {
     // Resolve the member (users is not a user-owned-registered table).
-    let memberQ = supabase.from("users").select("id, email, is_anonymous");
+    // The inviter becomes the HOLDER: the designation the member signs names the
+    // individual operator (the who-is-named seam), so the matter must have one
+    // before the member signs. Cap-checked like any claim.
+    const held = await countHeldMatters(supabase, operatorUserId, CAP_COUNTED_STATUSES);
+    if (held >= config.concurrentCap) {
+      return NextResponse.json({ error: `Your load is ${held} of ${config.concurrentCap} — release a matter before inviting`, code: "cap_reached" }, { status: 409 });
+    }
+    let memberQ = supabase.from("users").select("id, email, display_name, is_anonymous");
     if (typeof body.memberUserId === "string" && body.memberUserId) memberQ = memberQ.eq("id", body.memberUserId);
     else if (typeof body.memberEmail === "string" && body.memberEmail.trim()) memberQ = memberQ.eq("email", body.memberEmail.trim().toLowerCase());
     else return NextResponse.json({ error: "memberEmail or memberUserId required" }, { status: 400 });
     const { data: member } = await memberQ.maybeSingle();
-    const m = member as { id: string; email: string; is_anonymous?: boolean } | null;
+    const m = member as { id: string; email: string; display_name?: string | null; is_anonymous?: boolean } | null;
     if (!m) return NextResponse.json({ error: "Member not found" }, { status: 404 });
     if (m.is_anonymous) return NextResponse.json({ error: "An anonymous account cannot enter an engagement", code: "anonymous_member" }, { status: 409 });
 
@@ -78,6 +87,7 @@ export async function POST(req: NextRequest) {
     });
     if (conflict) return NextResponse.json({ error: "This claim already has a live engagement", code: "engagement_exists" }, { status: 409 });
     if (!engagement) return NextResponse.json({ error: "Could not open the engagement", code: "create_failed" }, { status: 500 });
+    const claimed = (await claimEngagement(supabase, operatorUserId, engagement.id)) ?? engagement;
 
     await emitCaseEvents(supabase, m.id, [
       {
@@ -86,7 +96,10 @@ export async function POST(req: NextRequest) {
         actor: "operator",
         payload: { engagementId: engagement.id, operatorUserId, role, payer },
       },
+      { claimId: c.id, kind: "dfy_claimed", actor: "operator", payload: { engagementId: engagement.id, operatorUserId, role, atInvite: true } },
     ]);
+    // Fail-soft: the member's own page is the source of truth; the email is a pointer to it.
+    void sendDfyInvitationEmail({ to: m.email, firstName: m.display_name?.trim().split(/\s+/)[0] ?? null, engagementId: engagement.id });
     await logAdminAction({
       adminUserId: operatorUserId,
       adminEmail: operatorEmail,
@@ -96,7 +109,7 @@ export async function POST(req: NextRequest) {
       details: `engagement ${engagement.id} opened on claim ${c.id} (${payer}${sponsorRef ? `, sponsor ${sponsorRef}` : ""}) (${role})`,
       ipAddress: ip,
     });
-    return NextResponse.json({ ok: true, engagement }, { status: 201 });
+    return NextResponse.json({ ok: true, engagement: claimed }, { status: 201 });
   } catch (err) {
     const { status, body: b } = operatorErrorResponse(err);
     return NextResponse.json(b, { status });

@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+
 import { Fragment, useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
@@ -284,6 +286,8 @@ interface ClaimData {
     /** Per-letter insurer display names (pinned plan), for wait titles. */
     insurerNameByDispute: Record<string, string>;
   };
+  // S330 — the member's own DFY engagement on this claim (additive; absent when none).
+  dfyEngagement?: { id: string; status: string; phase: string; payer: string };
   relatedClaims: Array<{ id: string; date_of_service: string; status: string; total_billed: number; provider_name: string | null }>;
   // S132 iter-6 Phase 1 — slugs present in user's plan_covered_services for
   // this claim's plan_id. Drives CategoryCorrectionModal filtering + best-
@@ -2721,6 +2725,29 @@ export function ClaimDetail({
         </svg>
         {backLabel}
       </button>
+      {/* S330 — the member's own DFY engagement on this claim (additive; the
+          claim GET attaches it only when one is live). Plain facts, the
+          member's next step, nothing decided for them. */}
+      {data.dfyEngagement && (
+        <div className="mb-4 rounded-xl border border-violet-200 bg-violet-50 px-4 py-3 text-[13px] text-violet-900">
+          {data.dfyEngagement.status === "active" ? (
+            <>
+              <b>Candid is handling the paperwork for this appeal</b> as your authorized representative. Every step shows on your timeline below as &quot;Done by Candid&quot;; anything that needs a decision stays yours.
+              <span className="ml-2 text-violet-700">{data.dfyEngagement.phase}</span>
+            </>
+          ) : data.dfyEngagement.status === "signed" ? (
+            <>
+              <b>Your documents are signed.</b> Candid starts as soon as your appeal is composed and adopted here — that part is yours.{" "}
+              <Link href={`/dfy/${data.dfyEngagement.id}`} className="font-semibold underline">See your engagement</Link>
+            </>
+          ) : (
+            <>
+              <b>Candid can handle the paperwork for this appeal.</b> Read and sign the documents on your own page — nothing happens until you do.{" "}
+              <Link href={`/dfy/${data.dfyEngagement.id}`} className="font-semibold underline">Review and sign</Link>
+            </>
+          )}
+        </div>
+      )}
 
       {/* Bill-head — B4.2 redesign per plans/b4.2_bill_detail_redesign.md §4.1 */}
       <div className="mb-6">
