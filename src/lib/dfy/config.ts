@@ -38,8 +38,11 @@ export interface DfyConfig {
    *  first; the $5 charge flips on counsel's opinion signature — set 500 then). */
   feeCents: number;
   /** The who-is-named variant seam (counsel Q2): which name appears on the
-   *  designation per channel. DMHC's 20-160 has one "person assisting" field;
-   *  federal channels appear to permit the entity. Individual by default. */
+   *  designation per channel. Andrew (S330): the ENTITY — Airgetlam Labs LLC,
+   *  the operator of Candid — so the member can sign the designation at once,
+   *  before any operator holds the matter. "individual" remains available per
+   *  channel (the DMHC 20-160 "person assisting" field is the MEMBER's own
+   *  state-level form and is unaffected). */
   designationNamedParty: { erisa_plan: "individual" | "entity"; plan_internal_grievance: "individual" | "entity" };
   /** Operator SLA: an active matter with no operator act for this many days,
    *  or with runway under the refusal threshold, is flagged on the daily cron. */
@@ -61,7 +64,7 @@ export const DFY_CONFIG_DEFAULTS: DfyConfig = Object.freeze<DfyConfig>({
   ipAllowlistEnforced: false,
   marketingGateVerifiedOn: null,
   feeCents: 0,
-  designationNamedParty: { erisa_plan: "individual", plan_internal_grievance: "individual" },
+  designationNamedParty: { erisa_plan: "entity", plan_internal_grievance: "entity" },
   slaDays: 3,
   accessReview: { at: null, by: null },
   entryPointEnabled: false,
@@ -98,8 +101,8 @@ export function parseDfyConfig(raw: unknown): DfyConfig {
     marketingGateVerifiedOn: verified,
     feeCents: nonNegInt(c.fee_cents, DFY_CONFIG_DEFAULTS.feeCents),
     designationNamedParty: {
-      erisa_plan: namedParty((c.designation_named_party as Record<string, unknown> | undefined)?.erisa_plan, "individual"),
-      plan_internal_grievance: namedParty((c.designation_named_party as Record<string, unknown> | undefined)?.plan_internal_grievance, "individual"),
+      erisa_plan: namedParty((c.designation_named_party as Record<string, unknown> | undefined)?.erisa_plan, "entity"),
+      plan_internal_grievance: namedParty((c.designation_named_party as Record<string, unknown> | undefined)?.plan_internal_grievance, "entity"),
     },
     slaDays: posInt(c.sla_days, DFY_CONFIG_DEFAULTS.slaDays),
     accessReview: {

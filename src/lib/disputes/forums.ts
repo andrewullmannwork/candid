@@ -60,7 +60,8 @@ export interface RegulatoryClassification {
   caRegulator?: CaRegulator;
   /** WA self-funded only: plan appears on the OIC's BBPA opt-in list. */
   waBbpaOptedIn?: boolean;
-  source: "user_screening";
+  /** user_screening = the member's own answers; operator_intake = a DFY operator reading the member's documents at intake (S330). */
+  source: "user_screening" | "operator_intake";
   answeredAt: string; // ISO
 }
 

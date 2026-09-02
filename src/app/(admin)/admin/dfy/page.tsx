@@ -10,6 +10,7 @@
 "use client";
 
 import Link from "next/link";
+import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth/auth-context";
 
@@ -71,6 +72,34 @@ function who(u: UserDisplay | null): string {
   return u.displayName || u.email || u.userId.slice(0, 8);
 }
 
+interface Answers { planSponsorType: string; caRegulator: string; coverageType: string; secondaryCoverageCdi: string; governmentProgram: string; memberAskedWhatToArgue: string; part2Records: string }
+
+/** What the paperwork suggests for each question — the operator reviews rather than fills (Andrew: as few steps as possible). */
+function cdiInsurerHint(insurer: string | null | undefined): boolean {
+  return /life\s*(&|and)\s*health|\blife\b/i.test(insurer ?? "");
+}
+
+function defaultAnswers(m: Matter): Answers {
+  const pw = m.paperwork;
+  const cls = (pw?.plan?.classification ?? null) as { caRegulator?: string; coverageType?: string } | null;
+  const planText = `${pw?.plan?.planType ?? ""} ${pw?.plan?.insurerName ?? ""} ${pw?.plan?.planName ?? ""}`;
+  const metalTier = /\b(bronze|silver|gold|platinum|minimum coverage|catastrophic)\b/i.test(planText) || /individual|marketplace|covered california|exchange/i.test(planText);
+  const gov = /medicare|medicaid|medi-cal|tricare|\bva\b|veterans|champva/i.test(planText);
+  const cdiInsurer = /life\s*(&|and)\s*health|\blife\b/i.test(pw?.plan?.insurerName ?? "");
+  const regulator = cls?.caRegulator ?? (cdiInsurer ? "CDI" : "");
+  const part2 = /rehab|recovery|detox|addiction|substance|sober|treatment center|behavioral health/i.test(pw?.claim.provider ?? "");
+  const scopeSigned = !!(m.engagement.consent_event_ids ?? {})["dfy_scope_of_engagement"];
+  return {
+    planSponsorType: pw?.plan?.employerName ? "single_employer" : metalTier ? "individual_marketplace" : "",
+    caRegulator: regulator,
+    coverageType: cls?.coverageType ?? (gov ? "" : pw?.plan?.employerName ? "" : metalTier ? "commercial_fully_insured" : ""),
+    secondaryCoverageCdi: regulator === "CDI" ? "yes" : "no",
+    governmentProgram: gov ? "" : "no",
+    memberAskedWhatToArgue: scopeSigned || (pw?.grounds.length ?? 0) > 0 ? "no" : "",
+    part2Records: part2 ? "" : "no",
+  };
+}
+
 export default function DfyQueuePage() {
   const { user } = useAuth();
   const [data, setData] = useState<QueuePayload | null>(null);
@@ -86,7 +115,7 @@ export default function DfyQueuePage() {
   const [inviteSponsor, setInviteSponsor] = useState("");
   const [inviteMsg, setInviteMsg] = useState<string | null>(null);
   // Screening answers per applicant
-  const [answers, setAnswers] = useState<Record<string, { planSponsorType: string; secondaryCoverageCdi: string; governmentProgram: string; memberAskedWhatToArgue: string; part2Records: string }>>({});
+  const [answers, setAnswers] = useState<Record<string, Answers>>({});
   // Admin-only sections (sponsors + the weekly access review) — the routes refuse non-admins; the UI simply hides on 403.
   const [sponsors, setSponsors] = useState<Sponsor[] | null>(null);
   const [sponsorForm, setSponsorForm] = useState({ code: "", name: "", contactEmail: "", agreementSignedAt: "" });
@@ -148,12 +177,15 @@ export default function DfyQueuePage() {
     await refresh();
   }
   async function screen(id: string, action: "evaluate" | "accept" | "decline" | "reopen" = "evaluate") {
-    const a = answers[id] ?? { planSponsorType: "", secondaryCoverageCdi: "", governmentProgram: "", memberAskedWhatToArgue: "", part2Records: "" };
+    const m = data?.applicants.find((x) => x.engagement.id === id);
+    const a = answers[id] ?? (m ? defaultAnswers(m) : { planSponsorType: "", caRegulator: "", coverageType: "", secondaryCoverageCdi: "", governmentProgram: "", memberAskedWhatToArgue: "", part2Records: "" });
     const tri = (v: string) => (v === "yes" ? true : v === "no" ? false : null);
     setBusy(id);
     const r = await post(`/api/admin/dfy/engagements/${id}/screen`, {
       action,
       reason: action === "decline" ? (declineReason[id] ?? "") : undefined,
+      caRegulator: a.caRegulator || undefined,
+      coverageType: a.coverageType || undefined,
       planSponsorType: a.planSponsorType || null,
       secondaryCoverageCdi: tri(a.secondaryCoverageCdi),
       governmentProgram: tri(a.governmentProgram),
@@ -225,7 +257,7 @@ export default function DfyQueuePage() {
       <section className="rounded-2xl border border-gray-200 bg-white p-5">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-500">Matters</h2>
         {!data ? (
-          <p className="mt-3 text-sm text-gray-500">Loading…</p>
+          <div className="mt-3"><CubeLoaderBuilding variant="inline" size={20} /></div>
         ) : data.matters.length === 0 ? (
           <p className="mt-3 text-sm text-gray-500">No matters yet.</p>
         ) : (
@@ -283,14 +315,14 @@ export default function DfyQueuePage() {
         <div className="mt-3 space-y-4">
           {data?.applicants.map((m) => {
             const e = m.engagement;
-            const a = answers[e.id] ?? { planSponsorType: "", secondaryCoverageCdi: "", governmentProgram: "", memberAskedWhatToArgue: "", part2Records: "" };
+            const a = answers[e.id] ?? defaultAnswers(m);
             const set = (k: keyof typeof a, v: string) => setAnswers((p) => ({ ...p, [e.id]: { ...a, [k]: v } }));
             const decision = e.intake?.decision ?? null;
             const pw = m.paperwork;
             const signed = Object.keys(e.consent_event_ids ?? {}).length;
             const grounds = (pw?.grounds ?? []).map((g) => g.replace(/_/g, " "));
             const govHint = /medicare|medicaid|medi-cal|tricare|\bva\b|veterans|champva/i.test(`${pw?.plan?.planType ?? ""} ${pw?.plan?.insurerName ?? ""} ${pw?.plan?.planName ?? ""}`);
-            const cls = pw?.plan?.classification as { regulator?: string; coverageType?: string; fundingType?: string } | null | undefined;
+            const cls = pw?.plan?.classification as { caRegulator?: string; regulator?: string; coverageType?: string; fundingType?: string } | null | undefined;
             const sel = "mt-1 w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-[12.5px]";
             const money = (n: number | null) => (n === null ? "—" : `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
             return (
@@ -309,19 +341,19 @@ export default function DfyQueuePage() {
                 </div>
 
                 {/* the paperwork the operator screens FROM */}
-                <div className="grid gap-4 border-t border-gray-100 px-4 py-4 text-[12.5px] text-gray-700 md:grid-cols-3">
-                  <div>
+                <div className="grid gap-3 border-t border-gray-100 px-4 py-4 text-[12.5px] text-gray-700 md:grid-cols-3">
+                  <div className="rounded-xl bg-gray-50 p-3">
                     <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Plan (from their documents)</div>
                     {pw?.plan ? (
                       <ul className="mt-1 space-y-0.5">
                         <li className="font-medium text-gray-900">{pw.plan.planName ?? "plan name not parsed"}</li>
                         <li>{pw.plan.insurerName ?? "insurer —"} · {pw.plan.planType ?? "type —"}{pw.plan.state ? ` · ${pw.plan.state}` : ""}</li>
                         <li>Employer: {pw.plan.employerName ?? "not stated"} · Group: {pw.plan.groupNumber ?? "—"}</li>
-                        <li>Regulator: {cls?.regulator ?? "not stated in documents"}{cls?.coverageType ? ` · ${String(cls.coverageType).replace(/_/g, " ")}` : ""}{cls?.fundingType ? ` · ${String(cls.fundingType).replace(/_/g, " ")}` : ""}</li>
+                        <li>Regulator: {cls?.caRegulator ?? cls?.regulator ?? "not stated in documents"}{cls?.coverageType ? ` · ${String(cls.coverageType).replace(/_/g, " ")}` : ""}{cls?.fundingType ? ` · ${String(cls.fundingType).replace(/_/g, " ")}` : ""}</li>
                       </ul>
                     ) : <p className="mt-1 text-gray-500">No plan pinned to this claim.</p>}
                   </div>
-                  <div>
+                  <div className="rounded-xl bg-gray-50 p-3">
                     <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Claim + denial</div>
                     <ul className="mt-1 space-y-0.5">
                       <li className="font-medium text-gray-900">{pw?.claim.provider ?? "provider —"} · {pw?.claim.dateOfService ?? "DOS —"}</li>
@@ -330,7 +362,7 @@ export default function DfyQueuePage() {
                       <li>Denial notice: {m.insurerLetter?.denialNoticeDate ?? "no date on record"}{m.insurerLetter ? ` · ${m.insurerLetter.letterType.replace(/_/g, " ")} ${m.insurerLetter.status}` : " · no appeal letter yet"}{pw?.claim.inCollections ? " · in collections" : ""}</li>
                     </ul>
                   </div>
-                  <div>
+                  <div className="rounded-xl bg-gray-50 p-3">
                     <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">What the member argued</div>
                     {grounds.length ? (
                       <div className="mt-1 flex flex-wrap gap-1">{grounds.map((g) => <span key={g} className="rounded-md border border-blue-200 bg-blue-50 px-2 py-0.5 text-[11.5px] font-medium text-blue-800">{g}</span>)}</div>
@@ -342,30 +374,42 @@ export default function DfyQueuePage() {
                   </div>
                 </div>
 
-                {/* the five questions, each with what the paperwork suggests */}
-                <div className="grid gap-3 border-t border-gray-100 px-4 py-4 md:grid-cols-5">
+                {/* the questions — pre-filled from the paperwork; the operator reviews, the hints sit below in one strip */}
+                <div className="grid gap-3 border-t border-gray-100 px-4 py-4 sm:grid-cols-2 lg:grid-cols-4">
+                  <label className="text-[12px] text-gray-600">Regulator named in the documents
+                    <select className={sel} value={a.caRegulator} onChange={(ev) => set("caRegulator", ev.target.value)}><option value="">—</option><option value="DMHC">DMHC</option><option value="CDI">CDI</option><option value="unknown">not named</option></select>
+                  </label>
+                  <label className="text-[12px] text-gray-600">Coverage type
+                    <select className={sel} value={a.coverageType} onChange={(ev) => set("coverageType", ev.target.value)}><option value="">—</option><option value="commercial_fully_insured">fully insured (insurer bears the risk)</option><option value="employer_self_funded">self-funded employer (ERISA / ASO)</option><option value="employer_self_funded_public">self-funded public or church employer</option><option value="medicare">Medicare</option><option value="medicaid">Medi-Cal / Medicaid</option></select>
+                  </label>
                   <label className="text-[12px] text-gray-600">Plan sponsor
                     <select className={sel} value={a.planSponsorType} onChange={(ev) => set("planSponsorType", ev.target.value)}>
                       <option value="">—</option><option value="single_employer">single employer</option><option value="mewa_association_peo">MEWA / association / PEO</option><option value="individual_marketplace">individual / marketplace</option><option value="government">government</option><option value="unknown">unknown</option>
                     </select>
-                    <span className="mt-1 block text-[11px] text-gray-400">{pw?.plan?.employerName ? `Employer on file: ${pw.plan.employerName} → single employer unless the card names an association or PEO.` : /individual|marketplace|covered california|exchange/i.test(pw?.plan?.planType ?? "") ? "Plan type reads as individual / marketplace." : "Not stated in the documents — ask the member who pays the premium."}</span>
                   </label>
                   <label className="text-[12px] text-gray-600">CDI-regulated policy in the matter (incl. secondary)?
                     <select className={sel} value={a.secondaryCoverageCdi} onChange={(ev) => set("secondaryCoverageCdi", ev.target.value)}><option value="">—</option><option value="no">no</option><option value="yes">yes</option></select>
-                    <span className="mt-1 block text-[11px] text-gray-400">{cls?.regulator ? `Documents say: ${cls.regulator}.` : "Not stated — a PPO or indemnity card that names the Department of Insurance is CDI; HMO / most PPOs in CA are DMHC."}</span>
                   </label>
-                  <label className="text-[12px] text-gray-600">Government program (TRICARE / VA) in the matter?
+                  <label className="text-[12px] text-gray-600">TRICARE or VA / CHAMPVA in the matter?
                     <select className={sel} value={a.governmentProgram} onChange={(ev) => set("governmentProgram", ev.target.value)}><option value="">—</option><option value="no">no</option><option value="yes">yes</option></select>
-                    <span className="mt-1 block text-[11px] text-gray-400">{govHint ? "The plan or insurer name reads like a government program." : "No government program named on the plan or the bill."}</span>
                   </label>
-                  <label className="text-[12px] text-gray-600">Records from a substance-use treatment provider (42 CFR Part 2)?
+                  <label className="text-[12px] text-gray-600">Substance-use treatment records (42 CFR Part 2)?
                     <select className={sel} value={a.part2Records} onChange={(ev) => set("part2Records", ev.target.value)}><option value="">—</option><option value="no">no</option><option value="yes">yes</option></select>
-                    <span className="mt-1 block text-[11px] text-gray-400">Judge by the PROVIDER on the bill{pw?.claim.provider ? ` (${pw.claim.provider})` : ""}: a detox, rehab or addiction-treatment program is Part 2.</span>
                   </label>
                   <label className="text-[12px] text-gray-600">Did the member ask us what to argue?
                     <select className={sel} value={a.memberAskedWhatToArgue} onChange={(ev) => set("memberAskedWhatToArgue", ev.target.value)}><option value="">—</option><option value="no">no</option><option value="yes">yes</option></select>
-                    <span className="mt-1 block text-[11px] text-gray-400">{grounds.length ? "They picked their own grounds (above) — \"no\" unless a message asked us to choose." : "No grounds yet. \"Yes\" only if they asked us to choose for them."}</span>
                   </label>
+                </div>
+                <div className="border-t border-gray-100 bg-gray-50/60 px-4 py-3 text-[11.5px] leading-relaxed text-gray-500">
+                  <div className="mb-1 text-[10.5px] font-semibold uppercase tracking-wide text-gray-400">From the paperwork</div>
+                  <ul className="space-y-0.5">
+                    <li><b className="text-gray-600">Regulator.</b> DMHC = Department of Managed Health Care: licenses HMOs and most California PPOs, including Blue Shield of California. CDI = California Department of Insurance: indemnity and some PPO <i>insurance policies</i>, e.g. Blue Shield of California Life &amp; Health. Read the agency named on the card, the EOB or the SBC&apos;s complaints section — never guess from &quot;PPO&quot;.{cls?.caRegulator ? ` The member's own screening says ${cls.caRegulator}.` : cdiInsurerHint(pw?.plan?.insurerName) ? " This insurer name reads as a CDI-licensed life & health company." : pw?.plan?.insurerName ? ` ${pw.plan.insurerName} plans are DMHC-licensed unless the card names the Department of Insurance.` : ""}</li>
+                    <li><b className="text-gray-600">Coverage type.</b> Fully insured = the insurer bears the risk (individual, marketplace, most employers). Self-funded = the employer pays claims and the insurer only administers (the card or SBC says &quot;administered by&quot; / &quot;ASO&quot;). {defaultAnswers(m).coverageType === "commercial_fully_insured" ? "A metal-tier plan with no employer on file reads as fully insured." : "Not stated in the documents."}</li>
+                    <li><b className="text-gray-600">Plan sponsor.</b> {pw?.plan?.employerName ? `Employer on file: ${pw.plan.employerName} — single employer unless the card names an association or PEO.` : defaultAnswers(m).planSponsorType === "individual_marketplace" ? "A metal-tier / marketplace plan name — individual coverage, no employer." : "Not stated — ask who pays the premium."}</li>
+                    <li><b className="text-gray-600">Government programs.</b> TRICARE and VA / CHAMPVA anywhere in the matter; Medicare and Medi-Cal are caught by the coverage type. {govHint ? "The plan or insurer name reads like a government program — confirm." : "None named on the plan or the bill."}</li>
+                    <li><b className="text-gray-600">Part 2.</b> Judge by the provider on the bill{pw?.claim.provider ? ` (${pw.claim.provider})` : ""}: a detox, rehab, or addiction-treatment program is Part 2; a hospital or medical group is not.</li>
+                    <li><b className="text-gray-600">What to argue.</b> {grounds.length ? "They picked their own grounds (above)" : "No grounds yet"}{(e.consent_event_ids ?? {})["dfy_scope_of_engagement"] ? ", and their signed Scope of Engagement says Candid will not choose for them" : ""} — &quot;yes&quot; only if a message asked us to choose.</li>
+                  </ul>
                 </div>
 
                 {/* result + the explicit calls */}

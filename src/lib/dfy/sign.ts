@@ -24,6 +24,7 @@ import { userScoped } from "@/lib/security/user-scoped";
 import { patchEngagement, type DfyEngagementRow, loadEngagement } from "@/lib/security/operator-scoped";
 import { emitCaseEvents } from "@/lib/case/case-events";
 import { postOpsMessage } from "@/lib/slack/ops-message";
+import { sendDfyMatterUpdateEmail } from "@/lib/email/dfy-emails";
 import { getConsentDocument } from "@/lib/consent/consent-documents";
 import { assertTransition } from "./engagement-state";
 import type { DfyConfig } from "./config";
@@ -150,7 +151,7 @@ export interface SignResult {
 function counterpartyLine(type: DfyInstrumentType, ctx: InstrumentContext, when: string): string | null {
   if (type !== "dfy_authorized_representative_designation") return null;
   return ctx.namedParty === "entity"
-    ? `Accepted for ${ENTITY_NAME} (the operator of Candid) by ${ctx.operatorName}, its employee, on ${when}.`
+    ? `Accepted for ${ENTITY_NAME} (the operator of Candid) on ${when}.`
     : `Accepted by ${ctx.operatorName}, an employee of ${ENTITY_NAME} (the operator of Candid), on ${when}.`;
 }
 
@@ -352,5 +353,9 @@ export async function maybeActivateEngagement(
   await emitCaseEvents(supabase, e.user_id, [
     { claimId: e.claim_id, kind: "dfy_engagement_activated", actor: "system", payload: { engagementId: e.id, status: "active", feeWaived } },
   ]);
+  // The status change the member cares about most, told to them without a button.
+  const { data: mr } = await supabase.from("users").select("email, display_name").eq("id", e.user_id).maybeSingle();
+  const m = mr as { email?: string | null; display_name?: string | null } | null;
+  if (m?.email) void sendDfyMatterUpdateEmail({ to: m.email, firstName: m.display_name?.trim().split(/\s+/)[0] ?? null, claimId: e.claim_id, what: "confirmed we can take your appeal on and have started" });
   return patched;
 }

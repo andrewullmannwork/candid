@@ -297,6 +297,8 @@ export interface EngagementPatch {
   status?: EngagementStatus;
   operator_user_id?: string | null;
   intake?: Record<string, unknown>;
+  /** The classification snapshot — set at creation from the plan, or by an operator reading the documents at intake. */
+  plan_classification?: Record<string, unknown> | null;
   scope?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
   consent_event_ids?: Record<string, unknown>;

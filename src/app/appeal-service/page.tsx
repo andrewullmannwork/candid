@@ -16,6 +16,7 @@
 import "../landing.css";
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
 import { LearnFooter, LearnHeader } from "@/components/learn/LearnChrome";
 import { useDfyEntry } from "@/lib/dfy/use-dfy-entry";
@@ -33,6 +34,7 @@ const field = "mt-1.5 block w-full rounded-xl border border-gray-300 bg-white px
 
 export default function AppealServicePage() {
   const { user } = useAuth();
+  const router = useRouter();
   const signedIn = !!user && !user.isAnonymous;
   const open = useDfyEntry();
   const [claims, setClaims] = useState<ClaimRow[] | null>(null);
@@ -61,8 +63,9 @@ export default function AppealServicePage() {
     const t = await user.firebaseUser.getIdToken();
     const r = await fetch("/api/dfy/apply", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` }, body: JSON.stringify({ claimId, sponsorCode: sponsorCode || undefined }) });
     const j = (await r.json().catch(() => ({}))) as { error?: string; engagementId?: string };
+    if (r.ok && j.engagementId) { router.push(`/dfy/${j.engagementId}`); return; }
     setBusy(false);
-    setMsg(r.ok ? { tone: "ok", text: "Request received. Sign your documents now, and we'll confirm we can take this one.", engagementId: j.engagementId } : { tone: "err", text: j.error || "Something went wrong. Try again." });
+    setMsg({ tone: "err", text: j.error || "Something went wrong. Try again." });
   }
 
   return (
@@ -70,7 +73,7 @@ export default function AppealServicePage() {
       <LearnHeader session={{ signedIn, label: signedIn ? user?.email ?? null : null }} />
       <main className="landing" style={{ flex: 1 }}>
         {open === null ? (
-          <section className="section"><div className="section-narrow"><p className="section-sub">Loading…</p></div></section>
+          <section className="section"><div className="section-narrow"><CubeLoaderBuilding className="min-h-[40vh]" /></div></section>
         ) : !open ? (
           <section className="section">
             <div className="section-narrow">
@@ -104,15 +107,7 @@ export default function AppealServicePage() {
             <section className="section" style={{ paddingTop: 0 }}>
               <div className="section-narrow">
                 <div className="step" style={{ maxWidth: 680, gap: 0 }}>
-                  {msg?.tone === "ok" && msg.engagementId ? (
-                    <>
-                      <span className="section-eyebrow">Request received</span>
-                      <p style={{ margin: 0, fontSize: 20, lineHeight: 1.35, fontWeight: 700, color: "var(--fg-2)" }}>Sign your documents now, and we&apos;ll confirm we can take this one.</p>
-                      <div className="hero-ctas" style={{ marginTop: 22 }}>
-                        <Link href={`/dfy/${msg.engagementId}`} className="btn btn-primary btn-xl">Sign now</Link>
-                      </div>
-                    </>
-                  ) : signedIn ? (
+                  {signedIn ? (
                     <>
                       <label className="block text-sm font-semibold text-gray-800">Which claim?
                         {claims === null ? (

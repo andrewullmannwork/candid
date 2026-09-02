@@ -100,7 +100,7 @@ const ctx: InstrumentContext = {
   check("designation (plan channel): no agency filing authority", /does not authorize my representative to file with the California Department of Managed Health Care/.test(des));
   const desErisa = renderInstrument("dfy_authorized_representative_designation", { ...ctx, channel: "erisa_plan", namedParty: "entity" }).text;
   check("designation (ERISA channel) cites the claims-procedure rule", desErisa.includes("29 CFR §2560.503-1(b)(4)"));
-  check("designation (entity variant) names the LLC acting through the operator", desErisa.includes(`designate ${ENTITY_NAME}, a California limited liability company`) && desErisa.includes("acting through its employee Andrew Ullmann"));
+  check("designation (entity variant) names the LLC acting through its employees — no individual, signable before any operator holds the matter", desErisa.includes(`designate ${ENTITY_NAME}, a California limited liability company`) && desErisa.includes("acting through its employees") && !desErisa.includes("acting through its employee Andrew"));
   check("the ERISA cite is in the citation registry", Object.values(CITATION_REGISTRY).some((c) => c.cite === "29 CFR §2560.503-1(b)(4)"));
   check("the §56.11 cite is in the citation registry", Object.values(CITATION_REGISTRY).some((c) => c.cite === "Cal. Civ. Code §56.11"));
 

@@ -14,6 +14,7 @@
  * record shows exactly what was screened, by whom, and when.
  */
 import { NextRequest, NextResponse } from "next/server";
+import { signedInstruments } from "@/lib/dfy/paper";
 import { sendDfyDeclineEmail } from "@/lib/email/dfy-emails";
 import { requireOperator } from "@/lib/admin/require-operator";
 import { logAdminAction } from "@/lib/admin/audit-log";
@@ -48,6 +49,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ eng
   // a decline at intake (Andrew, S330 round 2: "Screen" must not cancel).
   const action = body.action === "accept" || body.action === "decline" || body.action === "reopen" ? (body.action as "accept" | "decline" | "reopen") : "evaluate";
   const operatorReason = typeof body.reason === "string" ? body.reason.trim().slice(0, 300) : "";
+  // What the operator read in the member's documents (Gate 1/2 facts) when the
+  // plan row carries no classification of its own. Persisted on the engagement.
+  const COVERAGE = new Set(["commercial_fully_insured", "employer_self_funded", "employer_self_funded_public", "medicare", "medicaid"]);
+  const coverageType = typeof body.coverageType === "string" && COVERAGE.has(body.coverageType) ? (body.coverageType as RegulatoryClassification["coverageType"]) : null;
+  const caRegulator = body.caRegulator === "DMHC" || body.caRegulator === "CDI" || body.caRegulator === "unknown" ? (body.caRegulator as "DMHC" | "CDI" | "unknown") : null;
   const planSponsorType = SPONSOR_TYPES.has(body.planSponsorType as PlanSponsorType) ? (body.planSponsorType as PlanSponsorType) : null;
 
   try {
@@ -77,7 +83,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ eng
       loadInsurerLetter(supabase, e.user_id, e.claim_id),
     ]);
     const claimMeta = ((claim.data as { metadata?: Record<string, unknown> } | null)?.metadata ?? {}) as Record<string, unknown>;
-    const classification = plan ?? ((e.plan_classification as unknown as RegulatoryClassification | null) ?? null);
+    const operatorClassification: RegulatoryClassification | null = coverageType
+      ? { coverageType, ...(coverageType === "commercial_fully_insured" && caRegulator ? { caRegulator } : {}), source: "operator_intake", answeredAt: now.toISOString() }
+      : null;
+    // the member's own screening answers on the plan row win; then the operator's reading; then the snapshot
+    const classification = plan ?? operatorClassification ?? ((e.plan_classification as unknown as RegulatoryClassification | null) ?? null);
     const runwayBusinessDays = await computeRunway(supabase, insurerLetter, now);
 
     const facts: IntakeFacts = {
@@ -88,7 +98,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ eng
       governmentProgram: tri(body.governmentProgram),
       litigationAttested: litigation,
       inCollections: !!claimMeta.collector,
-      memberAskedWhatToArgue: tri(body.memberAskedWhatToArgue),
+      // The signed Scope of Engagement says, in the member's own signature, that
+      // Candid will not choose the grounds — so unless the operator records that
+      // a message asked us to, the answer is "no" (Andrew #5: no extra step).
+      memberAskedWhatToArgue: tri(body.memberAskedWhatToArgue) ?? (signedInstruments(e.consent_event_ids).dfy_scope_of_engagement ? false : null),
       part2Records: tri(body.part2Records),
       compositionEvents: composition,
       adverseDeterminationDate: insurerLetter?.denialNoticeDate ?? null,
@@ -158,7 +171,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ eng
       screenedAt: now.toISOString(),
       screenedBy: { operatorUserId, role },
     };
-    const updated = await patchEngagement(supabase, engagementId, { status: e.status }, { intake });
+    const updated = await patchEngagement(supabase, engagementId, { status: e.status }, {
+      intake,
+      ...(operatorClassification && !plan ? { plan_classification: { ...operatorClassification, by: operatorUserId } as unknown as Record<string, unknown> } : {}),
+    });
     if (!updated) {
       return NextResponse.json({ error: "The applicant changed underneath you — reload", code: "screen_race" }, { status: 409 });
     }

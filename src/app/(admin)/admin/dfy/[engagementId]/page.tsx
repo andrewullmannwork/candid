@@ -11,6 +11,7 @@
 "use client";
 
 import Link from "next/link";
+import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/lib/auth/auth-context";
 import { RailStep } from "@/components/claims/CaseRail";
@@ -148,7 +149,7 @@ export default function DfyMatterPage({ params }: { params: Promise<{ engagement
   }, [data]);
 
   if (!data) {
-    return <div className="max-w-3xl"><Link href="/admin/dfy" className="text-sm text-blue-700 hover:underline">← queue</Link><p className="mt-3 text-sm text-gray-500">{error ?? "Loading…"}</p></div>;
+    return <div className="max-w-3xl"><Link href="/admin/dfy" className="text-sm text-blue-700 hover:underline">← queue</Link>{error ? <p className="mt-3 text-sm text-gray-500">{error}</p> : <div className="mt-3"><CubeLoaderBuilding variant="inline" size={20} /></div>}</div>;
   }
   const { matter, canAct, isHolder } = data;
   const e = matter.engagement;

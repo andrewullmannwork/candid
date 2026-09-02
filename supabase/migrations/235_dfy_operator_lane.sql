@@ -162,6 +162,6 @@ VALUES (
   false,
   'S330 (PR-DFY-1). Gates the do-it-for-you operator lane: the /admin/dfy queue + intake screening + matter view, the operator action routes, and the engagement lifecycle. Config: concurrent_cap (per operator), refusal_runway_business_days (R18 intake refusal), ip_allowlist + ip_allowlist_enforced (D8 access hardening), marketing_gate_verified_on (Gate 6 attestation date; null = every applicant refused). OFF = the section is dark and every operator route answers 404. Rollback = flip OFF.',
   'global',
-  '{"concurrent_cap": 5, "refusal_runway_business_days": 10, "ip_allowlist": [], "ip_allowlist_enforced": false, "marketing_gate_verified_on": null, "fee_cents": 0, "ops_channel_id": "C0BUFNW7VQE", "designation_named_party": {"erisa_plan": "individual", "plan_internal_grievance": "individual"}}'::jsonb
+  '{"concurrent_cap": 5, "refusal_runway_business_days": 10, "ip_allowlist": [], "ip_allowlist_enforced": false, "marketing_gate_verified_on": null, "fee_cents": 0, "ops_channel_id": "C0BUFNW7VQE", "designation_named_party": {"erisa_plan": "entity", "plan_internal_grievance": "entity"}}'::jsonb
 )
 ON CONFLICT (flag_key) DO NOTHING;

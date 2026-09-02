@@ -106,7 +106,7 @@ function representativeName(ctx: InstrumentContext): string {
 
 function representativeKindClause(ctx: InstrumentContext): string {
   return ctx.namedParty === "entity"
-    ? `a California limited liability company (the operator of Candid), acting through its employee ${ctx.operatorName}`
+    ? "a California limited liability company (the operator of Candid), acting through its employees"
     : `an employee of ${ENTITY_NAME} (the operator of Candid), acting under Candid's supervision`;
 }
 

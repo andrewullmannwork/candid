@@ -174,7 +174,7 @@ export default function DfySigningPage({ params }: { params: Promise<{ engagemen
   }
 
   if (!data) {
-    return <div className="mx-auto max-w-3xl p-6"><p className="text-sm text-gray-500">{error ?? "Loading…"}</p></div>;
+    return error ? <div className="mx-auto max-w-3xl p-6"><p className="text-sm text-gray-500">{error}</p></div> : <CubeLoaderBuilding />;
   }
   const e = data.engagement;
   const total = data.instruments.length;
@@ -206,6 +206,21 @@ export default function DfySigningPage({ params }: { params: Promise<{ engagemen
         <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
           <b>We can&apos;t take this one on.</b> {data.screened.declineReason ?? ""} Your appeal and every free tool stay yours.
         </div>
+      )}
+
+      {/* ── where you are ── */}
+      {!closed && (
+        <ol className="grid grid-cols-4 gap-2 text-[11.5px] font-semibold">
+          {(["Request sent", "Sign your documents", "We confirm", "We start"] as const).map((label, i) => {
+            const current = e.status === "active" ? 3 : e.status === "signed" ? 2 : 1;
+            const state = i < current ? "done" : i === current ? "now" : "later";
+            return (
+              <li key={label} className={`rounded-xl border px-3 py-2 ${state === "done" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : state === "now" ? "border-blue-300 bg-blue-50 text-blue-800 ring-2 ring-blue-100" : "border-gray-200 bg-white text-gray-400"}`}>
+                <span className="mr-1.5 text-[10px] uppercase tracking-wide opacity-70">{state === "done" ? "✓" : `${i + 1}`}</span>{label}{state === "now" ? " ←" : ""}
+              </li>
+            );
+          })}
+        </ol>
       )}
 
       {/* ── progress ── */}
