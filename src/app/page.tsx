@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth/auth-context";
 import { useFeatureFlag } from "@/lib/config/use-feature-flag";
+import { useDfyEntry } from "@/lib/dfy/use-dfy-entry";
 
 const ORIGIN = "https://www.candidclaim.com";
 
@@ -229,12 +230,7 @@ function Hero({ loggedIn }: { loggedIn: boolean }) {
   // untouched; a quiet ghost secondary under the CTAs routes to /check.
   const { enabled: anonCheck } = useFeatureFlag("anonymous_bill_check_v1");
   // S330 — ONE public boolean: flag ON AND config entry_point_enabled.
-  const [dfyEntry, setDfyEntry] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    fetch("/api/dfy/entry-point").then((r) => r.json()).then((j: { enabled?: boolean }) => { if (!cancelled) setDfyEntry(j.enabled === true); }).catch(() => {});
-    return () => { cancelled = true; };
-  }, []);
+  const dfyEntry = useDfyEntry() === true;
   return (
     <section className="hero">
       <div className="hero-inner">

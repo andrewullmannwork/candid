@@ -21,6 +21,8 @@ const DFY_ACT_LABEL: Record<string, string> = {
 import { Fragment, useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
+import { useDfyEntry } from "@/lib/dfy/use-dfy-entry";
+import { clearDfyIntent } from "@/lib/dfy/intent";
 import type { BillState } from "@/lib/claims/derive-bill-state";
 import { buildBillState } from "@/lib/claims/use-claim-pipeline";
 import { Disclaimer } from "@/components/shared/Disclaimer";
@@ -601,6 +603,22 @@ export function ClaimDetail({
 }) {
   const { user } = useAuth();
   const router = useRouter();
+  // S330 — the door into done-for-you handling, on the claim itself.
+  const dfyEntry = useDfyEntry();
+  const [dfyBusy, setDfyBusy] = useState(false);
+  const [dfyErr, setDfyErr] = useState<string | null>(null);
+  async function requestDfy() {
+    if (!user) return;
+    setDfyBusy(true); setDfyErr(null);
+    try {
+      const t = await user.firebaseUser.getIdToken();
+      const r = await fetch("/api/dfy/apply", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` }, body: JSON.stringify({ claimId }) });
+      const j = (await r.json().catch(() => ({}))) as { error?: string; engagementId?: string };
+      if (!r.ok || !j.engagementId) { setDfyErr(j.error || "Something went wrong. Try again."); return; }
+      clearDfyIntent();
+      router.push(`/dfy/${j.engagementId}`);
+    } finally { setDfyBusy(false); }
+  }
   const [data, setData] = useState<ClaimData | null>(null);
   const [loading, setLoading] = useState(true);
   // Session 85 — default to ALL primary rows expanded so Plan-says/Bill-shows
@@ -2741,6 +2759,17 @@ export function ClaimDetail({
         </svg>
         {backLabel}
       </button>
+      {/* S330 — the door into done-for-you handling, on the claim itself (Andrew:
+          "click handle appeal on the claim when they upload it"). Entry open, a
+          full account, no engagement yet. Asking needs no composition; execution
+          stays gated on the member's own composition events. */}
+      {dfyEntry === true && !data.dfyEngagement && user && !user.isAnonymous && (
+        <div className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-violet-200 bg-violet-50 px-4 py-3 text-[13px] text-violet-900">
+          <span><b>Want Candid to handle this appeal?</b> We prepare and submit it as your authorized representative and work it until there is a decision.</span>
+          <button type="button" disabled={dfyBusy} onClick={() => void requestDfy()} className="rounded-lg bg-violet-700 px-3 py-1 text-[12px] font-semibold text-white disabled:opacity-50">{dfyBusy ? "Sending…" : "Handle my appeal"}</button>
+          {dfyErr && <span className="text-red-700">{dfyErr}</span>}
+        </div>
+      )}
       {/* S330 — the member's own DFY engagement on this claim (additive; the
           claim GET attaches it only when one is live). Plain facts, the
           member's next step, nothing decided for them. */}

@@ -49,6 +49,9 @@ export interface DfyConfig {
   /** The member-initiated entry point (/appeal-service + the hero CTA). Off
    *  until Gate 6 is attested and counsel signs — the pilot is invitation-only. */
   entryPointEnabled: boolean;
+  /** Slack channel for operator notifications — new requests, completed paper,
+   *  the SLA sweep. Null = the backend-ops default channel. */
+  opsChannelId: string | null;
 }
 
 export const DFY_CONFIG_DEFAULTS: DfyConfig = Object.freeze<DfyConfig>({
@@ -62,6 +65,7 @@ export const DFY_CONFIG_DEFAULTS: DfyConfig = Object.freeze<DfyConfig>({
   slaDays: 3,
   accessReview: { at: null, by: null },
   entryPointEnabled: false,
+  opsChannelId: null,
 });
 
 function posInt(v: unknown, fallback: number): number {
@@ -103,6 +107,7 @@ export function parseDfyConfig(raw: unknown): DfyConfig {
       by: typeof (c.access_review as Record<string, unknown> | undefined)?.by === "string" ? ((c.access_review as Record<string, unknown>).by as string) : null,
     },
     entryPointEnabled: c.entry_point_enabled === true,
+    opsChannelId: typeof c.ops_channel_id === "string" && /^[A-Z0-9]{8,}$/.test(c.ops_channel_id) ? c.ops_channel_id : null,
   };
 }
 

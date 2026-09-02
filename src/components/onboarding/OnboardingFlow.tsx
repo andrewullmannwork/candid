@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { hasDfyIntent } from "@/lib/dfy/intent";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
 import { useConsent } from "@/lib/consent/use-consent";
@@ -389,7 +390,7 @@ export function OnboardingFlow() {
       /* best-effort */
     }
     await stampComplete();
-    router.push("/dashboard");
+    router.push(hasDfyIntent() ? "/upload" : "/dashboard");
   }, [mode, exitTo, saveAbout, stampComplete, router]);
 
   const handleFinish = useCallback(async () => {
@@ -404,7 +405,7 @@ export function OnboardingFlow() {
       // S288: edit modes never stamp completion (an unstamped user wandering
       // into ?mode=about must not get silently marked onboarded).
       if (mode === "signup") await stampComplete();
-      router.push(mode === "signup" ? "/dashboard" : exitTo);
+      router.push(mode === "signup" ? (hasDfyIntent() ? "/upload" : "/dashboard") : exitTo);
     } catch (err) {
       setFinishing(false);
       setFinishError(

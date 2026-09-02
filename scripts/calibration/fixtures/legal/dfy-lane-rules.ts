@@ -10,6 +10,8 @@
  * Run: npx tsx scripts/calibration/fixtures/legal/dfy-lane-rules.ts
  */
 import { sponsorCodeUsable, buildSponsorReport, normalizeSponsorCode, type DfySponsor } from "../../../../src/lib/dfy/sponsors";
+import { memberIsEligibleToSign, instrumentDeferral } from "../../../../src/lib/dfy/sign";
+import { DFY_CONFIG_DEFAULTS } from "../../../../src/lib/dfy/config";
 import { withinCancelWindow, refundable, businessDaysSinceSigned } from "../../../../src/lib/dfy/fees";
 import { slaFlags } from "../../../../src/lib/dfy/sla";
 import { accessReviewStale, parseDfyConfig } from "../../../../src/lib/dfy/config";
@@ -76,6 +78,21 @@ check("codes normalize", normalizeSponsorCode(" acme-2026 ") === "ACME-2026");
   check("reviewed 9 days ago is stale", accessReviewStale(old, new Date()));
   check("entry point defaults OFF", parseDfyConfig({}).entryPointEnabled === false);
   check("fee defaults to 0 (free pilot)", parseDfyConfig({}).feeCents === 0);
+}
+
+// ── sign-first (S330, Andrew #4): the pen is open until a DECLINE; the designation waits for its person ──
+{
+  const base = { id: "e", user_id: "u", claim_id: "c", status: "eligibility_pending", lane: "insurer", payer: "member_paid", sponsor_ref: null, sponsor_id: null, operator_user_id: null, member_state: "CA", plan_classification: { coverageType: "erisa_plan" }, scope: {}, intake: {}, consent_event_ids: {}, metadata: {}, created_at: "x", updated_at: "x", screened_at: null, signed_at: null, activated_at: null, closed_at: null } as unknown as DfyEngagementRow;
+  check("unscreened is signable", memberIsEligibleToSign(base));
+  check("declined is not signable", !memberIsEligibleToSign({ ...base, intake: { decision: { eligible: false } } }));
+  check("eligible is signable", memberIsEligibleToSign({ ...base, intake: { decision: { eligible: true } } }));
+  check("a complete stack (status signed) is not re-signable", !memberIsEligibleToSign({ ...base, status: "signed" }));
+  const ind = DFY_CONFIG_DEFAULTS;
+  check("designation defers with no operator under individual naming", typeof instrumentDeferral("dfy_authorized_representative_designation", base, ind) === "string");
+  check("designation opens once an operator holds the matter", instrumentDeferral("dfy_authorized_representative_designation", { ...base, operator_user_id: "op" }, ind) === null);
+  const ent = { ...DFY_CONFIG_DEFAULTS, designationNamedParty: { erisa_plan: "entity" as const, plan_internal_grievance: "entity" as const } };
+  check("entity naming never defers", instrumentDeferral("dfy_authorized_representative_designation", base, ent) === null);
+  check("other instruments never defer", instrumentDeferral("dfy_fee_agreement", base, ind) === null && instrumentDeferral("dfy_authorization_hipaa_cmia", base, ind) === null);
 }
 
 console.log(`dfy-lane-rules: ${pass}/${pass + fail} checks passed`);

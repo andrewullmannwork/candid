@@ -11,6 +11,7 @@ import { TurnstileWidget } from "@/components/security/TurnstileWidget";
 import { PhoneOTPStep } from "@/components/auth/PhoneOTPStep";
 import { AuthErrorMessage } from "@/components/auth/PhoneAlreadyLinkedError";
 import { SIMPLIFIED_ONBOARDING_FLAG } from "@/lib/onboarding/simplified";
+import { setDfyIntent } from "@/lib/dfy/intent";
 import { isTestPhoneExempt, TEST_PHONE_EXEMPTION_FLAG } from "@/lib/auth/test-phone-exempt";
 
 type SignUpMode = "form" | "otp-email" | "otp-google";
@@ -94,8 +95,12 @@ export default function SignUpPage() {
   // (?email=…). window.location on mount (client page) avoids the
   // useSearchParams Suspense requirement; the user can still edit the field.
   useEffect(() => {
-    const qp = new URLSearchParams(window.location.search).get("email");
+    const params = new URLSearchParams(window.location.search);
+    const qp = params.get("email");
     if (qp) setEmail((prev) => prev || qp);
+    // S330 — arrived from the done-for-you door: remembered for the walk to
+    // the bill upload after onboarding (src/lib/dfy/intent.ts).
+    if (params.get("intent") === "dfy") setDfyIntent();
   }, []);
   const [password, setPassword] = useState("");
   const [fullName, setFullName] = useState("");

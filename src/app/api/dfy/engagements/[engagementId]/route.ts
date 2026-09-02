@@ -14,7 +14,7 @@ import { parseEngagementRow, DFY_ENGAGEMENT_COLUMNS } from "@/lib/security/opera
 import { readDfyState } from "@/lib/dfy/config";
 import { requiredDfyConsents, renderInstrument, signedInstruments } from "@/lib/dfy/paper";
 import { getConsentDocument } from "@/lib/consent/consent-documents";
-import { buildInstrumentContext, maybeActivateEngagement, memberIsEligibleToSign } from "@/lib/dfy/sign";
+import { buildInstrumentContext, maybeActivateEngagement, memberIsEligibleToSign, instrumentDeferral } from "@/lib/dfy/sign";
 import { derivePhase } from "@/lib/dfy/matter";
 import { loadCompositionProof } from "@/lib/dfy/operator-action";
 import { memberDeclineCopy, type GateId } from "@/lib/dfy/intake-gates";
@@ -60,7 +60,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ enga
             pdfUrl = signedUrl?.signedUrl ?? null;
           }
         }
-        return { type, title: rendered.title, version: rendered.version, effectiveDate: rendered.effectiveDate, text: rendered.text, authorizationForm: rendered.authorizationForm, signed: ref ? { signedName: ref.signedName, signedAt: ref.signedAt } : null, pdfUrl };
+        return { type, deferred: instrumentDeferral(type, e, state.config), title: rendered.title, version: rendered.version, effectiveDate: rendered.effectiveDate, text: rendered.text, authorizationForm: rendered.authorizationForm, signed: ref ? { signedName: ref.signedName, signedAt: ref.signedAt } : null, pdfUrl };
       }),
     );
   } catch (err) {

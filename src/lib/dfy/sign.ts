@@ -23,6 +23,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { userScoped } from "@/lib/security/user-scoped";
 import { patchEngagement, type DfyEngagementRow } from "@/lib/security/operator-scoped";
 import { emitCaseEvents } from "@/lib/case/case-events";
+import { postOpsMessage } from "@/lib/slack/ops-message";
 import { getConsentDocument } from "@/lib/consent/consent-documents";
 import { assertTransition } from "./engagement-state";
 import type { DfyConfig } from "./config";
@@ -61,8 +62,28 @@ export interface MemberIdentity {
 }
 
 export function memberIsEligibleToSign(e: DfyEngagementRow): boolean {
+  // Sign-first (S330, Andrew): the member signs the stack as part of asking, so
+  // an operator can start the moment screening clears. Only a DECLINE closes
+  // the pen; unscreened is signable. Activation still requires the eligible
+  // decision (maybeActivateEngagement), so nothing executes before screening.
   const decision = (e.intake as { decision?: { eligible?: boolean } }).decision;
-  return e.status === "eligibility_pending" && decision?.eligible === true;
+  return e.status === "eligibility_pending" && decision?.eligible !== false;
+}
+
+/**
+ * Why an instrument cannot be signed YET (null = signable). The designation
+ * names a person when config says "individual"; before an operator is assigned
+ * there is no person to name, so that one document waits for the claim
+ * (config "entity" names Candid itself and never defers).
+ */
+export function instrumentDeferral(type: DfyInstrumentType, e: DfyEngagementRow, config: DfyConfig): string | null {
+  if (type !== "dfy_authorized_representative_designation") return null;
+  if (e.operator_user_id) return null;
+  const cls = (e.plan_classification as { coverageType?: string } | null)?.coverageType ?? null;
+  const channel = designationChannelFor(cls);
+  return config.designationNamedParty[channel] === "individual"
+    ? "This document names your Candid representative. It opens the moment one is assigned to your appeal."
+    : null;
 }
 
 /** The facts the instruments name — read through the MEMBER's ownership. */
@@ -153,8 +174,10 @@ export async function signInstrument(input: SignInput): Promise<SignResult> {
   const now = input.now ?? new Date();
   let e = input.engagement;
   if (!memberIsEligibleToSign(e)) {
-    throw new DfySignError(409, "not_signable", "this engagement is not open for signing (it must be screened eligible and not yet signed)");
+    throw new DfySignError(409, "not_signable", "this engagement is not open for signing (it was declined, or the stack is already complete)");
   }
+  const deferred = instrumentDeferral(type, e, config);
+  if (deferred) throw new DfySignError(409, "instrument_deferred", deferred);
   const required = requiredDfyConsents(e.payer);
   if (!required.includes(type)) {
     throw new DfySignError(400, "instrument_not_required", "this instrument is not part of this engagement's paper stack");
@@ -268,7 +291,14 @@ export async function signInstrument(input: SignInput): Promise<SignResult> {
       ? [{ claimId: e.claim_id, kind: "dfy_engagement_signed" as const, actor: "user" as const, payload: { engagementId: e.id, stackComplete: true } }]
       : []),
   ]);
-  if (completed) e = await maybeActivateEngagement(supabase, e, config, now);
+  if (completed) {
+    e = await maybeActivateEngagement(supabase, e, config, now);
+    const base = process.env.NEXT_PUBLIC_APP_URL || "https://www.candidclaim.com";
+    void postOpsMessage(
+      `✍️ DFY paper complete — matter ${e.id.slice(0, 8)} signed all ${requiredDfyConsents(e.payer).length} · now ${e.status}${e.operator_user_id ? "" : " · UNCLAIMED"}: ${base}/admin/dfy/${e.id}`,
+      { channel: config.opsChannelId ?? undefined },
+    );
+  }
   return { ref, engagement: e, completed };
 }
 
@@ -286,6 +316,10 @@ export async function maybeActivateEngagement(
   now: Date = new Date(),
 ): Promise<DfyEngagementRow> {
   if (e.status !== "signed") return e;
+  // Sign-first: signing no longer implies screening. Nothing executes before an
+  // operator's eligible decision is on the row.
+  const decision = (e.intake as { decision?: { eligible?: boolean } }).decision;
+  if (decision?.eligible !== true) return e;
   const proof = await loadCompositionProof(supabase, e.user_id, e.claim_id);
   if (!compositionComplete(proof)) return e;
   const payment = (e.metadata as { payment?: { status?: string } }).payment;

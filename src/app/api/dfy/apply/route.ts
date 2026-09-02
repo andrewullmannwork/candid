@@ -2,12 +2,12 @@
  * POST /api/dfy/apply — a MEMBER asks for the done-for-you service on their own
  * claim (S330, the P4 entry point). Body: { claimId, sponsorCode? }.
  *
- * Open only when the entry point is enabled. The member must already have
- * COMPOSED the appeal in the free tool (ground selection + adoption on the
- * claim) — the conduct rule: composition precedes any execution, so an
- * application without it is refused with the honest next step. The engagement
- * opens unclaimed in intake; an operator screens it and claims it, and the
- * member is then pointed to their signing page.
+ * Open only when the entry point is enabled. Composition (the member's own
+ * ground selection + adoption) is recorded as a FACT here, not required — the
+ * engagement opens unclaimed, the member signs the stack right away (sign-first,
+ * Andrew S330), and the conduct rule holds where it matters: activation and
+ * every executing act stay gated on the member's own composition events.
+ * Operators are pinged in the DFY Slack channel.
  */
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuthenticatedUser } from "@/lib/security/require-authenticated-user";
@@ -47,9 +47,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Right now this service is open in California only.", code: "lane_closed" }, { status: 409 });
   }
   const proof = await loadCompositionProof(supabase, user.id, c.id);
-  if (!compositionComplete(proof)) {
-    return NextResponse.json({ error: "Build and adopt your appeal in the free tool first. We submit what you built.", code: "composition_missing" }, { status: 409 });
-  }
+  const composed = compositionComplete(proof);
   let sponsorId: string | null = null;
   if (sponsorCode) {
     const sponsor = await loadSponsorByCode(supabase, sponsorCode);
@@ -68,11 +66,15 @@ export async function POST(req: NextRequest) {
     sponsor_id: sponsorId,
     member_state: memberState,
     plan_classification: classification,
-    metadata: { appliedBy: { actor: "user", userId: user.id }, appliedAt: new Date().toISOString() },
+    metadata: { appliedBy: { actor: "user", userId: user.id }, appliedAt: new Date().toISOString(), compositionAtApply: composed },
   });
   if (conflict) return NextResponse.json({ error: "We're already handling this claim.", code: "engagement_exists" }, { status: 409 });
   if (!engagement) return NextResponse.json({ error: "Something went wrong. Try again.", code: "create_failed" }, { status: 500 });
   await emitCaseEvents(supabase, user.id, [{ claimId: c.id, kind: "dfy_engagement_created", actor: "user", payload: { engagementId: engagement.id, appliedBy: "member", payer: engagement.payer } }]);
-  void postOpsMessage(`🆕 DFY application — matter ${engagement.id.slice(0, 8)} awaits screening: ${process.env.NEXT_PUBLIC_APP_URL || "https://www.candidclaim.com"}/admin/dfy`);
+  const base = process.env.NEXT_PUBLIC_APP_URL || "https://www.candidclaim.com";
+  void postOpsMessage(
+    `🆕 DFY request — matter ${engagement.id.slice(0, 8)} · ${memberState ?? "state ?"} · ${engagement.payer}${sponsorCode ? ` (${sponsorCode})` : ""} · appeal ${composed ? "composed ✓" : "not composed yet"} · unsigned · awaits screening: ${base}/admin/dfy/${engagement.id}`,
+    { channel: state.config.opsChannelId ?? undefined },
+  );
   return NextResponse.json({ ok: true, engagementId: engagement.id }, { status: 201 });
 }

@@ -18,6 +18,8 @@ import { LegalText } from "@/components/legal-text";
 import { getStripeBrowser } from "@/lib/stripe/browser";
 
 interface Instrument {
+  /** Why this one cannot be signed yet (null = signable). */
+  deferred?: string | null;
   type: string; title: string; version: string; effectiveDate: string; text: string; authorizationForm: boolean;
   signed: { signedName: string; signedAt: string } | null; pdfUrl: string | null;
 }
@@ -174,13 +176,14 @@ export default function DfySigningPage({ params }: { params: Promise<{ engagemen
         </div>
       )}
       {e.status === "eligibility_pending" && !data.screened && (
-        <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700">We&apos;re confirming we can take this one on. Signing opens once approved.</div>
+        <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700">Sign the documents below now. We&apos;re confirming we can take this one on and will start the moment it clears.</div>
       )}
 
       {(e.status === "signed" || e.status === "active" || done > 0) && (
         <div className="rounded-xl border border-gray-200 bg-white p-4 text-sm">
           <div className="font-semibold text-gray-900">{done} of {total} documents signed{e.status === "active" ? " · we're on it" : e.status === "signed" ? " · signed" : ""}</div>
-          {e.status === "signed" && !composed && <p className="mt-1 text-gray-600">We start as soon as you&apos;ve built and adopted your appeal in the free tool. That part is yours.</p>}
+          {e.status === "signed" && !data.screened && <p className="mt-1 text-gray-600">All signed. We&apos;re confirming we can take this one on, then we start.</p>}
+          {e.status === "signed" && data.screened?.eligible && !composed && <p className="mt-1 text-gray-600">We start as soon as you&apos;ve built and adopted your appeal in the free tool. That part is yours.</p>}
           {e.status === "signed" && composed && data.payment.required && <p className="mt-1 text-gray-600">One step left: the ${(data.payment.feeCents / 100).toFixed(2)} fee.</p>}
           {e.status === "active" && <p className="mt-1 text-gray-600">Every step we take shows on your claim timeline as &quot;Done by Candid&quot;. Any decision stays yours. {data.phase && <span className="text-gray-500">Current phase: {data.phase}.</span>}</p>}
           {(e.status === "terminated" || e.status === "converted" || e.status === "completed") && <p className="mt-1 text-gray-600">{e.status === "completed" ? "This engagement is complete." : "This engagement has ended."}</p>}
@@ -218,7 +221,8 @@ export default function DfySigningPage({ params }: { params: Promise<{ engagemen
               {open && (
                 <div className="border-t border-gray-100 p-5">
                   <LegalText text={inst.text} variant={inst.authorizationForm ? "authorization" : "default"} />
-                  {!inst.signed && data.canSign && (
+                  {!inst.signed && data.canSign && inst.deferred && <p className="mt-4 text-sm text-gray-500">{inst.deferred}</p>}
+                  {!inst.signed && data.canSign && !inst.deferred && (
                     <div className="mt-5 space-y-3 border-t border-gray-100 pt-4">
                       <label className="block text-sm text-gray-700">Type your full name to sign
                         <input value={name} onChange={(ev) => setName(ev.target.value)} placeholder="Your full name" className="mt-1 w-full max-w-sm rounded-lg border border-gray-300 px-3 py-2 text-sm" />
@@ -230,7 +234,7 @@ export default function DfySigningPage({ params }: { params: Promise<{ engagemen
                       <button disabled={!checked || name.trim().length < 2 || busy} onClick={() => void sign(inst.type)} className="rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50">{busy ? "Signing…" : `Sign ${inst.title}`}</button>
                     </div>
                   )}
-                  {!inst.signed && !data.canSign && <p className="mt-4 text-sm text-gray-500">Signing opens once we confirm we can take this on.</p>}
+                  {!inst.signed && !data.canSign && <p className="mt-4 text-sm text-gray-500">Signing is closed on this engagement.</p>}
                   {inst.type !== "health_data_upload" && engagementId && (
                     <p className="mt-3 text-xs text-gray-500">
                       Plan wants a handwritten signature?{" "}

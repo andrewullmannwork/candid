@@ -17,6 +17,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireOperator } from "@/lib/admin/require-operator";
 import { logAdminAction } from "@/lib/admin/audit-log";
 import { operatorScoped, patchEngagement } from "@/lib/security/operator-scoped";
+import { maybeActivateEngagement } from "@/lib/dfy/sign";
 import { loadClaimLitigationAttested } from "@/lib/disputes/letter-access-state";
 import type { RegulatoryClassification } from "@/lib/disputes/forums";
 import { evaluateIntake, type IntakeFacts, type PlanSponsorType } from "@/lib/dfy/intake-gates";
@@ -45,7 +46,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ eng
 
   try {
     const scope = await operatorScoped(supabase, operatorUserId, engagementId, {
-      statuses: ["eligibility_pending"],
+      statuses: ["eligibility_pending", "signed"],
       requireHolder: false,
     });
     const e = scope.engagement;
@@ -101,7 +102,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ eng
     const updated = await patchEngagement(
       supabase,
       engagementId,
-      { status: "eligibility_pending" },
+      { status: e.status },
       decision.eligible
         ? { intake }
         : {
@@ -114,7 +115,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ eng
     if (!updated) {
       return NextResponse.json({ error: "The applicant changed underneath you — reload", code: "screen_race" }, { status: 409 });
     }
-    const scoped = { ...scope, engagement: updated };
+    // Sign-first: the member may have completed the stack before screening —
+    // an eligible decision on a signed matter activates it here, so the
+    // operator can act at once (composition + payer rule still apply inside).
+    const finalRow = decision.eligible && updated.status === "signed" ? await maybeActivateEngagement(supabase, updated, config, now) : updated;
+    const scoped = { ...scope, engagement: finalRow };
     await emitOperatorEvent(supabase, scoped, "dfy_engagement_screened", {
       eligible: decision.eligible,
       failedGates: decision.gates.filter((g) => !g.pass).map((g) => g.id),
@@ -131,7 +136,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ eng
       details: `engagement ${updated.id}: ${decision.eligible ? "eligible" : `declined — ${decision.declineReason}`} (${role})`,
       ipAddress: ip,
     });
-    return NextResponse.json({ ok: true, decision, engagement: updated });
+    return NextResponse.json({ ok: true, decision, engagement: finalRow });
   } catch (err) {
     const { status, body: b } = operatorErrorResponse(err);
     return NextResponse.json(b, { status });
