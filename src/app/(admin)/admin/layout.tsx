@@ -8,7 +8,9 @@ import { TurnstileWidget, type TurnstileWidgetHandle } from "@/components/securi
 import {
   ADMIN_DASHBOARD,
   ADMIN_NAV_GROUPS,
+  DFY_NAV_GROUP,
   adminPageFor,
+  operatorPathAllowed,
   type AdminNavGroup,
 } from "@/config/admin-nav";
 
@@ -112,6 +114,10 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const { user, loading: authLoading } = useAuth();
   const [isAdmin, setIsAdmin] = useState(false);
+  // S330 — the operator role (users.is_operator): admitted to the DFY section
+  // only. Admins have the same permissions there; an operator-only session
+  // sees exactly the DFY nav and is refused on every other admin path.
+  const [isOperator, setIsOperator] = useState(false);
   const [loading, setLoading] = useState(true);
   const [pwAuthenticated, setPwAuthenticated] = useState(false);
   const [pwChecking, setPwChecking] = useState(true);
@@ -142,8 +148,12 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
           headers: { Authorization: `Bearer ${idToken}` },
         });
         if (res.ok) {
-          const { isAdmin: admin } = await res.json();
+          const { isAdmin: admin, isOperator: operator } = (await res.json()) as {
+            isAdmin: boolean;
+            isOperator?: boolean;
+          };
           setIsAdmin(admin);
+          setIsOperator(operator === true);
         }
       } catch (err) {
         console.error("Admin check failed:", err);
@@ -190,7 +200,9 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
     );
   }
 
-  if (!user || !isAdmin) {
+  const operatorOnly = !isAdmin && isOperator;
+  const admitted = isAdmin || (isOperator && operatorPathAllowed(pathname));
+  if (!user || !admitted) {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <div className="text-center">
@@ -245,12 +257,13 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
     <div className="flex min-h-screen bg-gray-50">
       <aside className="flex w-60 flex-col border-r border-gray-200 bg-white">
         <div className="px-5 py-4">
-          <Link href="/admin/dashboard" className="text-[15px] font-semibold tracking-tight">
+          <Link href={operatorOnly ? "/admin/dfy" : "/admin/dashboard"} className="text-[15px] font-semibold tracking-tight">
             <span className="text-blue-600">Candid</span>{" "}
             <span className="text-gray-400">Admin</span>
           </Link>
         </div>
         <nav className="flex-1 space-y-0.5 overflow-y-auto px-3 pb-4">
+          {!operatorOnly && (
           <Link
             href={ADMIN_DASHBOARD.href}
             className={`flex items-center gap-2 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors ${
@@ -264,7 +277,8 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
             </svg>
             {ADMIN_DASHBOARD.label}
           </Link>
-          {ADMIN_NAV_GROUPS.map((group) => (
+          )}
+          {(operatorOnly ? [DFY_NAV_GROUP] : ADMIN_NAV_GROUPS).map((group) => (
             <NavSection key={group.label} group={group} pathname={pathname} />
           ))}
         </nav>

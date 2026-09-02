@@ -29,7 +29,24 @@ export const ADMIN_DASHBOARD: AdminNavItem = {
   opsSlug: "to-do-center",
 };
 
+/**
+ * S330 — the DFY operator section. Operators (users.is_operator) are admitted
+ * to THIS group only; admins see it alongside everything else. Kept as its own
+ * group so the layout can render exactly this for an operator-only session.
+ */
+export const DFY_NAV_GROUP: AdminNavGroup = {
+  label: "Do it for you",
+  defaultOpen: true,
+  items: [{ href: "/admin/dfy", label: "Operator queue", opsSlug: "operator-queue" }],
+};
+
+/** Paths an operator-only session may open. Everything else in /admin is admin-only. */
+export function operatorPathAllowed(pathname: string): boolean {
+  return pathname === "/admin/dfy" || pathname.startsWith("/admin/dfy/");
+}
+
 export const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
+  DFY_NAV_GROUP,
   {
     label: "Growth",
     defaultOpen: true,

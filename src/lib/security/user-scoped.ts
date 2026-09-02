@@ -65,6 +65,10 @@ export const DIRECT_USER_OWNED_TABLES = [
   "claim_case_events",
   // S315 — parse-log rows carry user_id; the A-6 reclaim move repoints them.
   "document_extraction_log",
+  // S330 (mig 235) — the DFY engagement grant. Member-owned (user_id = the
+  // member); operators reach it ONLY through operatorScoped (the grant row is
+  // the access control), members read their own via userScoped.
+  "dfy_engagements",
 ] as const;
 
 export type DirectUserOwnedTable = (typeof DIRECT_USER_OWNED_TABLES)[number];

@@ -207,6 +207,25 @@ jobs:
         # ground_selected/letter_adopted kinds exist (the DFY operator
         # invariant's composition proof — handoff §5).
         run: npx tsx scripts/calibration/fixtures/legal/member-composition.ts
+      - name: DFY state-lane registry (S330 / handoff §3)
+        # The per-state lane registry is legally-gated data: exactly one state
+        # open (CA, pilot), CA carries the DFPI regime and is NOT registered
+        # (stay dark, R15), and the letter geo-gate reads the registry's derived
+        # list — ONE fact for the free-tool gate and the paid-lane check.
+        run: npx tsx scripts/calibration/fixtures/legal/dfy-state-lanes.ts
+      - name: DFY intake gates + engagement state machine (S330)
+        # The legal front door, FAIL-CLOSED: a fully-documented applicant is
+        # eligible and flipping any ONE fact to unknown/excluded declines,
+        # naming the gate; the state machine's edges; business-day arithmetic;
+        # config parsing falls to defaults on bad values.
+        run: npx tsx scripts/calibration/fixtures/legal/dfy-intake-gates.ts
+      - name: DFY operator invariant — operatorScoped + composition proof (S330)
+        # Mock-Supabase contract for the grant primitive: role refused, matter
+        # not found / not actionable / not held, member ownership + claim
+        # narrowing injected by construction, inserts stamped, ungranted tables
+        # unreachable, and the route-layer invariant refusing an executing act
+        # without the member's own ground_selected + letter_adopted record.
+        run: npx tsx scripts/calibration/fixtures/legal/dfy-operator-invariant.ts
       - name: Citation party split — strip provider, member-adopt insurer (S326)
         # Rule 3: scoped provider letters emit ZERO citation-shaped strings;
         # scoped insurer letters cite only member-adopted authorities and fall

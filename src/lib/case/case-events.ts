@@ -113,11 +113,36 @@ export const CASE_EVENT_KINDS = [
   // not user data), composeVersion }. Emitter: /api/disputes/generate, same
   // change. Count: 24 → 25.
   "letter_adopted",
+  // ── S330 — the DFY operator lane (mig 235 widens `actor` with 'operator').
+  // Engagement lifecycle (payload: engagementId + status refs) …
+  "dfy_engagement_created",
+  "dfy_engagement_screened",
+  "dfy_engagement_signed",
+  "dfy_engagement_activated",
+  "dfy_engagement_closed",
+  // … the claim mechanic (who holds the matter) …
+  "dfy_claimed",
+  "dfy_released",
+  // … and every operator act on the member's case, each a tagged entry on the
+  // SAME timeline the member sees ("Done by Candid · date"). References only:
+  // channel / tracking / reference ids ride the payload; money lives on the
+  // dispute row, note text nowhere.
+  "dfy_designation_submitted",
+  "dfy_designation_acknowledged",
+  "dfy_document_requested",
+  "dfy_appeal_transmitted",
+  "dfy_status_called",
+  "dfy_response_recorded",
+  "dfy_offer_relayed",
+  "dfy_packet_prepared",
+  "dfy_determination_recorded",
+  "dfy_audit_logged",
 ] as const;
 
 export type CaseEventKind = (typeof CASE_EVENT_KINDS)[number];
 
-export type CaseEventActor = "user" | "system" | "backfill";
+/** 'operator' — S330 (mig 235): a DFY operator acting under a member's engagement grant. */
+export type CaseEventActor = "user" | "system" | "backfill" | "operator";
 
 export interface CaseEventInput {
   claimId: string;

@@ -39,6 +39,16 @@ Two nav groups are **read-only / dormant by design** ("Data Quality · Monitorin
 
 ---
 
+## Do it for you
+
+### Operator queue
+
+`/admin/dfy`
+
+**What it's for.** The done-for-you operator lane (S330, flag `dfy_operator_v1`): the matter queue, intake screening, and each matter's view. A matter is an ordinary claim + dispute row with an engagement overlay — the operator executes the member's OWN composed appeal (designation, transmission, status calls, relaying responses) and never selects the ground, interprets the plan, or advises on an offer.
+**What you do here.** ⚠ **Claim** a matter before acting (stamps you as holder; the route layer refuses actions from anyone else; per-operator cap is config `concurrent_cap`). **Screen** an applicant (Gates 0–6 + the deadline-runway threshold, fail-closed — every gate passes or the applicant is declined with a written reason; declined members keep the free tool). On a matter: ⚠ **Log an act** (designation submitted / acknowledged, document requested, appeal transmitted, status call, response recorded, offer relayed as a bare number, packet prepared, determination recorded, audit review) — each writes a tagged operator event to the same timeline the member sees. ⚠ **Release** a claim you hold. ⚠ **Close** (completed / terminated / converted).
+**Watch out.** Operators (users.is_operator) reach this section only; admins have the same permissions here. Gate 6 (marketing clean) is a config date — while it is null every applicant is refused by design. The state-level DMHC step is signed and filed by the MEMBER; the operator prepares the packet. Access is IP-allowlist-capable via config (`ip_allowlist`, `ip_allowlist_enforced`).
+
 ## Queues
 
 ### Document Review

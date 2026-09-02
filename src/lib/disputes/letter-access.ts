@@ -14,6 +14,7 @@
  * it up for free, no rewrite.
  */
 import type { DisputeLetterType } from "@/lib/billing/types";
+import { NEGOTIATION_GEO_GATED_STATES } from "@/lib/dfy/state-lanes";
 
 /**
  * Letter types that require Candid Pro.
@@ -61,7 +62,12 @@ export function letterRequiresPro(letterType: DisputeLetterType | null | undefin
 export const GEO_GATED_LETTER_TYPES: Partial<
   Record<DisputeLetterType, { states: readonly string[]; gateUnknownState: boolean }>
 > = {
-  negotiation: { states: ["CA"], gateUnknownState: true },
+  // S330 — the gated states come from the per-state lane registry
+  // (src/lib/dfy/state-lanes.ts): a state is gated while its registration
+  // regime applies and Candid's registration is not yet EFFECTIVE there. The
+  // DFY paid-lane check reads the SAME row, so the un-gate runbook flips ONE
+  // fact and both gates open together.
+  negotiation: { states: NEGOTIATION_GEO_GATED_STATES, gateUnknownState: true },
 };
 
 /** True when a letter type has any geo restriction — callers use this to decide
