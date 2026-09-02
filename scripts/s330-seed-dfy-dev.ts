@@ -8,6 +8,7 @@
 //   npx tsx scripts/s330-seed-dfy-dev.ts engagement <claimId> <memberEmail> eligibility_pending|signed|active [operatorEmail]
 //   npx tsx scripts/s330-seed-dfy-dev.ts marketing-gate <YYYY-MM-DD|null>
 //   npx tsx scripts/s330-seed-dfy-dev.ts purge <claimId>      (deletes the claim's engagements + dfy_* events)
+//   npx tsx scripts/s330-seed-dfy-dev.ts config <key> <json>   (one dfy_operator_v1 config key, e.g. entry_point_enabled true · fee_cents 0)
 import { createClient } from "@supabase/supabase-js";
 import * as dotenv from "dotenv";
 dotenv.config({ path: ".env.local" });
@@ -41,6 +42,15 @@ async function main() {
     const { error } = await sb.from("feature_flag_rules").update({ config: cfg }).eq("flag_key", "dfy_operator_v1");
     if (error) throw error;
     console.log("marketing_gate_verified_on →", v);
+  } else if (cmd === "config") {
+    const [k, raw] = args;
+    if (!k || raw === undefined) throw new Error("config <key> <json>");
+    const v = JSON.parse(raw) as unknown;
+    const { data } = await sb.from("feature_flag_rules").select("config").eq("flag_key", "dfy_operator_v1").single();
+    const cfg = { ...((data?.config as Record<string, unknown>) ?? {}), [k]: v };
+    const { error } = await sb.from("feature_flag_rules").update({ config: cfg }).eq("flag_key", "dfy_operator_v1");
+    if (error) throw error;
+    console.log(`config.${k} →`, JSON.stringify(v), "· now:", JSON.stringify(cfg));
   } else if (cmd === "engagement") {
     const [claimId, memberEmail, status, operatorEmail] = args;
     const m = await userByEmail(memberEmail);
@@ -70,7 +80,7 @@ async function main() {
     const ev = await sb.from("claim_case_events").delete().eq("claim_id", claimId).like("kind", "dfy_%").select("id");
     console.log(`purged engagements=${e.data?.length ?? 0} dfy events=${ev.data?.length ?? 0}`);
   } else {
-    console.log("usage: flag on|off · operator <email> on|off · engagement <claimId> <memberEmail> <status> [operatorEmail] · marketing-gate <date|null> · purge <claimId>");
+    console.log("usage: flag on|off · operator <email> on|off · engagement <claimId> <memberEmail> <status> [operatorEmail] · marketing-gate <date|null> · purge <claimId> · config <key> <json>");
   }
 }
 main().catch((e) => { console.error(e); process.exit(1); });

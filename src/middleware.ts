@@ -30,6 +30,11 @@ const PUBLIC_ROUTES = [
   // cookie by definition. Flag OFF the page itself redirects home; once the
   // anonymous account exists, sync sets candid_session like any auth path.
   "/check",
+  // S330 — the done-for-you entry point. The homepage CTA lands logged-out
+  // visitors here; the page renders the pitch for everyone and the claim
+  // picker only for a signed-in full account (the apply route itself refuses
+  // anonymous callers). Dark behind config `entry_point_enabled`.
+  "/appeal-service",
   // Dev-only component-preview namespace (S121). Each /dev/* page must guard
   // itself with `if (process.env.NODE_ENV !== "development") notFound();` so the
   // route 404s in PROD builds.
