@@ -17,6 +17,7 @@ import { updateDisputeOutcome, getUserDisputes } from "@/lib/disputes/persist";
 import { isOutcomeDetail } from "@/lib/disputes/outcome-taxonomy";
 import { emitCaseEvents, type CaseEventInput } from "@/lib/case/case-events";
 import { commitDisputeOutcome, OUTCOME_METADATA_KEYS } from "@/lib/disputes/commit-outcome";
+import { claimUnderDfyExecution, dfyExecutionHoldResponse } from "@/lib/dfy/execution-lock";
 import { bankSentVersion, stampUnsent } from "@/lib/disputes/sent-versions";
 import {
   resolveDisputeReadiness,
@@ -195,6 +196,13 @@ export async function POST(req: NextRequest) {
     // letter fails for a provider address it never prints — enforcing that
     // would lock a user out of sending a correct letter.
     const isMarkSent = status === "filed" && !clearSentAt && existing.sent_at == null;
+    // S331 — while Candid is EXECUTING this matter, the operator transmits the
+    // appeal as the member's authorized representative. A member marking it
+    // sent here would be a second submission of the same letter. Composition
+    // and the state-level filing stay the member's; only this is held.
+    if (isMarkSent && (await claimUnderDfyExecution(supabase, userId, (existing.claim_id as string | null) ?? null))) {
+      return NextResponse.json(dfyExecutionHoldResponse("send"), { status: 409 });
+    }
     if (isMarkSent) {
       const letterRequirementsOn = await isFeatureEnabled("letter_requirements_v1");
       if (letterRequirementsOn) {

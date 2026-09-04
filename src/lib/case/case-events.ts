@@ -138,6 +138,9 @@ export const CASE_EVENT_KINDS = [
   "dfy_offer_relayed",
   "dfy_packet_prepared",
   "dfy_determination_recorded",
+  // S331 — the correction event for a mis-clicked operator act. History is
+  // appended to, never rewritten; the payload refs the act it corrects.
+  "dfy_act_undone",
   "dfy_audit_logged",
   "dfy_channel_observed",
   "dfy_fee_refunded",

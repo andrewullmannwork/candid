@@ -21,22 +21,191 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/lib/auth/auth-context";
 import { RailStep } from "@/components/claims/CaseRail";
+import { dfyEnvelopeItems, type DfyInstrumentType } from "@/lib/dfy/paper";
+import { ACT_UNDO, canUndoAct, undoneEventIds, UNDO_COPY } from "@/lib/dfy/act-undo";
 import { composeRail, type RailLetterGroup, type RailStepModel } from "@/lib/case/rail-steps";
 import type { ProjectedLetterStep, ProjectedRegulatorComplaint } from "@/lib/case/timeline-projector";
 import { EMPTY_PROJECTED_REGULATOR } from "@/lib/case/timeline-projector";
 
+interface OperatorLetter {
+  disputeId: string;
+  letterType: string;
+  status: string;
+  governingDeadlineDate: string | null;
+  denialNoticeDate: string | null;
+  /** S331 — the artifacts needed to send it. */
+  letterContent: string | null;
+  enclosures: readonly string[];
+  recipient: {
+    name: string | null;
+    addressLine1: string | null;
+    addressLine2: string | null;
+    city: string | null;
+    state: string | null;
+    postalCode: string | null;
+    phone: string | null;
+  } | null;
+}
+
+/**
+ * SendKit — what the operator needs in hand to put the appeal in an envelope:
+ * the member's own letter, the address it mails to, and the enclosures.
+ *
+ * Every value comes from the member's own resolvers (the stored letter body,
+ * resolvePlanContext, getLetterEnclosures), so the operator and the member can
+ * never be looking at different letters or different addresses. The download
+ * uses the same blob idiom as the member's rail.
+ */
+function SendKit({
+  letter,
+  paper,
+  engagementId,
+  token,
+}: {
+  letter: OperatorLetter | null;
+  paper: Array<{ type: string; fileName: string; signedName: string | null; signedAt: string | null; pdfUrl: string | null }>;
+  engagementId: string;
+  token: () => Promise<string | null>;
+}) {
+  const [packetBusy, setPacketBusy] = useState(false);
+  const [packetErr, setPacketErr] = useState<string | null>(null);
+  if (!letter) return null;
+  const r = letter.recipient;
+  const hasAddress = !!r?.addressLine1;
+  // ONE manifest — the count, the list and the download button all read it, so
+  // the panel cannot tell the operator "the letter only" while a signed
+  // designation sits beside it waiting to be mailed.
+  const envelope = dfyEnvelopeItems({
+    letterType: letter.letterType,
+    signedPlanFacing: paper.filter((d) => !!d.pdfUrl).map((d) => d.type as DfyInstrumentType),
+  });
+  /** One saver for every artifact — a blob, so the file lands with its own name
+   *  instead of opening in a tab (a cross-origin signed URL ignores `download`). */
+  const save = (blob: Blob, fileName: string) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+  const letterFileName = `candid-appeal-${letter.letterType || "insurance_appeal"}.txt`;
+  const download = () => {
+    if (!letter.letterContent) return;
+    save(new Blob([letter.letterContent], { type: "text/plain" }), letterFileName);
+  };
+  /** The whole envelope as ONE printable PDF — the letter rendered to a page,
+   *  then the signed instruments copied in, server-side. What an operator
+   *  actually needs: print once, stuff once. The individual links stay for when
+   *  a single file is what's wanted. */
+  const downloadPacket = async () => {
+    if (packetBusy) return;
+    setPacketBusy(true);
+    try {
+      const t = await token();
+      const res = await fetch(`/api/admin/dfy/engagements/${engagementId}/submission-packet`, {
+        headers: { Authorization: `Bearer ${t}` },
+      });
+      if (!res.ok) {
+        const j = (await res.json().catch(() => null)) as { error?: string; detail?: string } | null;
+        setPacketErr(
+          `Couldn't build the packet: ${j?.detail || j?.error || res.status}. The individual files above still work.`,
+        );
+        return;
+      }
+      const missing = res.headers.get("X-Packet-Missing");
+      setPacketErr(missing && missing !== "none" ? `Built, but these could not be included: ${missing}` : null);
+      save(await res.blob(), `Appeal submission packet.pdf`);
+    } catch {
+      setPacketErr("Couldn't build the packet. The individual files below still work.");
+    } finally {
+      setPacketBusy(false);
+    }
+  };
+  return (
+    <div className="mb-3 rounded-xl border border-blue-200 bg-blue-50/60 p-3 text-[12.5px]">
+      <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-blue-800">To send this appeal</div>
+      <div className="flex flex-wrap items-start gap-4">
+        <div className="min-w-[190px]">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">Mail to</div>
+          {hasAddress ? (
+            <address className="not-italic text-gray-800">
+              {r?.name && <div className="font-medium">{r.name}</div>}
+              <div>{r?.addressLine1}</div>
+              {r?.addressLine2 && <div>{r.addressLine2}</div>}
+              <div>{[r?.city, r?.state].filter(Boolean).join(", ")} {r?.postalCode}</div>
+              {r?.phone && <div className="text-gray-500">{r.phone}</div>}
+            </address>
+          ) : (
+            <div className="text-amber-800">No appeals address on record for this insurer — confirm it before sending.</div>
+          )}
+        </div>
+        <div className="min-w-[260px] flex-1">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">In the envelope ({envelope.length})</div>
+          <ul className="list-disc pl-4 text-gray-800">
+            {envelope.map((it) => {
+              if (it.kind === "letter") return <li key="letter">The appeal letter</li>;
+              if (it.kind === "enclosure") return <li key={it.key}>{it.key}</li>;
+              const d = paper.find((x) => x.type === it.key);
+              return (
+                <li key={it.key}>
+                  {d?.pdfUrl ? (
+                    <a href={d.pdfUrl} target="_blank" rel="noopener noreferrer" className="font-semibold text-blue-700 underline">{d.fileName}</a>
+                  ) : (
+                    <span>{d?.fileName ?? it.key}</span>
+                  )}
+                  {d?.signedName && <span className="text-gray-500"> · signed by {d.signedName}{d.signedAt ? ` ${new Date(d.signedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : ""}</span>}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      </div>
+      <div className="mt-3">
+        {paper.length === 0 && (
+          <div className="mb-2 text-amber-800">No signed designation on file yet — the member has not completed the stack.</div>
+        )}
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={download}
+            disabled={!letter.letterContent}
+            title={letter.letterContent ? "The member's own letter, verbatim" : "No letter body stored yet"}
+            className="inline-flex items-center rounded-lg border-[1.5px] border-blue-200 bg-white px-3 py-1.5 text-[12.5px] font-semibold text-blue-700 hover:bg-blue-50 disabled:opacity-50"
+          >
+            {letter.letterContent ? "Download the appeal letter" : "No letter body stored"}
+          </button>
+          <button
+            type="button"
+            onClick={() => void downloadPacket()}
+            disabled={packetBusy || !letter.letterContent}
+            title="One PDF: the appeal letter followed by every signed document that goes to the plan"
+            className="inline-flex items-center rounded-lg bg-blue-700 px-3 py-1.5 text-[12.5px] font-semibold text-white hover:bg-blue-800 disabled:opacity-50"
+          >
+            {packetBusy ? "Building…" : `Download packet PDF (${envelope.length})`}
+          </button>
+        </div>
+        {packetErr && <p className="mt-2 text-[12px] text-amber-800">{packetErr}</p>}
+      </div>
+    </div>
+  );
+}
+
 interface UserDisplay { userId: string; displayName: string | null; email: string | null }
 interface Gate { id: string; label: string; pass: boolean; reason: string | null }
-interface DfyEvent { kind: string; occurredAt: string; disputeId: string | null; payload: Record<string, unknown> }
+interface DfyEvent { id: string | null; kind: string; occurredAt: string; disputeId: string | null; payload: Record<string, unknown> }
 interface MatterPayload {
   matter: {
     engagement: { id: string; claim_id: string; status: string; payer: string; sponsor_ref: string | null; operator_user_id: string | null; created_at: string; consent_event_ids: Record<string, unknown>; intake: { decision?: { eligible: boolean; gates: Gate[]; declineReason: string | null } | null; accepted?: { at: string }; declined?: { at: string; reason: string; memberReason: string } }; metadata: { payment?: { status?: string; amountCents?: number; refund?: { id: string } }; closedReason?: string | null; compositionAtApply?: boolean } };
     paperwork?: IntakeMatter["paperwork"];
+    submittablePaper?: Array<{ type: string; fileName: string; signedName: string | null; signedAt: string | null; pdfUrl: string | null }>;
     lastAct?: { kind: string; occurredAt: string } | null;
     member: UserDisplay & { state: string | null };
     holder: UserDisplay | null;
     composition: { groundSelected: boolean; letterAdopted: boolean };
-    insurerLetter: { disputeId: string; letterType: string; status: string; governingDeadlineDate: string | null; denialNoticeDate: string | null } | null;
+    insurerLetter: OperatorLetter | null;
     runwayBusinessDays: number | null;
     events: DfyEvent[];
     phase: string;
@@ -60,6 +229,7 @@ const ACT_LABEL: Record<string, string> = {
   dfy_offer_relayed: "Offer relayed",
   dfy_packet_prepared: "Packet prepared",
   dfy_determination_recorded: "Determination recorded",
+  dfy_act_undone: "Step undone",
   dfy_audit_logged: "Audit review logged",
   dfy_claimed: "Claimed",
   dfy_released: "Released",
@@ -185,6 +355,7 @@ export default function DfyMatterPage({ params }: { params: Promise<{ engagement
   const { matter, canAct, isHolder } = data;
   const e = matter.engagement;
   const composed = matter.composition.groundSelected && matter.composition.letterAdopted;
+  const undoneIds = undoneEventIds(matter.events);
   const eventsFor = (disputeId: string | null, kinds: string[]) => matter.events.filter((ev) => kinds.includes(ev.kind) && (disputeId === null || ev.disputeId === disputeId || ev.disputeId === null));
   const doneBy = (disputeId: string | null, kinds: string[]) => eventsFor(disputeId, kinds).map((ev) => (
     <span key={`${ev.kind}-${ev.occurredAt}`} className="ml-1 inline-block rounded-md border border-violet-200 bg-violet-50 px-1.5 py-0.5 text-[10.5px] font-bold text-violet-700">
@@ -201,7 +372,13 @@ export default function DfyMatterPage({ params }: { params: Promise<{ engagement
   function slot(s: RailStepModel, disputeId: string | null) {
     if (s.kind === "send-draft") {
       return (
-        <div className="mt-2 flex flex-wrap items-center gap-2">
+        <div className="mt-2">
+        {/* S331 — the artifacts an operator needs to actually send this: the
+            member's own letter, the recipient the member's letter mails to
+            (resolvePlanContext — one resolver), and the envelope's enclosures.
+            The matter view rendered the step and withheld all three. */}
+        <SendKit letter={matter.insurerLetter} paper={matter.submittablePaper ?? []} engagementId={engagementId ?? ""} token={token} />
+        <div className="flex flex-wrap items-center gap-2">
           <button className={btn} disabled={!canAct || busy} onClick={() => void act("dfy_designation_submitted", { channel: "issuer_form" }, disputeId)}>Designation submitted</button>
           <button className={btn} disabled={!canAct || busy} onClick={() => void act("dfy_designation_acknowledged", {}, disputeId)}>Designation acknowledged</button>
           <button className={btn} disabled={!canAct || busy} onClick={() => void act("dfy_document_requested", {}, disputeId)}>Documents requested</button>
@@ -209,6 +386,7 @@ export default function DfyMatterPage({ params }: { params: Promise<{ engagement
           <button className={btn} disabled={!canAct || busy || !composed} title={composed ? "Transmit the member's own composed appeal, verbatim" : "Enables only when the member's own composition events exist"} onClick={() => void act("dfy_appeal_transmitted", tracking ? { trackingRef: tracking } : {}, disputeId)}>Transmit appeal</button>
           <span className="text-[11.5px] text-gray-500">{composed ? "member composed ✓" : "waiting on member — no composition on record"}</span>
           {doneBy(disputeId, ["dfy_designation_submitted", "dfy_designation_acknowledged", "dfy_document_requested", "dfy_appeal_transmitted"])}
+        </div>
         </div>
       );
     }
@@ -356,14 +534,33 @@ export default function DfyMatterPage({ params }: { params: Promise<{ engagement
         <h2 className="text-[12px] font-semibold uppercase tracking-wide text-gray-500">Operator log</h2>
         {matter.events.length === 0 ? <p className="mt-2 text-sm text-gray-500">No operator events yet.</p> : (
           <ul className="mt-2 space-y-1 text-[12.5px]">
-            {matter.events.map((ev) => (
-              <li key={`${ev.kind}-${ev.occurredAt}`} className="flex flex-wrap gap-2 text-gray-700">
+            {matter.events.map((ev) => {
+              const undone = ev.id ? undoneIds.has(ev.id) : false;
+              const canUndo = canUndoAct(ev, undoneIds) && isHolder && !busy;
+              return (
+              <li key={ev.id ?? `${ev.kind}-${ev.occurredAt}`} className={`flex flex-wrap items-center gap-2 ${undone ? "text-gray-400 line-through" : "text-gray-700"}`}>
                 <span className="w-16 text-gray-400">{fmt(ev.occurredAt)}</span>
                 <span className="font-medium">{ACT_LABEL[ev.kind] ?? ev.kind}</span>
                 {ev.disputeId && <span className="text-gray-400">letter {ev.disputeId.slice(0, 8)}…</span>}
                 {Object.entries(ev.payload).filter(([k]) => !["engagementId", "operatorUserId", "role"].includes(k)).map(([k, v]) => <span key={k} className="text-gray-500">{k}: {String(v)}</span>)}
+                {undone && <span className="text-[11px] font-semibold uppercase tracking-wide text-amber-700 no-underline">undone</span>}
+                {canUndo && (
+                  <button
+                    type="button"
+                    className="rounded-md border border-gray-300 bg-white px-2 py-0.5 text-[11px] font-semibold text-gray-700 hover:bg-gray-50"
+                    title={UNDO_COPY.caution}
+                    onClick={() => {
+                      const spec = ACT_UNDO[ev.kind as keyof typeof ACT_UNDO];
+                      const extra = spec?.confirm ? `\n\n${spec.confirm}` : "";
+                      if (!window.confirm(`${UNDO_COPY.confirmTitle(ACT_LABEL[ev.kind] ?? ev.kind)}\n\n${UNDO_COPY.caution}${extra}`)) return;
+                      void post("actions/undo", { eventId: ev.id });
+                    }}
+                  >
+                    {UNDO_COPY.control}
+                  </button>
+                )}
               </li>
-            ))}
+            );})}
           </ul>
         )}
       </section>

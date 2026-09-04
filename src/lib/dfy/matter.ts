@@ -12,6 +12,10 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { userScoped } from "@/lib/security/user-scoped";
 import type { DfyEngagementRow } from "@/lib/security/operator-scoped";
 import { CASE_TIMELINE_DISPUTE_COLUMNS } from "@/lib/case/load-case-timeline";
+import { getLetterEnclosures } from "@/lib/disputes/letter-type";
+import { PLAN_FACING_INSTRUMENTS, signedInstruments, type DfyInstrumentType } from "@/lib/dfy/paper";
+import { signedInstrumentFile } from "@/lib/dfy/instrument-files";
+import { resolvePlanContext } from "@/lib/disputes/plan-context";
 import { resolveLetterType, type ProjectorDisputeRow } from "@/lib/case/timeline-projector";
 import { evaluateDeadline, readDeadlineConfig } from "@/lib/disputes/deadline-engine";
 import { businessDaysUntil } from "./business-days";
@@ -26,9 +30,32 @@ export interface MatterInsurerLetter {
   deadlineType: string | null;
   /** dispute_outcomes.metadata.denialNoticeDate — the adverse determination the appeal answers. */
   denialNoticeDate: string | null;
+  /**
+   * S331 — what an operator needs to actually SEND this letter. The matter view
+   * rendered the member's rail but starved it of the artifacts, so the operator
+   * could see the step and not perform it.
+   *
+   * Every field comes from the resolver the MEMBER's own letter uses — the
+   * stored letter body, `resolvePlanContext` for the recipient, and the pure
+   * `getLetterEnclosures` — so operator and member cannot be shown different
+   * letters, different addresses, or different envelopes.
+   */
+  letterContent: string | null;
+  enclosures: readonly string[];
+  recipient: {
+    name: string | null;
+    addressLine1: string | null;
+    addressLine2: string | null;
+    city: string | null;
+    state: string | null;
+    postalCode: string | null;
+    phone: string | null;
+  } | null;
 }
 
 export interface DfyEventSummary {
+  /** claim_case_events PK — the handle an undo names. */
+  id: string | null;
   kind: string;
   occurredAt: string;
   disputeId: string | null;
@@ -54,6 +81,8 @@ export interface MatterSummary {
   engagement: DfyEngagementRow;
   /** Absent only in fixtures that build a summary by hand. */
   paperwork?: MatterPaperwork;
+  /** S331 — the signed designation + authorization the operator sends to the plan. */
+  submittablePaper: SubmittablePaper[];
   member: UserDisplay & { state: string | null };
   holder: UserDisplay | null;
   composition: CompositionProof;
@@ -90,7 +119,7 @@ export async function loadInsurerLetter(
 ): Promise<MatterInsurerLetter | null> {
   const { data } = await userScoped(supabase, memberUserId)
     .table("dispute_outcomes")
-    .select(CASE_TIMELINE_DISPUTE_COLUMNS)
+    .select(`${CASE_TIMELINE_DISPUTE_COLUMNS}, letter_content`)
     .eq("claim_id", claimId)
     .order("created_at", { ascending: false });
   const rows = ((data ?? []) as unknown[]) as ProjectorDisputeRow[];
@@ -99,6 +128,27 @@ export async function loadInsurerLetter(
     const letterType = resolveLetterType(d);
     if (!APPEAL_TYPES.has(letterType)) continue;
     const meta = (d.metadata ?? {}) as Record<string, unknown>;
+    // The SAME recipient the member's letter mails to — one resolver, so the
+    // operator can never address an envelope the member's copy disagrees with.
+    let recipient: MatterInsurerLetter["recipient"] = null;
+    try {
+      const ctx = await resolvePlanContext(supabase, { userId: memberUserId, claimId });
+      const ins = ctx?.insurer ?? null;
+      const addr = ins?.appealsAddress ?? null;
+      if (ins || addr) {
+        recipient = {
+          name: ins?.name ?? null,
+          addressLine1: addr?.line1 ?? null,
+          addressLine2: addr?.line2 ?? null,
+          city: addr?.city ?? null,
+          state: addr?.state ?? null,
+          postalCode: addr?.postalCode ?? null,
+          phone: ins?.appealsPhone ?? null,
+        };
+      }
+    } catch (err) {
+      console.error("[dfy matter] recipient resolve failed (non-fatal):", err);
+    }
     return {
       disputeId: d.id,
       letterType,
@@ -107,6 +157,11 @@ export async function loadInsurerLetter(
       governingDeadlineDate: d.governing_deadline_date ?? null,
       deadlineType: d.deadline_type ?? null,
       denialNoticeDate: typeof meta.denialNoticeDate === "string" ? meta.denialNoticeDate : null,
+      letterContent: typeof (d as { letter_content?: unknown }).letter_content === "string"
+        ? ((d as { letter_content?: string }).letter_content ?? null)
+        : null,
+      enclosures: getLetterEnclosures(letterType),
+      recipient,
     };
   }
   return null;
@@ -142,12 +197,12 @@ export async function loadDfyEvents(
 ): Promise<DfyEventSummary[]> {
   const { data } = await userScoped(supabase, memberUserId)
     .table("claim_case_events")
-    .select("kind, dispute_id, occurred_at, payload")
+    .select("id, kind, dispute_id, occurred_at, payload")
     .eq("claim_id", claimId)
     .like("kind", "dfy_%")
     .order("occurred_at", { ascending: true });
-  return ((data ?? []) as Array<{ kind: string; dispute_id: string | null; occurred_at: string; payload: Record<string, unknown> | null }>).map(
-    (e) => ({ kind: e.kind, occurredAt: e.occurred_at, disputeId: e.dispute_id ?? null, payload: e.payload ?? {} }),
+  return ((data ?? []) as Array<{ id: string; kind: string; dispute_id: string | null; occurred_at: string; payload: Record<string, unknown> | null }>).map(
+    (e) => ({ id: e.id ?? null, kind: e.kind, occurredAt: e.occurred_at, disputeId: e.dispute_id ?? null, payload: e.payload ?? {} }),
   );
 }
 
@@ -184,6 +239,48 @@ export function derivePhase(engagement: DfyEngagementRow, composition: Compositi
     case "completed":
       return "Completed";
   }
+}
+
+export interface SubmittablePaper {
+  type: DfyInstrumentType;
+  fileName: string;
+  signedName: string | null;
+  signedAt: string | null;
+  /** Short-lived signed storage URL — the SAME resolver the member's page uses. */
+  pdfUrl: string | null;
+  /** The storage object, for the server-side packet merge. */
+  storagePath: string | null;
+}
+
+/**
+ * The signed, plan-facing paper an operator needs in hand (S331).
+ *
+ * Which instruments those are is a fact about the paper and lives with the
+ * paper (`PLAN_FACING_INSTRUMENTS`); turning one into a file is
+ * `signedInstrumentFile`, shared with the member's own page. This function only
+ * joins the two, so the operator downloads the byte-identical artifact.
+ */
+export async function loadSubmittablePaper(
+  supabase: SupabaseClient,
+  memberUserId: string,
+  consentEventIds: Record<string, unknown>,
+): Promise<SubmittablePaper[]> {
+  const signed = signedInstruments(consentEventIds ?? {});
+  const out: SubmittablePaper[] = [];
+  for (const type of PLAN_FACING_INSTRUMENTS) {
+    const ref = signed[type];
+    if (!ref?.documentId) continue;
+    const file = await signedInstrumentFile(supabase, memberUserId, ref.documentId);
+    out.push({
+      type,
+      fileName: file.fileName ?? type,
+      signedName: ref.signedName ?? null,
+      signedAt: ref.signedAt ?? null,
+      pdfUrl: file.pdfUrl,
+      storagePath: file.storagePath,
+    });
+  }
+  return out;
 }
 
 export async function loadPaperwork(supabase: SupabaseClient, memberUserId: string, claimId: string): Promise<MatterPaperwork> {
@@ -239,6 +336,8 @@ export async function loadMatterSummary(
     opts.users ?? loadUsersDisplay(supabase, [member, ...(engagement.operator_user_id ? [engagement.operator_user_id] : [])]),
     loadPaperwork(supabase, member, engagement.claim_id),
   ]);
+  // S331 — the signed, plan-facing paper the operator submits with the appeal.
+  const submittablePaper = await loadSubmittablePaper(supabase, member, engagement.consent_event_ids ?? {});
   const runwayBusinessDays = await computeRunway(supabase, insurerLetter, now);
   const acts = events.filter((e) => e.kind in ACT_PHASE);
   const lastAct = acts.length ? acts[acts.length - 1] : null;
@@ -249,6 +348,7 @@ export async function loadMatterSummary(
   return {
     engagement,
     paperwork,
+    submittablePaper,
     member: { ...memberDisplay, state: ((profile.data as { state?: string | null } | null)?.state ?? engagement.member_state) ?? null },
     holder,
     composition,

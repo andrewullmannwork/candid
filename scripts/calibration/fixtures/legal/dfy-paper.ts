@@ -15,7 +15,10 @@
  *
  * Run: npx tsx scripts/calibration/fixtures/legal/dfy-paper.ts
  */
+import { getLetterEnclosures } from "../../../../src/lib/disputes/letter-type";
 import {
+  PLAN_FACING_INSTRUMENTS,
+  dfyEnvelopeItems,
   requiredDfyConsents,
   renderInstrument,
   fillInstrument,
@@ -128,6 +131,58 @@ const ctx: InstrumentContext = {
   check("a member-paid stack does not complete the sponsor lane", !paperComplete("sponsor_paid", full));
   check("signedInstruments ignores junk values", Object.keys(signedInstruments({ a: 1, b: "x", c: { eventId: 2 } })).length === 0);
 }
+
+
+// ── S331: which signed paper may travel to the PLAN ──────────────────────────
+// The send kit hands an operator files to put in an envelope addressed to an
+// insurer. What is IN that set is a disclosure decision, so it is pinned here.
+check("the designation is plan-facing — it IS what 'designation submitted' submits",
+  PLAN_FACING_INSTRUMENTS.includes("dfy_authorized_representative_designation"));
+check("the HIPAA/CMIA authorization travels with it",
+  PLAN_FACING_INSTRUMENTS.includes("dfy_authorization_hipaa_cmia"));
+check("the FEE AGREEMENT never goes to the plan (Candid↔member commercial terms)",
+  !PLAN_FACING_INSTRUMENTS.includes("dfy_fee_agreement"));
+check("the SPONSOR DISCLOSURE never goes to the plan",
+  !PLAN_FACING_INSTRUMENTS.includes("dfy_sponsor_paid_disclosure"));
+check("the SCOPE OF ENGAGEMENT never goes to the plan",
+  !PLAN_FACING_INSTRUMENTS.includes("dfy_scope_of_engagement"));
+check("the plan-facing set is exactly two instruments", PLAN_FACING_INSTRUMENTS.length === 2);
+check("every plan-facing instrument actually renders a PDF to send",
+  PLAN_FACING_INSTRUMENTS.every((t) => PDF_INSTRUMENTS.has(t)));
+check("every plan-facing instrument is one the member actually signs",
+  PLAN_FACING_INSTRUMENTS.every((t) =>
+    requiredDfyConsents("member_paid").includes(t) || requiredDfyConsents("sponsor_paid").includes(t)));
+
+
+// ── S331: the envelope manifest tells the OPERATOR's truth ───────────────────
+// `LETTER_ENCLOSURES` describes what a MEMBER filing alone encloses — nothing,
+// for an internal appeal. When Candid submits as authorized representative the
+// designation and authorization go in too, so the operator's manifest must not
+// reuse the member's list. This is the check that caught the panel saying
+// "The letter only" with a signed designation sitting beside it.
+const bothSigned = [...PLAN_FACING_INSTRUMENTS];
+const appealEnv = dfyEnvelopeItems({ letterType: "insurance_appeal", signedPlanFacing: bothSigned });
+check("the appeal letter is always in the envelope",
+  appealEnv.filter((i) => i.kind === "letter").length === 1);
+check("an internal appeal is NEVER 'the letter only' once the paper is signed",
+  appealEnv.length > 1);
+check("both signed plan-facing instruments are in the envelope",
+  PLAN_FACING_INSTRUMENTS.every((t) => appealEnv.some((i) => i.kind === "instrument" && i.key === t)));
+check("an UNSIGNED instrument is not listed as enclosed",
+  dfyEnvelopeItems({ letterType: "insurance_appeal", signedPlanFacing: ["dfy_authorized_representative_designation"] })
+    .filter((i) => i.kind === "instrument").length === 1);
+check("with nothing signed the manifest is just the letter",
+  dfyEnvelopeItems({ letterType: "insurance_appeal", signedPlanFacing: [] }).length === 1);
+const erEnv = dfyEnvelopeItems({ letterType: "external_review", signedPlanFacing: bothSigned });
+check("external review keeps its own declared enclosures",
+  erEnv.filter((i) => i.kind === "enclosure").length === getLetterEnclosures("external_review").length);
+check("external review carries letter + enclosures + instruments",
+  erEnv.length === 1 + getLetterEnclosures("external_review").length + bothSigned.length);
+check("no envelope item is ever a Candid-only instrument",
+  [...appealEnv, ...erEnv].every((i) => i.kind !== "instrument" ||
+    !["dfy_fee_agreement", "dfy_sponsor_paid_disclosure", "dfy_scope_of_engagement"].includes(i.key)));
+check("the manifest has no duplicates",
+  new Set(appealEnv.map((i) => `${i.kind}:${i.key}`)).size === appealEnv.length);
 
 console.log(`dfy-paper: ${pass}/${pass + fail} checks passed`);
 if (fail > 0) process.exit(1);

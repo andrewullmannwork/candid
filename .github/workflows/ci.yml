@@ -248,6 +248,35 @@ jobs:
         # undo list deletes every provenance key, and an adverse operator
         # determination still opens the member's escalation door.
         run: npx tsx scripts/calibration/fixtures/legal/dfy-outcome-commit.ts
+      - name: DFY member status — ONE member vocabulary, no operator leak (S331)
+        # Every engagement state produces a headline/detail/step, the step index
+        # stays inside the strip, "choose your dispute path" is the single
+        # phrasing for the composition step, the "All five documents" copy is
+        # pinned to the real stack size for both payers, the module never claims
+        # nothing-outstanding unless the caller vouched for the fee, a decline
+        # outranks the status, and NO member string carries operator vocabulary.
+        run: npx tsx scripts/calibration/fixtures/legal/dfy-member-status.ts
+      - name: DFY execution lock — narrow hold while Candid executes (S331)
+        # The member's send/redraft are held over exactly the statuses that
+        # grant an operator authority to act (one list, no drift), and ONLY
+        # then; composition (Gate 0) and the state-level filing (Gate 4) are
+        # never held or the lane deadlocks; the hold is its own axis, not a
+        # readiness blocker and not a letter-access reason.
+        run: npx tsx scripts/calibration/fixtures/legal/dfy-execution-lock.ts
+      - name: DFY act undo — compensation, never rewritten history (S331)
+        # Every operator act has a remedy for a stray click; undo appends its own
+        # spine kind referring to the act (never deletes it); the four acts that
+        # wrote beyond their event declare that footprint and warn what else is
+        # reversed (the packet SURVIVES, withdrawn); an act cannot be undone
+        # twice; and no copy claims to recall something already sent.
+        run: npx tsx scripts/calibration/fixtures/legal/dfy-act-undo.ts
+      - name: Content-Disposition — header safety for downloads (S331)
+        # The DFY submission packet failed to build because its filename carried
+        # an em dash and HTTP headers are ByteStrings. Every download filename
+        # must stay latin-1 representable, degrade readably in the ASCII
+        # fallback, carry the true name in RFC 5987 filename*, and never break
+        # out of the quoted-string.
+        run: npx tsx scripts/calibration/fixtures/legal/content-disposition.ts
       - name: Citation party split — strip provider, member-adopt insurer (S326)
         # Rule 3: scoped provider letters emit ZERO citation-shaped strings;
         # scoped insurer letters cite only member-adopted authorities and fall

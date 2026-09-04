@@ -16,6 +16,8 @@ import { Elements, PaymentElement, useElements, useStripe } from "@stripe/react-
 import { useAuth } from "@/lib/auth/auth-context";
 import { LegalText } from "@/components/legal-text";
 import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
+import { memberStatus, MEMBER_STEPS } from "@/lib/dfy/member-status";
+import type { EngagementStatus } from "@/lib/dfy/engagement-state";
 import { getStripeBrowser } from "@/lib/stripe/browser";
 
 /** The on-screen signature face: system script fonts, cursive fallback — nothing to download. */
@@ -28,8 +30,7 @@ interface Instrument {
   signed: { signedName: string; signedAt: string } | null; pdfUrl: string | null;
 }
 interface Payload {
-  engagement: { id: string; claimId: string; status: string; payer: string; sponsorRef: string | null };
-  phase: string;
+  engagement: { id: string; claimId: string; status: EngagementStatus; payer: string; sponsorRef: string | null };
   screened: { eligible: boolean; declineReason: string | null } | null;
   composition: { groundSelected: boolean; letterAdopted: boolean };
   canSign: boolean;
@@ -161,7 +162,7 @@ export default function DfySigningPage({ params }: { params: Promise<{ engagemen
         method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
         body: JSON.stringify({ type, signedName, accepted: true }),
       });
-      const json = (await res.json().catch(() => ({}))) as { error?: string; signed?: { signedName: string; signedAt: string }; completed?: boolean; status?: string };
+      const json = (await res.json().catch(() => ({}))) as { error?: string; signed?: { signedName: string; signedAt: string }; completed?: boolean; status?: EngagementStatus };
       if (!res.ok) throw new Error(json.error || "Couldn't sign. Try again.");
       return json;
     };
@@ -194,13 +195,19 @@ export default function DfySigningPage({ params }: { params: Promise<{ engagemen
   const done = data.instruments.filter((i) => i.signed || optimistic[i.type]).length;
   const composed = data.composition.groundSelected && data.composition.letterAdopted;
 
-  const closed = e.status === "terminated" || e.status === "converted" || e.status === "completed";
   const allSigned = total > 0 && done === total;
-  const stateLine =
-    e.status === "active" ? "we're on it"
-    : e.status === "signed" || allSigned ? "all signed"
-    : closed ? (e.status === "completed" ? "complete" : "ended")
-    : done > 0 ? "in progress" : "ready to sign";
+  // S331 — ONE derivation of the member's state (member-status). The chip, the
+  // prose and the step strip below all read this object, so they cannot
+  // disagree with each other the way three separate derivations did.
+  const ms = memberStatus({
+    status: e.status,
+    allSigned,
+    composed,
+    screened: data.screened ? { eligible: data.screened.eligible, declineReason: data.screened.declineReason } : null,
+    paymentRequired: data.payment.required,
+    feeCents: data.payment.feeCents,
+  });
+  const closed = ms.closed;
 
   return (
     <div className="mx-auto max-w-3xl space-y-6 p-6">
@@ -216,17 +223,17 @@ export default function DfySigningPage({ params }: { params: Promise<{ engagemen
 
       {error && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
 
-      {data.screened && !data.screened.eligible && (
+      {ms.tone === "warn" && (
         <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-          <b>We can&apos;t take this one on.</b> {data.screened.declineReason ?? ""} Your appeal and every free tool stay yours.
+          <b>{ms.headline}</b> {ms.detail} You can still appeal using Candid&apos;s free tools at no cost.
         </div>
       )}
 
       {/* ── where you are ── */}
       {!closed && (
         <ol className="grid grid-cols-5 gap-2 text-[11.5px] font-semibold">
-          {(["Request sent", "Sign your documents", "Choose what to argue", "We confirm", "We start"] as const).map((label, i) => {
-            const current = e.status === "active" ? 4 : (e.status === "signed" || allSigned) ? (composed ? 3 : 2) : 1;
+          {MEMBER_STEPS.map((label, i) => {
+            const current = ms.stepIndex;
             const state = i < current ? "done" : i === current ? "now" : "later";
             return (
               <li key={label} className={`rounded-xl border px-3 py-2 ${state === "done" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : state === "now" ? "border-blue-300 bg-blue-50 text-blue-800 ring-2 ring-blue-100" : "border-gray-200 bg-white text-gray-400"}`}>
@@ -241,23 +248,18 @@ export default function DfySigningPage({ params }: { params: Promise<{ engagemen
       <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-[0_1px_2px_rgba(16,24,40,0.04)]">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
           <div className="text-[15px] font-semibold text-gray-900">{done} of {total} documents signed</div>
-          <div className={`text-[12px] font-semibold uppercase tracking-wide ${e.status === "active" ? "text-emerald-700" : closed ? "text-gray-500" : "text-blue-700"}`}>{stateLine}</div>
+          <div className={`text-[12px] font-semibold uppercase tracking-wide ${e.status === "active" ? "text-emerald-700" : closed ? "text-gray-500" : "text-blue-700"}`}>{ms.chip}</div>
         </div>
         <div className="mt-3 grid gap-1.5" style={{ gridTemplateColumns: `repeat(${total}, minmax(0, 1fr))` }}>
           {data.instruments.map((i) => (
             <div key={i.type} className={`h-1.5 rounded-full ${i.signed || optimistic[i.type] ? "bg-blue-600" : "bg-gray-200"}`} />
           ))}
         </div>
-        <p className="mt-3 text-[13.5px] leading-relaxed text-gray-600">
-          {e.status === "eligibility_pending" && !data.screened && !allSigned && "Sign the documents below now. We're confirming we can take this one on and will start the moment it clears."}
-          {e.status === "eligibility_pending" && !data.screened && allSigned && "All signed. We're confirming we can take this one on, then we start."}
-          {e.status === "eligibility_pending" && data.screened?.eligible && "You're approved. Sign the remaining documents and we start."}
-          {e.status === "signed" && !data.screened && "All signed. We're confirming we can take this one on, then we start."}
-          {e.status === "signed" && data.screened?.eligible && !composed && "We start as soon as you've built and adopted your appeal in the free tool. That part is yours."}
-          {e.status === "signed" && composed && data.payment.required && `One step left: the $${(data.payment.feeCents / 100).toFixed(2)} fee.`}
-          {e.status === "active" && <>Every step we take shows on your claim timeline as &quot;Done by Candid&quot;. Any decision stays yours.{data.phase && <span className="text-gray-500"> Current phase: {data.phase}.</span>}</>}
-          {closed && (e.status === "completed" ? "This engagement is complete." : "This engagement has ended.")}
-        </p>
+        {ms.tone !== "warn" && (
+          <p className="mt-3 text-[13.5px] leading-relaxed text-gray-600">
+            <b className="text-gray-900">{ms.headline}</b> {ms.detail}
+          </p>
+        )}
       </section>
 
       {(e.status === "signed" || allSigned) && !composed && !closed && (

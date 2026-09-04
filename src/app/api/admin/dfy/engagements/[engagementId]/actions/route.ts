@@ -112,7 +112,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ eng
       // The read is the authority proof as well as the current state: the
       // operator scope narrows dispute_outcomes by the engagement's claim_id,
       // so a dispute on any other claim simply is not visible here.
-      const { data: row } = await scope.table("dispute_outcomes").select("metadata").eq("id", disputeId).maybeSingle();
+      const { data: row } = await scope.table("dispute_outcomes").select("metadata, status").eq("id", disputeId).maybeSingle();
       if (!row) {
         return NextResponse.json({ error: "That letter is not on this matter", code: "dispute_not_on_matter" }, { status: 404 });
       }
@@ -149,6 +149,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ eng
           );
         }
         payload.determinationRef = det;
+        // S331 — record the status this act moved the letter FROM, the
+        // `letter_sent` idiom, so an undo restores exactly what it replaced
+        // instead of guessing.
+        const statusFrom = (row as { status?: string } | null)?.status;
+        if (typeof statusFrom === "string" && statusFrom.length > 0) payload.statusFrom = statusFrom;
         const outcomeStatus = mapOutcomeToStatus(det);
         // The coarse column first — it also runs the resolved sweep (follow-up
         // cancellation, Pattern 1 #13 outlier evaluation, accuracy scoring).

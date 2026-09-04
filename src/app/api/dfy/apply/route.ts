@@ -18,6 +18,9 @@ import { readDfyState } from "@/lib/dfy/config";
 import { compositionComplete, loadCompositionProof } from "@/lib/dfy/operator-action";
 import { loadSponsorByCode, normalizeSponsorCode, sponsorCodeUsable } from "@/lib/dfy/sponsors";
 import { dfyLaneOpen } from "@/lib/dfy/state-lanes";
+import { LIVE_ENGAGEMENT_STATUSES } from "@/lib/dfy/engagement-state";
+import { paperComplete } from "@/lib/dfy/paper";
+import type { EngagementPayer } from "@/lib/security/operator-scoped";
 import { emitCaseEvents } from "@/lib/case/case-events";
 import { postOpsMessage } from "@/lib/slack/ops-message";
 
@@ -68,7 +71,38 @@ export async function POST(req: NextRequest) {
     plan_classification: classification,
     metadata: { appliedBy: { actor: "user", userId: user.id }, appliedAt: new Date().toISOString(), compositionAtApply: composed },
   });
-  if (conflict) return NextResponse.json({ error: "We're already handling this claim.", code: "engagement_exists" }, { status: 409 });
+  if (conflict) {
+    // S331 — a repeat ask is a STATUS question, not a refusal. Return the facts
+    // the member-status vocabulary needs so the page can say where it stands
+    // and when they asked, instead of a bare "already handling".
+    const { data: liveRows } = await scoped
+      .table("dfy_engagements")
+      .select("id, status, payer, consent_event_ids, intake, created_at")
+      .eq("claim_id", c.id)
+      .in("status", LIVE_ENGAGEMENT_STATUSES)
+      .limit(1);
+    const live = (liveRows ?? [])[0] as
+      | { id: string; status: string; payer: string; consent_event_ids: Record<string, unknown>; intake: Record<string, unknown> | null; created_at: string }
+      | undefined;
+    const decision = (live?.intake as { decision?: { eligible?: boolean; declineReason?: string | null } } | null)?.decision ?? null;
+    return NextResponse.json(
+      {
+        error: "We're already handling this claim.",
+        code: "engagement_exists",
+        engagement: live
+          ? {
+              id: live.id,
+              status: live.status,
+              allSigned: paperComplete(live.payer as EngagementPayer, live.consent_event_ids ?? {}),
+              composed,
+              screened: decision ? { eligible: decision.eligible === true, declineReason: decision.declineReason ?? null } : null,
+              requestedAt: live.created_at,
+            }
+          : null,
+      },
+      { status: 409 },
+    );
+  }
   if (!engagement) return NextResponse.json({ error: "Something went wrong. Try again.", code: "create_failed" }, { status: 500 });
   await emitCaseEvents(supabase, user.id, [{ claimId: c.id, kind: "dfy_engagement_created", actor: "user", payload: { engagementId: engagement.id, appliedBy: "member", payer: engagement.payer } }]);
   const base = process.env.NEXT_PUBLIC_APP_URL || "https://www.candidclaim.com";

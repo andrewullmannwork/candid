@@ -32,6 +32,7 @@
  */
 
 import { useState } from "react";
+import { DFY_EXECUTION_HOLD_PANEL } from "@/lib/dfy/execution-lock";
 import { useRouter } from "next/navigation";
 import { ShowFullStepButton } from "@/components/claims/GuidedPhoneSteps";
 import { EnclosureBand, MarkSentConfirm, DownloadReminderModal } from "@/components/disputes/MarkSentConfirm";
@@ -654,6 +655,7 @@ export function CaseRail({
   renderOfferAction,
   escalating,
   onMarkSent,
+  dfyHeld = false,
   onSaveFirstContactDate,
   onRefetch,
   onStepInteraction,
@@ -703,6 +705,10 @@ export function CaseRail({
     sent: boolean,
     opts?: { enclosuresConfirmed?: boolean; sendMethod?: string },
   ) => Promise<boolean>;
+  /** S331 — Candid is EXECUTING this matter: the operator transmits the letter
+   *  as the member's authorized representative, so the send control stands
+   *  down and says so. Composition and the state-level filing stay open. */
+  dfyHeld?: boolean;
   /** S301 — the FDCPA §1692g anchor, through the existing deadline-inputs route. */
   onSaveFirstContactDate: (disputeId: string, date: string | null) => Promise<void>;
   /** Refetch the claim projection after a collections step writes. */
@@ -1658,16 +1664,23 @@ export function CaseRail({
                     >
                       {dlBusy[s.disputeId] ? "Preparing…" : "Download letter"}
                     </button>
-                    <button
-                      type="button"
-                      disabled={sendBusy[s.disputeId] ?? false}
-                      onClick={() => setSendAsking((m) => ({ ...m, [s.disputeId]: !(m[s.disputeId] ?? false) }))}
-                      className="inline-flex items-center rounded-lg bg-gray-900 px-4 py-2 text-[13.5px] font-semibold text-white transition-colors hover:bg-black disabled:opacity-50"
-                    >
-                      Mark as sent
-                    </button>
+                    {!dfyHeld && (
+                      <button
+                        type="button"
+                        disabled={sendBusy[s.disputeId] ?? false}
+                        onClick={() => setSendAsking((m) => ({ ...m, [s.disputeId]: !(m[s.disputeId] ?? false) }))}
+                        className="inline-flex items-center rounded-lg bg-gray-900 px-4 py-2 text-[13.5px] font-semibold text-white transition-colors hover:bg-black disabled:opacity-50"
+                      >
+                        Mark as sent
+                      </button>
+                    )}
                   </div>
-                  {(sendAsking[s.disputeId] ?? false) && (
+                  {dfyHeld && (
+                    <div className="mt-3 rounded-xl border border-violet-200 bg-violet-50 px-4 py-3 text-[13px] text-violet-900">
+                      <b>{DFY_EXECUTION_HOLD_PANEL.title}</b> {DFY_EXECUTION_HOLD_PANEL.body}
+                    </div>
+                  )}
+                  {!dfyHeld && (sendAsking[s.disputeId] ?? false) && (
                     <MarkSentConfirm
                       enclosures={s.enclosures}
                       busy={sendBusy[s.disputeId] ?? false}

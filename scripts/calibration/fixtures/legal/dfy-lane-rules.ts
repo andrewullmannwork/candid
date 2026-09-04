@@ -57,14 +57,14 @@ check("codes normalize", normalizeSponsorCode(" acme-2026 ") === "ACME-2026");
 {
   const base: DfyEngagementRow = { id: "e1", user_id: "m1", claim_id: "c1", status: "active", lane: "insurer", payer: "member_paid", sponsor_ref: null, sponsor_id: null, operator_user_id: "u1", member_state: "CA", plan_classification: null, scope: {}, intake: {}, consent_event_ids: {}, metadata: {}, signed_at: "2026-08-20T00:00:00Z", activated_at: "2026-08-20T00:00:00Z", closed_at: null, created_at: "", updated_at: "" };
   const summary = (over: Partial<MatterSummary>, e: Partial<DfyEngagementRow> = {}): MatterSummary => ({
-    engagement: { ...base, ...e }, member: { userId: "m1", displayName: null, email: null, state: "CA" }, holder: null,
-    composition: { groundSelected: true, letterAdopted: true }, insurerLetter: null, runwayBusinessDays: 30, events: [], lastAct: { kind: "dfy_status_called", occurredAt: "2026-08-31T00:00:00Z", disputeId: null, payload: {} }, phase: "x", ...over,
+    engagement: { ...base, ...e }, submittablePaper: [], member: { userId: "m1", displayName: null, email: null, state: "CA" }, holder: null,
+    composition: { groundSelected: true, letterAdopted: true }, insurerLetter: null, runwayBusinessDays: 30, events: [], lastAct: { id: null, kind: "dfy_status_called", occurredAt: "2026-08-31T00:00:00Z", disputeId: null, payload: {} }, phase: "x", ...over,
   });
   const now = new Date(Date.UTC(2026, 8, 1, 12));
   const cfg = { refusalRunwayBusinessDays: 10, slaDays: 3 };
   check("healthy matter: no flag", slaFlags([summary({})], cfg, now).length === 0);
   check("runway under threshold flags", slaFlags([summary({ runwayBusinessDays: 4 })], cfg, now)[0]?.reasons.some((r) => /runway/.test(r)) === true);
-  check("no act for 3+ days flags", slaFlags([summary({ lastAct: { kind: "dfy_status_called", occurredAt: "2026-08-25T00:00:00Z", disputeId: null, payload: {} } })], cfg, now)[0]?.reasons.some((r) => /no operator act/.test(r)) === true);
+  check("no act for 3+ days flags", slaFlags([summary({ lastAct: { id: null, kind: "dfy_status_called", occurredAt: "2026-08-25T00:00:00Z", disputeId: null, payload: {} } })], cfg, now)[0]?.reasons.some((r) => /no operator act/.test(r)) === true);
   check("unclaimed signed matter flags", slaFlags([summary({}, { status: "signed", operator_user_id: null })], cfg, now)[0]?.reasons.some((r) => /unclaimed/.test(r)) === true);
   check("closed matters never flag", slaFlags([summary({ runwayBusinessDays: 1 }, { status: "completed" })], cfg, now).length === 0);
 }

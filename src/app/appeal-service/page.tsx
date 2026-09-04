@@ -15,11 +15,24 @@
 
 import "../landing.css";
 import Link from "next/link";
+import { Banner } from "@/components/banner";
+import { memberRevisitNotice } from "@/lib/dfy/member-status";
+import type { EngagementStatus } from "@/lib/dfy/engagement-state";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
 import { LearnFooter, LearnHeader } from "@/components/learn/LearnChrome";
 import { useDfyEntry } from "@/lib/dfy/use-dfy-entry";
+
+/** The live engagement the apply endpoint reports when the member asks again. */
+interface LiveEngagement {
+  id: string;
+  status: EngagementStatus;
+  allSigned: boolean;
+  composed: boolean;
+  screened: { eligible: boolean; declineReason: string | null } | null;
+  requestedAt: string | null;
+}
 import { CubeLoaderBuilding } from "@/components/loaders/CubeLoaderBuilding";
 
 interface ClaimRow { id: string; date_of_service: string | null; provider_name: string | null; insurer_name?: string | null }
@@ -42,6 +55,10 @@ export default function AppealServicePage() {
   const [sponsorCode, setSponsorCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ tone: "ok" | "err"; text: string; engagementId?: string } | null>(null);
+  // S331 — a repeat ask is answered with STATUS, not a refusal: where the
+  // engagement stands and the day it was requested, in the one member
+  // vocabulary (member-status).
+  const [existing, setExisting] = useState<LiveEngagement | null>(null);
 
   useEffect(() => {
     if (!user || !signedIn) return;
@@ -62,9 +79,11 @@ export default function AppealServicePage() {
     setBusy(true); setMsg(null);
     const t = await user.firebaseUser.getIdToken();
     const r = await fetch("/api/dfy/apply", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` }, body: JSON.stringify({ claimId, sponsorCode: sponsorCode || undefined }) });
-    const j = (await r.json().catch(() => ({}))) as { error?: string; engagementId?: string };
+    const j = (await r.json().catch(() => ({}))) as { error?: string; engagementId?: string; engagement?: LiveEngagement | null };
     if (r.ok && j.engagementId) { router.push(`/dfy/${j.engagementId}`); return; }
     setBusy(false);
+    if (j.engagement) { setExisting(j.engagement); setMsg(null); return; }
+    setExisting(null);
     setMsg({ tone: "err", text: j.error || "Something went wrong. Try again." });
   }
 
@@ -126,6 +145,27 @@ export default function AppealServicePage() {
                         <button type="button" disabled={!claimId || busy} onClick={() => void apply()} className="btn btn-primary btn-xl" style={{ opacity: !claimId ? 0.55 : 1, minWidth: 190 }}>{busy ? <CubeLoaderBuilding variant="inline" tone="onDark" /> : "Handle my appeal"}</button>
                       </div>
                       {msg && msg.tone === "err" && <p className="mt-4 text-[14px] text-red-700">{msg.text}</p>}
+                      {existing && (() => {
+                        const n = memberRevisitNotice(
+                          { status: existing.status, allSigned: existing.allSigned, composed: existing.composed, screened: existing.screened },
+                          existing.requestedAt,
+                        );
+                        return (
+                          <div style={{ marginTop: 28 }}>
+                            <Banner
+                              tone={n.tone === "success" ? "success" : "info"}
+                              size="md"
+                              shape="card"
+                              title={n.headline}
+                              body={n.detail}
+                            >
+                              <p style={{ marginTop: 12, marginBottom: 0 }}>
+                                <Link href={`/dfy/${existing.id}`} className="font-semibold underline">{n.ctaLabel} →</Link>
+                              </p>
+                            </Banner>
+                          </div>
+                        );
+                      })()}
                     </>
                   ) : (
                     <>

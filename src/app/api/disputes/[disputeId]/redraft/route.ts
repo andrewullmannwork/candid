@@ -22,6 +22,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
+import { claimUnderDfyExecution, dfyExecutionHoldResponse } from "@/lib/dfy/execution-lock";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { userScoped } from "@/lib/security/user-scoped";
@@ -101,6 +102,14 @@ export async function POST(
   // the draft status, so this also refuses redraft-of-sent by construction).
   if (!isLiveDraftStatus((dispute.status as string | null) ?? null)) {
     return NextResponse.json({ error: "letter_not_redraftable" }, { status: 409 });
+  }
+
+  // S331 — the letter is already in the plan's hands: Candid submitted it as
+  // the member's authorized representative and is working it. Redrafting from
+  // here would fork the record. (Composing a NEW appeal stays open — this is
+  // the execution seam, not the access gate.)
+  if (await claimUnderDfyExecution(supabase, user.id, (dispute.claim_id as string | null) ?? null)) {
+    return NextResponse.json(dfyExecutionHoldResponse("redraft"), { status: 409 });
   }
 
   // S292 (#12) — tier gate scoped to the LETTER TYPE, exactly like generate + the

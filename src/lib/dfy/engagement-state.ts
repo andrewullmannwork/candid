@@ -43,6 +43,15 @@ export const TERMINAL_STATUSES: ReadonlySet<EngagementStatus> = new Set([
   "completed",
 ]);
 
+/**
+ * The statuses that count as a LIVE engagement on a claim — the set the
+ * "one live engagement per claim" rule is about, and the set every surface
+ * filters by when it asks "does this claim already have one?". Derived from
+ * TERMINAL_STATUSES so the two can never disagree.
+ */
+export const LIVE_ENGAGEMENT_STATUSES: readonly EngagementStatus[] =
+  ENGAGEMENT_STATUSES.filter((s) => !TERMINAL_STATUSES.has(s));
+
 /** Statuses under which an operator may ACT on the matter. Exactly one. */
 export const ACTIONABLE_STATUSES: readonly EngagementStatus[] = ["active"];
 

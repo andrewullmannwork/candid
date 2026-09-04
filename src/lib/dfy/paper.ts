@@ -15,6 +15,7 @@
  */
 import { createHash } from "crypto";
 import { getConsentDocument } from "@/lib/consent/consent-documents";
+import { getLetterEnclosures } from "@/lib/disputes/letter-type";
 import type { ConsentType } from "@/lib/supabase/types";
 import type { EngagementPayer } from "@/lib/security/operator-scoped";
 
@@ -50,6 +51,61 @@ export const PDF_INSTRUMENTS: ReadonlySet<DfyInstrumentType> = new Set<DfyInstru
   "dfy_fee_agreement",
   "dfy_sponsor_paid_disclosure",
 ]);
+
+/**
+ * The signed instruments that travel WITH a submission to the plan (S331).
+ *
+ * The designation is the instrument that tells the plan who represents the
+ * member — it is what `dfy_designation_submitted` submits. The HIPAA/CMIA
+ * authorization is what lets the plan disclose the member's information to that
+ * representative, so it goes with it.
+ *
+ * Deliberately EXCLUDED: the scope of engagement, the fee agreement and the
+ * sponsor disclosure. Those are terms between Candid and the member (or their
+ * sponsor); putting them in an operator's send kit would invite disclosing
+ * commercial terms to an insurer with no business seeing them.
+ */
+export const PLAN_FACING_INSTRUMENTS: readonly DfyInstrumentType[] = [
+  "dfy_authorized_representative_designation",
+  "dfy_authorization_hipaa_cmia",
+];
+
+/**
+ * What is actually IN the envelope when CANDID submits an appeal as the
+ * member's authorized representative (S331).
+ *
+ * This exists because the two sources disagree by design. `LETTER_ENCLOSURES`
+ * describes what a MEMBER filing alone encloses — and for an internal appeal
+ * that is nothing, correctly: a member does not enclose a designation naming
+ * themselves. The moment a representative submits, the designation and the
+ * authorization go in too. Rendering the member's list on an operator's screen
+ * therefore told the operator "The letter only" while the designation sat on
+ * the same panel waiting to be mailed.
+ *
+ * One manifest, so the count, the list and the download button cannot disagree.
+ */
+export type EnvelopeItemKind = "letter" | "enclosure" | "instrument";
+
+export interface EnvelopeItem {
+  kind: EnvelopeItemKind;
+  /** Instrument type for `instrument`; the enclosure sentence otherwise. */
+  key: string;
+}
+
+export function dfyEnvelopeItems(params: {
+  letterType: string | null | undefined;
+  /** The plan-facing instruments this member has actually SIGNED. */
+  signedPlanFacing: readonly DfyInstrumentType[];
+}): EnvelopeItem[] {
+  const items: EnvelopeItem[] = [{ kind: "letter", key: "appeal_letter" }];
+  for (const e of getLetterEnclosures(params.letterType)) {
+    items.push({ kind: "enclosure", key: e });
+  }
+  for (const t of PLAN_FACING_INSTRUMENTS) {
+    if (params.signedPlanFacing.includes(t)) items.push({ kind: "instrument", key: t });
+  }
+  return items;
+}
 
 /** The designation channel — which procedure recognizes the representative. */
 export type DesignationChannel = "erisa_plan" | "plan_internal_grievance";

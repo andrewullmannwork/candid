@@ -4,6 +4,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
+import { LIVE_ENGAGEMENT_STATUSES, type EngagementStatus } from "@/lib/dfy/engagement-state";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { userScoped, selectOwnedChildren } from "@/lib/security/user-scoped";
@@ -909,20 +910,23 @@ export async function GET(
   }
 
   // S330 — the DFY engagement overlay, if any (member-owned row; live statuses only).
-  let dfyEngagement: { id: string; status: string; phase: string; payer: string; composed: boolean; acts: Array<{ kind: string; occurredAt: string }> } | null = null;
+  // S331 — the member's claim card renders from `member-status`, so this
+  // payload carries the FACTS it needs and no longer carries the operator's
+  // `phase` string (internal ops vocabulary that used to reach the member).
+  let dfyEngagement: { id: string; status: EngagementStatus; payer: string; composed: boolean; allSigned: boolean; screened: { eligible: boolean; declineReason: string | null } | null; acts: Array<{ kind: string; occurredAt: string; undone: boolean }> } | null = null;
   try {
     const { data: engRows } = await userScoped(supabase, user.id)
       .table("dfy_engagements")
       .select("id, status, payer, intake, consent_event_ids, operator_user_id, claim_id, user_id, lane, sponsor_ref, member_state, plan_classification, scope, metadata, signed_at, activated_at, closed_at, created_at, updated_at")
       .eq("claim_id", claimId)
-      .in("status", ["eligibility_pending", "signed", "active"])
+      .in("status", LIVE_ENGAGEMENT_STATUSES)
       .limit(1);
     const engRaw = (engRows ?? [])[0];
     if (engRaw) {
       const { parseEngagementRow } = await import("@/lib/security/operator-scoped");
-      const { derivePhase } = await import("@/lib/dfy/matter");
       const { loadCompositionProof } = await import("@/lib/dfy/operator-action");
       const { loadDfyEvents } = await import("@/lib/dfy/matter");
+      const { paperComplete } = await import("@/lib/dfy/paper");
       const eng = parseEngagementRow(engRaw);
       if (eng) {
         const [proof, events] = await Promise.all([
@@ -930,11 +934,24 @@ export async function GET(
           loadDfyEvents(supabase, user.id, claimId),
         ]);
         // The operator's acts on this case, oldest first — "Done by Candid · date".
+        // S331 — an undone act stays on the timeline, marked undone (history is
+        // appended to, never rewritten); the correction event itself is not a
+        // separate "Done by Candid" line.
+        const { undoneEventIds, ACT_UNDONE_KIND } = await import("@/lib/dfy/act-undo");
+        const undoneActs = undoneEventIds(events);
         const acts = events
-          .filter((ev) => ev.kind.startsWith("dfy_") && !ev.kind.startsWith("dfy_engagement_") && ev.kind !== "dfy_instrument_signed")
-          .map((ev) => ({ kind: ev.kind, occurredAt: ev.occurredAt }));
-        const lastAct = acts.length ? { ...events.find((ev) => ev.kind === acts[acts.length - 1].kind && ev.occurredAt === acts[acts.length - 1].occurredAt)!, payload: {} } : null;
-        dfyEngagement = { id: eng.id, status: eng.status, payer: eng.payer, composed: proof.groundSelected && proof.letterAdopted, phase: derivePhase(eng, proof, lastAct), acts };
+          .filter((ev) => ev.kind.startsWith("dfy_") && !ev.kind.startsWith("dfy_engagement_") && ev.kind !== "dfy_instrument_signed" && ev.kind !== ACT_UNDONE_KIND)
+          .map((ev) => ({ kind: ev.kind, occurredAt: ev.occurredAt, undone: ev.id ? undoneActs.has(ev.id) : false }));
+        const decision = (eng.intake as { decision?: { eligible?: boolean; declineReason?: string | null } } | null)?.decision ?? null;
+        dfyEngagement = {
+          id: eng.id,
+          status: eng.status,
+          payer: eng.payer,
+          composed: proof.groundSelected && proof.letterAdopted,
+          allSigned: paperComplete(eng.payer, eng.consent_event_ids),
+          screened: decision ? { eligible: decision.eligible === true, declineReason: decision.declineReason ?? null } : null,
+          acts,
+        };
       }
     }
   } catch (err) {

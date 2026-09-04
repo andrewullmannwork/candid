@@ -52,6 +52,13 @@ import type { DenialBasis, RegulatoryClassification } from "@/lib/disputes/forum
 import { GuidedPhoneSteps, ShowFullStepButton, derivePhonePackState, samePhonePackState, lettersUnlockedByCalls, type GuideStepState, type PhonePackState } from "@/components/claims/GuidedPhoneSteps";
 import { CaseRail, CaseResolvedFold, RailStep } from "@/components/claims/CaseRail";
 import { CaseFileBlock } from "@/components/claims/CaseFileBlock";
+import { memberStatus } from "@/lib/dfy/member-status";
+import {
+  dfyExecutionHeld,
+  DFY_EXECUTION_HOLD_CODE,
+  DFY_EXECUTION_HOLD_MESSAGE,
+} from "@/lib/dfy/execution-lock";
+import type { EngagementStatus } from "@/lib/dfy/engagement-state";
 import { OutcomeReportingModal } from "@/components/disputes/OutcomeReportingModal";
 import { CollectorModal, type CollectorSubmit } from "@/components/disputes/CollectorModal";
 import { ExhaustionAttestModal } from "@/components/disputes/ExhaustionAttestModal";
@@ -305,7 +312,7 @@ interface ClaimData {
     insurerNameByDispute: Record<string, string>;
   };
   // S330 — the member's own DFY engagement on this claim (additive; absent when none).
-  dfyEngagement?: { id: string; status: string; phase: string; payer: string; composed?: boolean; acts: Array<{ kind: string; occurredAt: string }> };
+  dfyEngagement?: { id: string; status: EngagementStatus; payer: string; composed: boolean; allSigned: boolean; screened: { eligible: boolean; declineReason: string | null } | null; acts: Array<{ kind: string; occurredAt: string; undone?: boolean }> };
   relatedClaims: Array<{ id: string; date_of_service: string; status: string; total_billed: number; provider_name: string | null }>;
   // S132 iter-6 Phase 1 — slugs present in user's plan_covered_services for
   // this claim's plan_id. Drives CategoryCorrectionModal filtering + best-
@@ -819,6 +826,10 @@ export function ClaimDetail({
   const [railExhaustionFromDisputeId, setRailExhaustionFromDisputeId] = useState<string | null>(null);
   const [railEscalating, setRailEscalating] = useState(false);
   const [railActionError, setRailActionError] = useState<string | null>(null);
+  // S331 — true while Candid is executing this matter: the operator transmits
+  // and works the letter, so the member's send/redraft controls stand down.
+  // Keyed on the SAME status set that grants the operator authority to act.
+  const dfyHeld = dfyExecutionHeld(data?.dfyEngagement?.status ?? null);
   // "Show full step" client state for the done-collapsed rail steps 1-2
   // (collapsed by default when done; expansion is throwaway, not persisted).
   const [assumpFullOpen, setAssumpFullOpen] = useState(false);
@@ -1201,7 +1212,14 @@ export function ClaimDetail({
           if (res.status === 409) {
             const body = (await res.json().catch(() => null)) as {
               blockers?: ReadinessBlocker[];
+              error?: string;
+              reason?: string;
             } | null;
+            // S331 — Candid is executing this matter; nothing is "missing".
+            if (body?.error === DFY_EXECUTION_HOLD_CODE) {
+              setRailActionError(body.reason ?? DFY_EXECUTION_HOLD_MESSAGE.send);
+              return false;
+            }
             const missing = (body?.blockers ?? [])
               .map((b) => SEND_GATE_COPY.blocker(b, "both").what.toLowerCase())
               .join(", ");
@@ -2789,33 +2807,40 @@ export function ClaimDetail({
           member's next step, nothing decided for them. */}
       {data.dfyEngagement && (
         <div className="mb-4 rounded-xl border border-violet-200 bg-violet-50 px-4 py-3 text-[13px] text-violet-900">
+          {(() => {
+            // S331 — ONE vocabulary for the member's engagement state
+            // (member-status). The operator's `phase` string is deliberately
+            // gone: it was internal ops language on a member screen.
+            const e = data.dfyEngagement!;
+            const ms = memberStatus({
+              status: e.status,
+              allSigned: e.allSigned,
+              composed: e.composed,
+              screened: e.screened,
+            });
+            return (
+              <>
+                <b>{ms.headline}</b> {ms.detail}{" "}
+                <Link href={`/dfy/${e.id}`} className="font-semibold underline">{ms.ctaLabel}</Link>
+              </>
+            );
+          })()}
           {data.dfyEngagement.status === "active" ? (
             <>
-              <b>Candid is handling the paperwork for this appeal</b> as your authorized representative. Anything that needs a decision stays yours.
-              <span className="ml-2 text-violet-700">{data.dfyEngagement.phase}</span>
               {data.dfyEngagement.acts.length > 0 && (
                 <ul className="mt-2 space-y-0.5 text-[12px] text-violet-800">
                   {data.dfyEngagement.acts.map((a, i) => (
                     <li key={`${a.kind}-${i}`}>
-                      <span className="font-semibold">Done by Candid</span> · {DFY_ACT_LABEL[a.kind] ?? a.kind.replace("dfy_", "").replace(/_/g, " ")} · {new Date(a.occurredAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                      <span className={a.undone ? "line-through" : undefined}>
+                        <span className="font-semibold">Done by Candid</span> · {DFY_ACT_LABEL[a.kind] ?? a.kind.replace("dfy_", "").replace(/_/g, " ")} · {new Date(a.occurredAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                      </span>
+                      {a.undone && <span className="ml-2 text-[11px] font-semibold uppercase tracking-wide text-violet-700">undone</span>}
                     </li>
                   ))}
                 </ul>
               )}
             </>
-          ) : data.dfyEngagement.status === "signed" ? (
-            <>
-              <b>Your documents are signed.</b>{" "}
-              {data.dfyEngagement.composed
-                ? <>We start as soon as we confirm we can take this one on. <Link href={`/dfy/${data.dfyEngagement.id}`} className="font-semibold underline">See your engagement</Link></>
-                : <>One step left, and it is yours: choose what to argue. Press <b>Dispute this charge</b> on a line below, pick your grounds, and adopt the letter. We start the moment it is ready. <Link href={`/dfy/${data.dfyEngagement.id}`} className="font-semibold underline">See your engagement</Link></>}
-            </>
-          ) : (
-            <>
-              <b>Candid can handle the paperwork for this appeal.</b> Read and sign the documents on your own page — nothing happens until you do.{" "}
-              <Link href={`/dfy/${data.dfyEngagement.id}`} className="font-semibold underline">Review and sign</Link>
-            </>
-          )}
+          ) : null}
         </div>
       )}
 
@@ -5029,6 +5054,7 @@ export function ClaimDetail({
             // .collectorFirstContactDate), so the rail takes one input and there
             // is no prop here to forget.
             onMarkSent={handleRailMarkSent}
+            dfyHeld={dfyHeld}
             onSaveFirstContactDate={handleRailFirstContactDate}
             onRefetch={refetchClaim}
           />

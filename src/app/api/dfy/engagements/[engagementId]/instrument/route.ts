@@ -6,6 +6,7 @@
  * slots, no signature block — a handwritten signature line instead.
  */
 import { NextRequest, NextResponse } from "next/server";
+import { contentDisposition } from "@/lib/http/content-disposition";
 import { requireAuthenticatedUser } from "@/lib/security/require-authenticated-user";
 import { createServerClient } from "@/lib/supabase/server";
 import { userScoped } from "@/lib/security/user-scoped";
@@ -35,6 +36,6 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ enga
   const pdf = await renderToBuffer(React.createElement(InstrumentPdf, { instrument, signature: null, counterparty: null, engagementId: e.id }) as never);
   return new NextResponse(new Uint8Array(pdf), {
     status: 200,
-    headers: { "Content-Type": "application/pdf", "Content-Disposition": `inline; filename="${instrument.title.replace(/[^\w .-]+/g, "")} (to sign by hand).pdf"` },
+    headers: { "Content-Type": "application/pdf", "Content-Disposition": contentDisposition(`${instrument.title} (to sign by hand).pdf`, "inline") },
   });
 }

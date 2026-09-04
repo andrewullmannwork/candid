@@ -7,6 +7,8 @@
  * effect on the next view.
  */
 import { NextRequest, NextResponse } from "next/server";
+import { dfyFeeOutstanding } from "@/lib/dfy/member-status";
+import { signedInstrumentFile } from "@/lib/dfy/instrument-files";
 import { requireAuthenticatedUser } from "@/lib/security/require-authenticated-user";
 import { createServerClient } from "@/lib/supabase/server";
 import { userScoped } from "@/lib/security/user-scoped";
@@ -15,7 +17,6 @@ import { readDfyState } from "@/lib/dfy/config";
 import { requiredDfyConsents, renderInstrument, signedInstruments } from "@/lib/dfy/paper";
 import { getConsentDocument } from "@/lib/consent/consent-documents";
 import { buildInstrumentContext, maybeActivateEngagement, memberIsEligibleToSign, instrumentDeferral } from "@/lib/dfy/sign";
-import { derivePhase } from "@/lib/dfy/matter";
 import { loadCompositionProof } from "@/lib/dfy/operator-action";
 import { memberDeclineCopy, type GateId } from "@/lib/dfy/intake-gates";
 
@@ -51,15 +52,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ enga
         const rendered = type === "health_data_upload"
           ? (() => { const d = getConsentDocument(type); return { title: d.title, version: d.version, effectiveDate: d.effectiveDate, text: d.fullText, authorizationForm: false }; })()
           : renderInstrument(type, ctx);
-        let pdfUrl: string | null = null;
-        if (ref?.documentId) {
-          const { data: doc } = await userScoped(supabase, user.id).table("documents").select("storage_path").eq("id", ref.documentId).maybeSingle();
-          const path = (doc as { storage_path?: string } | null)?.storage_path;
-          if (path) {
-            const { data: signedUrl } = await supabase.storage.from("documents").createSignedUrl(path, 600);
-            pdfUrl = signedUrl?.signedUrl ?? null;
-          }
-        }
+        // S331 — one resolver, shared with the operator's send kit, so both
+        // surfaces hand out the same file from the same bucket for the same TTL.
+        const { pdfUrl } = await signedInstrumentFile(supabase, user.id, ref?.documentId);
         return { type, deferred: instrumentDeferral(type, e, state.config), title: rendered.title, version: rendered.version, effectiveDate: rendered.effectiveDate, text: rendered.text, authorizationForm: rendered.authorizationForm, signed: ref ? { signedName: ref.signedName, signedAt: ref.signedAt } : null, pdfUrl };
       }),
     );
@@ -71,13 +66,12 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ enga
   const decision = (e.intake as { decision?: { eligible?: boolean; gates?: Array<{ id: GateId; pass: boolean }> } }).decision ?? null;
   return NextResponse.json({
     engagement: { id: e.id, claimId: e.claim_id, status: e.status, payer: e.payer, sponsorRef: e.sponsor_ref, signedAt: e.signed_at, activatedAt: e.activated_at, closedAt: e.closed_at },
-    phase: derivePhase(e, proof, null),
     screened: decision ? { eligible: decision.eligible === true, declineReason: memberDeclineCopy(decision) } : null,
     composition: proof,
     canSign,
     instruments,
     payment: {
-      required: e.status === "signed" && e.payer === "member_paid" && state.config.feeCents > 0 && (e.metadata as { payment?: { status?: string } }).payment?.status !== "succeeded",
+      required: dfyFeeOutstanding(e, state.config.feeCents),
       feeCents: e.payer === "member_paid" ? state.config.feeCents : 0,
     },
   });
